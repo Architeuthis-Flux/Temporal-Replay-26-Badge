@@ -181,6 +181,18 @@
     "0xE2F8B1F5",
     "0x3445551D"
   ],
+  "/apps/tardigotchi/engine.py": [
+    "0xB98C4B4C"
+  ],
+  "/apps/tardigotchi/icon.py": [
+    "0xF0AD7DEF"
+  ],
+  "/apps/tardigotchi/main.py": [
+    "0x700ADC98"
+  ],
+  "/apps/tardigotchi/sprites.py": [
+    "0xA9BD6BB0"
+  ],
   "/apps/tilt_ball.py": [
     "0xEBC27A70",
     "0xECC014B3"

@@ -3,9 +3,9 @@
 #
 # Usage:
 #   ./scripts/bump_version.sh 0.1.3        # set explicit version
-#   ./scripts/bump_version.sh patch        # 0.1.2 -> 0.1.3
-#   ./scripts/bump_version.sh minor        # 0.1.2 -> 0.2.0
-#   ./scripts/bump_version.sh major        # 0.1.2 -> 1.0.0
+#   ./scripts/bump_version.sh patch        # 0.1.4 -> 0.1.3
+#   ./scripts/bump_version.sh minor        # 0.1.4 -> 0.2.0
+#   ./scripts/bump_version.sh major        # 0.1.4 -> 1.0.0
 #
 # Writes firmware/VERSION, stages it, and prints a suggested commit message.
 # Does NOT commit or tag — the next `pio run` (via scripts/inject_version.py)
