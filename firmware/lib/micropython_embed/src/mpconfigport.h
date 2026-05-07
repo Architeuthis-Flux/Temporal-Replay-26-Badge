@@ -319,10 +319,17 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_HW_BOARD_NAME "Replay Badge"
 #define MICROPY_HW_MCU_NAME "ESP32-S3"
 
-// Badge firmware version. Bumped on every release.
-// Surfaced in the REPL banner via MICROPY_BANNER_MACHINE so JumperIDE can
-// parse "Replay Badge v<X.Y.Z> with ESP32-S3" and offer firmware updates.
-#define BADGE_FIRMWARE_VERSION "0.1.1"
+// Badge firmware version — single source of truth lives in firmware/VERSION
+// and is injected as -DBADGE_FIRMWARE_VERSION=... by
+// scripts/inject_version.py (PlatformIO pre-build hook). The fallback
+// below only kicks in when MicroPython is rebuilt outside our PlatformIO
+// build (host-side QSTR pre-pass, etc.) — the firmware itself always
+// gets the real version. Surfaced in the REPL banner via
+// MICROPY_BANNER_MACHINE so external tooling can parse
+// "Replay Badge v<X.Y.Z> with ESP32-S3" and offer firmware updates.
+#ifndef BADGE_FIRMWARE_VERSION
+#define BADGE_FIRMWARE_VERSION "dev"
+#endif
 #define MICROPY_BANNER_MACHINE \
     MICROPY_HW_BOARD_NAME " v" BADGE_FIRMWARE_VERSION " with " MICROPY_HW_MCU_NAME
 

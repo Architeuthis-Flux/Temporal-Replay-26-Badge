@@ -818,6 +818,8 @@
                 "ARDUINO_USB_CDC_ON_BOOT=1",
                 "DOOMGENERIC_RESX=160",
                 "DOOMGENERIC_RESY=100",
+                "FIRMWARE_VERSION=\"0.1.2+5d466b6-dirty\"",
+                "BADGE_FIRMWARE_VERSION=\"0.1.2+5d466b6-dirty\"",
                 "ESP32_ARDUINO_LIB_BUILDER",
                 "ESP_MDNS_VERSION_NUMBER=\"1.9.1\"",
                 "ESP_PLATFORM",

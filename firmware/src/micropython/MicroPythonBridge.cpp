@@ -237,7 +237,7 @@ extern "C" void mpy_poll( void ) {
     static bool s_was_connected = false;
     bool connected = Serial;
     if ( connected && !s_was_connected ) {
-        Serial.println( "[mpy] USB reconnect — draining input" );
+        // Serial.println( "[mpy] USB reconnect — draining input" );
         s_ignore_repl_until_ms = millis( ) + 350;
     }
     s_was_connected = connected;
