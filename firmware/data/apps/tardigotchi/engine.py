@@ -765,7 +765,7 @@ def main():
                 last_led = now
 
             # Step GoL and draw
-            if session.frame_due():
+            if session.frame_due(state, now):
                 gol_grid = gol_step(gol_grid)
                 gol_tick += 1
                 alive = sum(1 for r in gol_grid if r)

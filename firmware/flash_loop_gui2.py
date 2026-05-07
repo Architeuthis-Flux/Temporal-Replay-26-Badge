@@ -238,31 +238,56 @@ class FlashStation:
             self.count += 1
             self.log(f"■ TARGET #{self.count} ACQUIRED", WHITE)
 
-            # ── Flash firmware via pio ────────────────────────────────────
-            self.state = S_FLASHING
-            pio = os.path.expanduser("~/.platformio/penv/bin/pio")
-            self.log("▶ UPLOADING FIRMWARE ...", AMBER)
-            ok = self.run_cmd(
-                [pio, "run", "-e", self.env, "-t", "upload",
-                 "--upload-port", self.port, "-d", SCRIPT_DIR],
-                "pio upload"
+            # ── Erase ────────────────────────────────────────────────────
+            self.state = S_ERASING
+            self.log("▶ ERASING FLASH ...", AMBER)
+            self.run_cmd(
+                [ESPTOOL, "--chip", "esp32s3", "--port", self.port,
+                 "--baud", "921600", "erase-flash"],
+                "erase-flash"
             )
 
-            if ok:
-                # ── Upload filesystem ────────────────────────────────────
-                self.log("▶ UPLOADING FILESYSTEM ...", AMBER)
-                # Wait for port to come back after firmware upload resets the board
-                for _ in range(30):
-                    if self.port_exists():
-                        break
-                    time.sleep(0.5)
+            # Wait for port to come back after erase
+            self.log("  AWAITING PORT RE-ENUMERATION ...", DIM_GREEN)
+            for _ in range(30):
                 if self.port_exists():
-                    time.sleep(0.5)
-                    ok = self.run_cmd(
-                        [pio, "run", "-e", self.env, "-t", "uploadfs",
-                         "--upload-port", self.port, "-d", SCRIPT_DIR],
-                        "pio uploadfs"
-                    )
+                    break
+                time.sleep(0.5)
+            if not self.port_exists():
+                self.log("✗ PORT DID NOT REAPPEAR — SKIP", RED)
+                self.state = S_FAILED
+                continue
+            time.sleep(1.0)
+
+            # ── Flash firmware + filesystem in one esptool call ──────────
+            self.state = S_FLASHING
+            self.log("▶ WRITING FIRMWARE + FILESYSTEM ...", AMBER)
+            build_dir = os.path.join(SCRIPT_DIR, ".pio", "build", self.env)
+            boot_app0 = os.path.expanduser(
+                "~/.platformio/packages/framework-arduinoespressif32"
+                "/tools/partitions/boot_app0.bin")
+            ffat_offset = resolve_ffat_offset(self.env)
+
+            cmd = [
+                ESPTOOL, "--chip", "esp32s3", "--port", self.port,
+                "--baud", "921600",
+                "--before", "default-reset", "--after", "hard-reset",
+                "write-flash", "-z",
+                "--flash-mode", "dio", "--flash-freq", "80m",
+                "--flash-size", "detect",
+                "0x0000", os.path.join(build_dir, "bootloader.bin"),
+                "0x8000", os.path.join(build_dir, "partitions.bin"),
+                "0xe000", boot_app0,
+                "0x10000", os.path.join(build_dir, "firmware.bin"),
+            ]
+            # Add filesystem image if available
+            if ffat_offset:
+                for candidate in ["fatfs.bin", "littlefs.bin", "spiffs.bin"]:
+                    fs_path = os.path.join(build_dir, candidate)
+                    if os.path.isfile(fs_path):
+                        cmd.extend([ffat_offset, fs_path])
+                        break
+            ok = self.run_cmd(cmd, "write-flash")
 
             if ok:
                 self.state = S_SUCCESS

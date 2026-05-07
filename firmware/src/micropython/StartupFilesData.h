@@ -5951,7 +5951,7 @@ def main():
                 last_led = now
 
             # Step GoL and draw
-            if session.frame_due():
+            if session.frame_due(state, now):
                 gol_grid = gol_step(gol_grid)
                 gol_tick += 1
                 alive = sum(1 for r in gol_grid if r)
@@ -6017,7 +6017,7 @@ def main():
         led_clear()
         led_override_end()
 )";
-static const uint32_t STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_HASHES[1] = { 0xB98C4B4C };
+static const uint32_t STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_HASHES[2] = { 0x6D939E93, 0xB98C4B4C };
 
 static const char STARTUP_APPS_TARDIGOTCHI_ICON_PY_DATA[] = R"(# Tardigotchi: Conway's Game of Life creatures
 # 8x8 LED glider frames + OLED GoL simulation
@@ -13776,7 +13776,7 @@ static const StartupFileInfo kStartupFiles[] = {
     { "/apps/ir_block_battle/main.py", STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_HASHES, 2, 0 },
     { "/apps/ir_loopback_test.py", STARTUP_APPS_IR_LOOPBACK_TEST_PY_DATA, sizeof(STARTUP_APPS_IR_LOOPBACK_TEST_PY_DATA) - 1, STARTUP_APPS_IR_LOOPBACK_TEST_PY_HASHES, 3, 0 },
     { "/apps/synth/main.py", STARTUP_APPS_SYNTH_MAIN_PY_DATA, sizeof(STARTUP_APPS_SYNTH_MAIN_PY_DATA) - 1, STARTUP_APPS_SYNTH_MAIN_PY_HASHES, 8, 0 },
-    { "/apps/tardigotchi/engine.py", STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_HASHES, 1, 0 },
+    { "/apps/tardigotchi/engine.py", STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_HASHES, 2, 0 },
     { "/apps/tardigotchi/icon.py", STARTUP_APPS_TARDIGOTCHI_ICON_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_ICON_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_ICON_PY_HASHES, 1, 0 },
     { "/apps/tardigotchi/main.py", STARTUP_APPS_TARDIGOTCHI_MAIN_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_MAIN_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_MAIN_PY_HASHES, 1, 0 },
     { "/apps/tardigotchi/sprites.py", STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_HASHES, 1, 0 },
