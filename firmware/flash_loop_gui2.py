@@ -28,6 +28,7 @@ import threading
 import time
 
 import pygame
+import serial
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +63,9 @@ S_UNPLUG     = "REMOVE DEVICE"
 S_QUIT       = "OFFLINE"
 
 PORT_COLOURS = [GREEN, CYAN, AMBER, (180, 100, 255), (255, 140, 80)]
+
+# Ports to never flash (e.g. serial monitor port)
+IGNORE_PORTS = {"/dev/cu.usbmodem101"}
 
 
 def _parse_ini_sections(ini_path: str) -> dict[str, dict[str, str]]:
@@ -189,6 +193,23 @@ class FlashStation:
         except Exception:
             pass
 
+    def dtr_rts_reset(self, into_download: bool = False):
+        """Toggle DTR/RTS via pyserial to reset the ESP32-S3.
+        If into_download=True, enters download mode.
+        If False, just hard-resets into normal boot."""
+        try:
+            s = serial.Serial(self.port, 115200, timeout=0.1)
+            if into_download:
+                s.dtr = False; s.rts = True;  time.sleep(0.1)
+                s.dtr = True;  s.rts = False; time.sleep(0.05)
+                s.dtr = False
+            else:
+                s.rts = True;  time.sleep(0.1)
+                s.rts = False
+            s.close()
+        except Exception as e:
+            self.log(f"  DTR/RTS toggle failed: {e}", DIM_AMBER)
+
     def run_cmd(self, cmd: list[str], label: str) -> bool:
         self.log(f"> {' '.join(cmd)}", DIM_GREEN)
         try:
@@ -238,26 +259,40 @@ class FlashStation:
             self.count += 1
             self.log(f"■ TARGET #{self.count} ACQUIRED", WHITE)
 
-            # ── Erase ────────────────────────────────────────────────────
-            self.state = S_ERASING
-            self.log("▶ ERASING FLASH ...", AMBER)
-            self.run_cmd(
-                [ESPTOOL, "--chip", "esp32s3", "--port", self.port,
-                 "--baud", "921600", "erase-flash"],
-                "erase-flash"
-            )
-
-            # Wait for port to come back after erase
-            self.log("  AWAITING PORT RE-ENUMERATION ...", DIM_GREEN)
-            for _ in range(30):
-                if self.port_exists():
-                    break
+            # ── Try to reach the badge over serial first ─────────────────
+            needs_dtr_reset = True
+            try:
+                s = serial.Serial(self.port, 115200, timeout=2)
+                # Ctrl-C to break out of any running code, then check
+                for _ in range(5):
+                    s.write(b'\x03')
+                    time.sleep(0.05)
+                time.sleep(0.3)
+                s.write(b'\r\n')
                 time.sleep(0.5)
-            if not self.port_exists():
-                self.log("✗ PORT DID NOT REAPPEAR — SKIP", RED)
-                self.state = S_FAILED
-                continue
-            time.sleep(1.0)
+                resp = s.read(s.in_waiting or 1024).decode(errors='replace')
+                s.close()
+                if '>>>' in resp or 'MicroPython' in resp or 'Temporal' in resp:
+                    self.log("  BADGE RESPONSIVE — SKIPPING DTR/RTS RESET", DIM_GREEN)
+                    needs_dtr_reset = False
+                else:
+                    self.log("  NO REPL RESPONSE — WILL DTR/RTS RESET", DIM_GREEN)
+            except Exception as e:
+                self.log(f"  SERIAL PROBE FAILED: {e}", DIM_GREEN)
+
+            if needs_dtr_reset:
+                self.log("  DTR/RTS → DOWNLOAD MODE ...", DIM_GREEN)
+                self.dtr_rts_reset(into_download=True)
+                time.sleep(1.0)
+                for _ in range(20):
+                    if self.port_exists():
+                        break
+                    time.sleep(0.5)
+                if not self.port_exists():
+                    self.log("✗ PORT LOST AFTER RESET — SKIP", RED)
+                    self.state = S_FAILED
+                    continue
+                time.sleep(0.5)
 
             # ── Flash firmware + filesystem in one esptool call ──────────
             self.state = S_FLASHING
@@ -268,10 +303,11 @@ class FlashStation:
                 "/tools/partitions/boot_app0.bin")
             ffat_offset = resolve_ffat_offset(self.env)
 
+            before_mode = "no_reset" if needs_dtr_reset else "default-reset"
             cmd = [
                 ESPTOOL, "--chip", "esp32s3", "--port", self.port,
                 "--baud", "921600",
-                "--before", "default-reset", "--after", "hard-reset",
+                "--before", before_mode, "--after", "hard-reset",
                 "write-flash", "-z",
                 "--flash-mode", "dio", "--flash-freq", "80m",
                 "--flash-size", "detect",
@@ -290,6 +326,16 @@ class FlashStation:
             ok = self.run_cmd(cmd, "write-flash")
 
             if ok:
+                # Reboot into new firmware
+                self.log("  REBOOTING BADGE ...", DIM_GREEN)
+                time.sleep(0.5)
+                for _ in range(20):
+                    if self.port_exists():
+                        break
+                    time.sleep(0.5)
+                if self.port_exists():
+                    self.dtr_rts_reset(into_download=False)
+
                 self.state = S_SUCCESS
                 self.log(f"✓ #{self.count} PROGRAMMING COMPLETE", GREEN)
                 try:
@@ -334,7 +380,7 @@ class PortManager:
 
     def _add_port(self, port: str):
         with self.lock:
-            if port in self.known_ports:
+            if port in self.known_ports or port in IGNORE_PORTS:
                 return
             self.known_ports.add(port)
             idx = len(self.stations)
@@ -418,7 +464,8 @@ def main():
     if args.port:
         ports = args.port
     else:
-        ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+        ports = sorted(p for p in glob.glob("/dev/cu.usbmodem*")
+                       if p not in IGNORE_PORTS)
         if not ports:
             print("No /dev/cu.usbmodem* ports found — plug in a badge or use --port",
                   file=sys.stderr)
