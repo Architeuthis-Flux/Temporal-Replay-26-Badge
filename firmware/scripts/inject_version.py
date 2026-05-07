@@ -2,7 +2,7 @@
 """
 inject_version.py — Single source of truth for the badge firmware version.
 
-Reads firmware/VERSION (a one-line semver like "0.1.2") and injects:
+Reads firmware/VERSION (a one-line semver like "0.1.4") and injects:
 
   -DFIRMWARE_VERSION="<ver>"          (consumed by src/identity/BadgeVersion.h
                                        and any C++ TU that includes it)

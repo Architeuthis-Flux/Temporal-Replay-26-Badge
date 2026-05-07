@@ -1,6 +1,6 @@
 // BadgeVersion.h — Firmware version string
 //
-// Single source of truth: firmware/VERSION (a one-line semver like "0.1.2").
+// Single source of truth: firmware/VERSION (a one-line semver like "0.1.4").
 // scripts/inject_version.py reads it on every PlatformIO build and injects
 //   -DFIRMWARE_VERSION="<ver>"        (consumed here)
 //   -DBADGE_FIRMWARE_VERSION="<ver>"  (consumed by lib/micropython_embed/
