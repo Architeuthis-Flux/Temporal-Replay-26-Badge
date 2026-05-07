@@ -112,7 +112,7 @@ maybe_update_config() {
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 
 ENV="" SKIP_CONFIG=false
-DEFAULT_ENV="echo"
+DEFAULT_ENV="echo-dev"
 
 for arg in "$@"; do
     case "$arg" in

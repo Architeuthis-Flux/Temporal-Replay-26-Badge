@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ESPTOOL="$HOME/.platformio/penv/bin/esptool"
 LOG_DIR="$SCRIPT_DIR/logs"
 
-ENV="echo"
+ENV="echo-dev"
 IMAGE=""
 BAUD="921600"
 PARALLEL=1

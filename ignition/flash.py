@@ -390,8 +390,8 @@ def main() -> None:
     default_fw = str(Path(__file__).resolve().parent.parent / "firmware")
 
     parser = argparse.ArgumentParser(description="Build and flash Temporal Badge firmware")
-    parser.add_argument("-e", "--env", default="echo",
-                        help="PlatformIO environment (default: echo)")
+    parser.add_argument("-e", "--env", default="echo-dev",
+                        help="PlatformIO environment (default: echo-dev)")
     parser.add_argument("--firmware-dir", default=default_fw, metavar="DIR",
                         help=f"Path to PlatformIO project (default: {default_fw})")
     build_mode = parser.add_mutually_exclusive_group()

@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIO="$HOME/.platformio/penv/bin/pio"
 ESPTOOL="$HOME/.platformio/penv/bin/esptool"
 
-ENV="echo"
+ENV="echo-dev"
 DO_BUILD=1
 DO_FS=1
 for arg in "$@"; do

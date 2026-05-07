@@ -9,7 +9,7 @@
 # First time? Run ./setup.sh first.
 #
 # Usage:
-#   ./start.sh                           Build echo + flash all badges
+#   ./start.sh                           Build echo-dev + flash all badges
 #   ./start.sh -e charlie                Charlie environment
 #   ./start.sh --firmware-dir /path      Different firmware directory
 #   ./start.sh -y                        Skip the pre-flash Enter prompt
