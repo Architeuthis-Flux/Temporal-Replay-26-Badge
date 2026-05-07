@@ -322,7 +322,7 @@ uint32_t replay_random_seed_init(void);
 // Badge firmware version. Bumped on every release.
 // Surfaced in the REPL banner via MICROPY_BANNER_MACHINE so JumperIDE can
 // parse "Replay Badge v<X.Y.Z> with ESP32-S3" and offer firmware updates.
-#define BADGE_FIRMWARE_VERSION "0.1.0"
+#define BADGE_FIRMWARE_VERSION "0.1.1"
 #define MICROPY_BANNER_MACHINE \
     MICROPY_HW_BOARD_NAME " v" BADGE_FIRMWARE_VERSION " with " MICROPY_HW_MCU_NAME
 
@@ -337,7 +337,7 @@ uint32_t replay_random_seed_init(void);
 // which breaks mpremote / ViperIDE raw REPL framing between OK and the trailing EOF markers.
 #define MP_PLAT_PRINT_STRN( str, len ) mp_hal_stdout_tx_strn( ( str ), ( len ) )
 
-// Avoid duplicate __assert_func with ESP32 Arduino newlib.
-#ifndef NDEBUG
-#define NDEBUG
-#endif
+// NDEBUG is defined as a build flag in platformio.ini build_flags_common so
+// it's set before any TU sees <assert.h>. Defining it here was order-fragile
+// (mpconfigport.h is reached via py/mpconfig.h → py/mpstate.h, which is often
+// included after <assert.h> has already locked in its assert macro).

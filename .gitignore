@@ -39,10 +39,7 @@
 *.out
 *.app
 
-# Build directories
-build/
-Build/
-build-*/
+
 
 # CMake generated files
 CMakeFiles/
@@ -79,3 +76,6 @@ hardware/design-log.md
 /hardware/BRAVO/pcb/Temporal-Badge-BRAVO-backups
 /hardware/BRAVO/pcb/Temporal-Badge-backups
 /hardware/ALPHA/Temporal-Badge-backups
+/firmware/build/sketch/.mp_src_tmp
+/firmware/build/sketch/Firmware-0308-modular
+/firmware/build/sketch/.venv
