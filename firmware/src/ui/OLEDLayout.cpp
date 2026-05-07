@@ -135,9 +135,21 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
   const int fillX = x + 2;
   const int fillY = y + 1;
 
-  if (!ready || pct < 5.f) {
-    // Solid block + XOR-style negative-space exclamation. Centered in the
-    // 7px-wide fill slot, so x offset = 3.
+  // Helper: paint the two-digit percent into the 7px-wide fill slot.
+  auto drawPercentDigits = [&]() {
+    const uint8_t tens  = batteryGauge.displayTens();
+    const uint8_t units = batteryGauge.displayUnits();
+    d.drawXBM(fillX, fillY,
+              BatteryIcons::kNumW, BatteryIcons::kNumH,
+              BatteryIcons::kNumBits[tens]);
+    d.drawVLine(fillX + 3, fillY, BatteryIcons::kNumH);
+    d.drawXBM(fillX + 4, fillY,
+              BatteryIcons::kNumW, BatteryIcons::kNumH,
+              BatteryIcons::kNumBits[units]);
+  };
+
+  // Helper: paint the inverted exclamation warning glyph.
+  auto drawExclamation = [&]() {
     d.setDrawColor(1);
     d.drawBox(fillX, fillY, 7, 4);
     d.setDrawColor(0);
@@ -145,37 +157,59 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
               BatteryIcons::kExclamationW, BatteryIcons::kExclamationH,
               BatteryIcons::kExclamationBits);
     d.setDrawColor(1);
+  };
+
+  // Shared alternation cadence: ~1.6 s cycle, primary glyph holds for
+  // 900 ms then the digits show for 700 ms. Phase derives from millis()
+  // so every screen rendering this icon stays in sync.
+  constexpr uint32_t kCyclePeriodMs = 1600;
+  constexpr uint32_t kGlyphHoldMs   = 900;
+  const bool showGlyph = (millis() % kCyclePeriodMs) < kGlyphHoldMs;
+
+  if (!ready || pct <= 0.f) {
+    // Gauge unready, OR ready but no trustworthy probe sample has
+    // landed yet so bat_pct is still at its post-zero default of 0.
+    // Hold the warning glyph instead of flashing "00", which reads
+    // as a dead battery and would be misleading while charging.
+    drawExclamation();
+    return;
+  }
+
+  if (pct < 5.f) {
+    // Critical battery: alternate the exclamation warning with the
+    // numeric percent so the user can read just how low it actually is
+    // ("3 %" vs "1 %" matters), without losing the at-a-glance alert.
+    if (showGlyph) drawExclamation();
+    else           drawPercentDigits();
     return;
   }
 
   const bool charging = batteryGauge.isCharging();
   const bool usb      = batteryGauge.usbPresent();
 
-  if (charging) {
-    d.drawXBM(fillX, fillY,
-              BatteryIcons::kChargingW, BatteryIcons::kChargingH,
-              BatteryIcons::kChargingBits);
-    return;
-  }
-  if (usb) {
-    // USB present + charge complete (PGOOD low, CHG high) → solid fill.
-    d.drawXBM(fillX, fillY,
-              BatteryIcons::kFullW, BatteryIcons::kFullH,
-              BatteryIcons::kFullBits);
+  // When external power is present (charging bolt or full-charge solid),
+  // alternate between the power glyph and the numeric percent so the
+  // user can still read the level while plugged in.
+  if (charging || usb) {
+    if (showGlyph) {
+      if (charging) {
+        d.drawXBM(fillX, fillY,
+                  BatteryIcons::kChargingW, BatteryIcons::kChargingH,
+                  BatteryIcons::kChargingBits);
+      } else {
+        // USB present + charge complete (PGOOD low, CHG high) → solid fill.
+        d.drawXBM(fillX, fillY,
+                  BatteryIcons::kFullW, BatteryIcons::kFullH,
+                  BatteryIcons::kFullBits);
+      }
+    } else {
+      drawPercentDigits();
+    }
     return;
   }
 
-  // 5..99 % on battery: paint the gauge-cached digits with a 1px divider
-  // between them, all inside the 7px-wide fill slot.
-  const uint8_t tens  = batteryGauge.displayTens();
-  const uint8_t units = batteryGauge.displayUnits();
-  d.drawXBM(fillX, fillY,
-            BatteryIcons::kNumW, BatteryIcons::kNumH,
-            BatteryIcons::kNumBits[tens]);
-  d.drawVLine(fillX + 3, fillY, BatteryIcons::kNumH);
-  d.drawXBM(fillX + 4, fillY,
-            BatteryIcons::kNumW, BatteryIcons::kNumH,
-            BatteryIcons::kNumBits[units]);
+  // 5..99 % on battery (no external power): always show digits.
+  drawPercentDigits();
 }
 
 void copyHeaderText(char* out, size_t cap, const char* src) {

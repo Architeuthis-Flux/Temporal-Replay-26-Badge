@@ -6,6 +6,7 @@
 #include "infra/Filesystem.h"
 #include "micropython/StartupFiles.h"
 #include "ui/GUI.h"
+#include "ui/BootSplash.h"
 #include "hardware/Haptics.h"
 #include "hardware/IMU.h"
 #include "hardware/Inputs.h"
@@ -260,16 +261,33 @@ void setup( ) {
 
     PanicReset::begin(oled_ok ? &badgeDisplay : nullptr);
 
+    // Pre-splash screen is intentionally blank — BootSplash is the only
+    // boot visual. Keeping the panel cleared (and contrast clamped to
+    // 80 from the init block above) so the splash's hardware fade-in
+    // starts from true black.
     badgeDisplay.clearBuffer();
-    badgeDisplay.setFontPreset(FONT_SMALL);
-    badgeDisplay.setDrawColor(1);
-    badgeDisplay.drawStr(0, 12, "Badge boot...");
-    badgeDisplay.drawStr(0, 26, "Offline firmware");
-    badgeDisplay.drawStr(0, 40, "Pairing gate removed");
     badgeDisplay.sendBuffer();
     Serial.println( "=== BADGE MERGE CODE RUNNING ===" );
     Serial.println( "  Network:   explicit-only MicroPython helpers" );
-    // delay(2000);
+
+    // Boot splash — temporal-logo starfield. Blocks setup() for the duration;
+    // ends with transitionOut(300) so the panel is dark when GUIManager
+    // pushes the home screen. Bring up just the LED matrix's I2C controller
+    // first so the splash can drive its sparkle animation; full service
+    // registration stays in initDeferredPeripherals().
+#ifdef BADGE_HAS_LED_MATRIX
+    if ( badgeMatrix.init( LED_MATRIX_I2C_ADDRESS ) == 0 ) {
+        badgeMatrix.setBrightness( Power::Policy::kLedMatrixDefaultBrightness );
+        badgeMatrix.clear( 0 );
+        Serial.println( "LED matrix init OK (early, for splash sparkles)" );
+    } else {
+        Serial.println( "LED matrix init failed (early); splash sparkles disabled" );
+    }
+#endif
+
+    if ( oled_ok ) {
+        BootSplash::playStarfield(4000, 60);
+    }
 
     #ifndef BADGE_HAS_IMU
     badgeDisplay.setFlipped( false );

@@ -80,4 +80,9 @@ class GridMenuScreen : public Screen {
   mutable uint16_t badgeSeenFrame_[32] = {};
   mutable uint16_t badgeRenderFrame_ = 0;
   mutable bool badgeCountsValid_[32] = {};
+
+  // Hold-DOWN-to-shutdown. Updated each handleInput() tick; render()
+  // reads it to draw the countdown footer. Only armed on the main-menu
+  // route — submenus (Games, etc.) leave it at 0.
+  uint32_t shutdownHeldMs_ = 0;
 };

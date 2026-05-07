@@ -1,17 +1,22 @@
 #include "GridMenuScreen.h"
 
+#include <Arduino.h>
 #include <cstdio>
 #include <cstring>
+#include <esp_sleep.h>
 
 #include "../BadgeGlobals.h"
 #include "../hardware/Haptics.h"
 #include "../hardware/Inputs.h"
+#include "../hardware/LEDmatrix.h"
 #include "../hardware/oled.h"
 #include "../ui/AppIcons.h"
 #include "../ui/BadgeDisplay.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
 #include "../ui/UIFonts.h"
+
+extern LEDmatrix badgeMatrix;
 
 extern BadgeState badgeState;
 extern void firstNameFromBadgeName(char* out, size_t outCap);
@@ -47,6 +52,15 @@ constexpr uint8_t kBadgeH = 8;
 constexpr uint8_t kBadgePadX = 1;
 constexpr uint8_t kLabelGapX = 3;
 constexpr uint8_t kLabelScrollGapPx = 10;
+
+// Hold-to-shutdown — DOWN button on the home menu only.
+//   kBtnDownIndex   matches Inputs::kDown (private enum); see Inputs.h.
+//   kShutdownArmMs  small floor so a stray DOWN tap doesn't flash the
+//                   countdown; user has to be holding deliberately.
+//   kShutdownHoldMs total hold required to actually deep-sleep.
+constexpr uint8_t  kBtnDownIndex   = 1;
+constexpr uint32_t kShutdownArmMs  = 250;
+constexpr uint32_t kShutdownHoldMs = 3000;
 
 void drawNotificationBadge(oled& d, int x, int y, uint16_t count,
                            bool selected, uint8_t pulsePx) {
@@ -334,11 +348,49 @@ void GridMenuScreen::drawCell(oled& d, uint8_t col, int y,
 }
 
 void GridMenuScreen::drawFooter(oled& d) {
+  // Hold-DOWN-to-shutdown takes over the footer once the timer is armed.
+  // Show whole-second remaining (rounded up) so the user sees 3 → 2 → 1
+  // before the chip actually sleeps.
+  if (shutdownHeldMs_ >= kShutdownArmMs) {
+    const uint32_t remaining = (shutdownHeldMs_ < kShutdownHoldMs)
+        ? (kShutdownHoldMs - shutdownHeldMs_)
+        : 0;
+    const uint32_t secs = (remaining + 999) / 1000;
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "Shutdown in %lu...",
+                  static_cast<unsigned long>(secs));
+    OLEDLayout::drawActionFooter(d, buf, "");
+    return;
+  }
   const GridMenuItem* item = itemAtVisibleIndex(cursor_);
   const char* text = item ? item->description : "";
   if (!text || !text[0]) text = item && item->label ? item->label : "";
   OLEDLayout::drawActionFooter(d, text, "select");
 }
+
+namespace {
+// Power-down sequence: blank the user-visible peripherals so the device
+// looks "off", then deep-sleep. esp_deep_sleep_start() never returns.
+// Wake config is whatever the SleepService set up earlier (typically
+// IMU motion on INT_GP_PIN); if no source is enabled the chip stays
+// asleep until the user power-cycles, which matches "shutdown" semantics.
+[[noreturn]] void performShutdown(oled& d) {
+#ifdef BADGE_HAS_LED_MATRIX
+  badgeMatrix.stopAnimation();
+  badgeMatrix.clear(0);
+#endif
+  d.clearBuffer();
+  d.sendBuffer();
+  d.transitionOut(150);
+  delay(50);
+  Serial.flush();
+  esp_deep_sleep_start();
+  // Unreachable; loop guards against the off-chance esp_deep_sleep_start
+  // returns (it does not in practice) so we don't fall through into
+  // post-sleep state with the screen blanked.
+  while (true) {}
+}
+}  // namespace
 
 void GridMenuScreen::render(oled& d, GUIManager& gui) {
   (void)gui;
@@ -372,6 +424,14 @@ void GridMenuScreen::render(oled& d, GUIManager& gui) {
   d.setMaxClipWindow();
 
   drawFooter(d);
+
+  // Hold-DOWN-to-shutdown: trigger AFTER the footer has rendered the
+  // final "Shutdown in 0..." frame and that frame has been pushed to
+  // the panel. Doing it here (post-drawFooter, post-loop-flush by
+  // GUIManager) means the user sees 3 → 2 → 1 → 0 before deep sleep.
+  if (sid_ == kScreenMainMenu && shutdownHeldMs_ >= kShutdownHoldMs) {
+    performShutdown(d);
+  }
 }
 
 void GridMenuScreen::moveSelection(int8_t dir) {
@@ -421,6 +481,17 @@ void GridMenuScreen::handleInput(const Inputs& inputs, int16_t /*cursorX*/,
                                  int16_t /*cursorY*/, GUIManager& gui) {
   ensureVisibleCache();
   clampSelection();
+
+  // Hold-DOWN-to-shutdown — only on the actual home menu. While the
+  // timer is armed (DOWN held past kShutdownArmMs) we keep requesting
+  // re-renders so the seconds-remaining footer counts down even
+  // without further input. Submenus get 0 (= disabled).
+  shutdownHeldMs_ = (sid_ == kScreenMainMenu)
+      ? inputs.heldMs(kBtnDownIndex)
+      : 0;
+  if (shutdownHeldMs_ >= kShutdownArmMs) {
+    gui.requestRender();
+  }
 
   const Inputs::ButtonEdges& e = inputs.edges();
   if (e.confirmPressed) {
