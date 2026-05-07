@@ -26,6 +26,43 @@ int replay_vfs_mount_fat( void );
 
 static Stream* s_repl_stream = &Serial;
 
+// ── Byte-level REPL trace (disabled by default) ────────────────────────────
+//
+// Diagnostic hook for "Enter does nothing / characters disappear / mode is
+// wrong" type bugs. Toggled at runtime via `badge.set_repl_trace(True)` (the
+// Python binding lives in modtemporalbadge.c). When enabled, callers in the
+// REPL pump can hand each byte to mpy_trace_byte() to log:
+//   [mpy-rx] raw=0x0d ('.') -> 0x0a ('.') mode=FRIEND ret=0x0
+// The pump itself does not invoke this in production builds — wire it in
+// temporarily when investigating a regression. Kept compiled (rather than
+// behind an #ifdef) so re-enabling is a one-line edit, not a rebuild dance.
+static volatile bool s_repl_trace = false;
+
+extern "C" void mpy_set_repl_trace( int on ) {
+    s_repl_trace = ( on != 0 );
+}
+
+#if HAS_MICROPYTHON_EMBED
+static const char* mpy_mode_name( int kind ) {
+    switch ( kind ) {
+        case PYEXEC_MODE_RAW_REPL:      return "RAW";
+        case PYEXEC_MODE_FRIENDLY_REPL: return "FRIEND";
+        default:                        return "?";
+    }
+}
+
+[[maybe_unused]] static void mpy_trace_byte( uint8_t in_c, int xform_c, int mode_kind, int ret ) {
+    if ( !s_repl_trace ) return;
+    auto printable = []( int v ) -> char {
+        return ( v >= 32 && v < 127 ) ? (char)v : '.';
+    };
+    Serial.printf( "[mpy-rx] raw=0x%02x ('%c') -> 0x%02x ('%c') mode=%s ret=0x%x\n",
+                   in_c, printable( in_c ),
+                   xform_c, printable( xform_c ),
+                   mpy_mode_name( mode_kind ), ret );
+}
+#endif
+
 extern "C" void mpy_hal_stdout_write( const char* str, size_t len ) {
     if ( s_repl_stream ) {
         s_repl_stream->write( reinterpret_cast<const uint8_t*>( str ), len );
@@ -99,12 +136,16 @@ namespace {
 static constexpr size_t kMicroPythonHeapSize = 2 * 1024 * 1024;
 static uint8_t* s_mp_heap = nullptr;
 static bool s_mp_ready = false;
-static bool s_prev_char_was_cr = false;
+static uint32_t s_ignore_repl_until_ms = 0;
 } // namespace
 
 static void mpy_collect_now( void ) {
 #if HAS_MICROPYTHON_EMBED
     if ( s_mp_ready ) {
+        // GC scans the C stack; refresh the top so calls after app exit don't
+        // reuse a stack pointer from a dead MicroPython execution frame.
+        char stack_top;
+        mp_stack_set_top( &stack_top );
         gc_collect( );
     }
 #endif
@@ -151,7 +192,7 @@ static void mp_init_and_mount( void* stack_top ) {
 
 static void mp_soft_reboot( void ) {
     mp_embed_deinit( );
-    s_prev_char_was_cr = false;
+    s_ignore_repl_until_ms = 0;
     char new_stack_top;
     mp_init_and_mount( &new_stack_top );
     pyexec_event_repl_init( );
@@ -170,7 +211,7 @@ extern "C" void mpy_start( Stream* stream ) {
     if ( s_mp_ready ) {
         return;
     }
-    s_prev_char_was_cr = false;
+    s_ignore_repl_until_ms = 0;
     char stack_top;
     mp_init_and_mount( &stack_top );
     pyexec_event_repl_init( );
@@ -189,31 +230,41 @@ extern "C" void mpy_poll( void ) {
     char stack_top;
     mp_stack_set_top( &stack_top );
 
+    // Reverted to the pre-session HEAD behavior: rising edge of Serial =>
+    // reset friendly REPL state. Tracking byte trace via mpy_set_repl_trace
+    // is preserved separately so we can still see what arrives if "Enter
+    // does nothing" recurs.
     static bool s_was_connected = false;
     bool connected = Serial;
     if ( connected && !s_was_connected ) {
-        Serial.println( "[mpy] USB reconnect — reinitializing REPL" );
-        // pyexec_event_repl_init( );
-        s_prev_char_was_cr = false;
+        Serial.println( "[mpy] USB reconnect — draining input" );
+        s_ignore_repl_until_ms = millis( ) + 350;
     }
     s_was_connected = connected;
 
+    if ( connected && s_ignore_repl_until_ms != 0 ) {
+        if ( (int32_t)( millis( ) - s_ignore_repl_until_ms ) < 0 ) {
+            while ( s_repl_stream->available( ) > 0 ) {
+                s_repl_stream->read( );
+            }
+            return;
+        }
+        s_ignore_repl_until_ms = 0;
+    }
+
+    // Forward incoming bytes straight to the friendly/raw REPL state machine.
+    // Newline handling is owned by the vendored readline.c (process_nl helper,
+    // backported from upstream commit a8b71559), which accepts either `\r` or
+    // `\n` as a line submitter and dedups CRLF / LFCR pairs internally. Do
+    // NOT reintroduce CR→LF conversion here: combined with the pre-patch
+    // readline.c it silently dropped every Enter press through friendly REPL.
     int processed = 0;
     while ( s_repl_stream->available( ) > 0 && processed < 8192 ) {
-        int c = s_repl_stream->read( );
-        if ( c < 0 ) {
+        int raw = s_repl_stream->read( );
+        if ( raw < 0 ) {
             break;
         }
-        bool is_cr = ( c == '\r' );
-        bool is_lf = ( c == '\n' );
-        if ( is_lf && s_prev_char_was_cr ) {
-            s_prev_char_was_cr = false;
-            continue;
-        }
-        if ( is_cr ) {
-            c = '\n';
-        }
-        s_prev_char_was_cr = is_cr;
+        int c = static_cast<uint8_t>( raw );
 
         if ( c == 0x03 ) {
             extern pyexec_mode_kind_t pyexec_mode_kind;
@@ -227,10 +278,10 @@ extern "C" void mpy_poll( void ) {
 
         nlr_buf_t nlr;
         if ( nlr_push( &nlr ) == 0 ) {
-            int result = pyexec_event_repl_process_char( c );
+            int ret = pyexec_event_repl_process_char( c );
             nlr_pop( );
 
-            if ( result & PYEXEC_FORCED_EXIT ) {
+            if ( ret & PYEXEC_FORCED_EXIT ) {
                 pyexec_event_repl_init( );
                 return;
             }
@@ -283,7 +334,6 @@ extern "C" void mpy_gui_exec_file( const char* path ) {
     mpy_app_force_exit = false;
     Serial.println( "[mpy] GUI exec complete" );
 
-    s_prev_char_was_cr = false;
     pyexec_event_repl_init( );
 #else
     (void)path;

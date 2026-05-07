@@ -1147,6 +1147,21 @@ static mp_obj_t temporalbadge_exit(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_exit_obj, temporalbadge_exit);
 
+// ── Diagnostic helpers ──────────────────────────────────────────────────────
+//
+// `badge.set_repl_trace(on)` toggles byte-level REPL tracing in the C
+// bridge. Off by default; flip on when investigating "Enter does
+// nothing / chars vanish / wrong REPL mode" reports. Implementation lives
+// in MicroPythonBridge.cpp.
+extern void mpy_set_repl_trace(int on);
+
+static mp_obj_t temporalbadge_set_repl_trace(mp_obj_t enabled_obj) {
+    mpy_set_repl_trace(mp_obj_is_true(enabled_obj) ? 1 : 0);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(temporalbadge_set_repl_trace_obj,
+                                  temporalbadge_set_repl_trace);
+
 // ── Module globals table ────────────────────────────────────────────────────
 
 static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
@@ -1308,6 +1323,9 @@ static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
 
     // Control
     { MP_ROM_QSTR(MP_QSTR_exit), MP_ROM_PTR(&temporalbadge_exit_obj) },
+
+    // Diagnostics
+    { MP_ROM_QSTR(MP_QSTR_set_repl_trace), MP_ROM_PTR(&temporalbadge_set_repl_trace_obj) },
 };
 static MP_DEFINE_CONST_DICT(temporalbadge_globals, temporalbadge_globals_table);
 

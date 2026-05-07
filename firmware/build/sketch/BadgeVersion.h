@@ -1,3 +1,4 @@
+#line 1 "/Users/kevinsanto/Documents/GitHub/Temporal-Badge/firmware/BadgeVersion.h"
 // BadgeVersion.h — Firmware version string
 //
 // FIRMWARE_VERSION is normally injected by build.sh via:
@@ -7,5 +8,5 @@
 #pragma once
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION "0.1.1"
+  #define FIRMWARE_VERSION "dev"
 #endif
