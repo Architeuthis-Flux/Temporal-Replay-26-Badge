@@ -214,30 +214,19 @@ static bool peer_tickPostConfirm(BoopStatus& s, uint32_t nowMs) {
             s_xchg.ppMySent = false;
             s_xchg.ppLastFieldTxMs = 0;
         } else if (s_xchg.isPrimary) {
-            // Primary leads. Skip cursors where I have nothing to share
-            // — no point burning a round-trip on an empty field. We
-            // still WAIT for peer's FIELD(T) so cursors stay roughly
-            // aligned (peer might have a value here even if I don't).
-            // If neither side has the field, peer's cursor will skip
-            // too once it hits the same condition; the catch-up path
-            // in processPpFrame handles any straggling RX.
-            const char* myVal = (T < FIELD_TAG_COUNT && T != FIELD_ATTENDEE_TYPE)
-                                ? getLocalField(T) : "";
-            const bool myEmpty = (!myVal || myVal[0] == '\0');
-
-            if (myEmpty && !peerSent) {
-                // I have nothing AND peer hasn't sent anything for this
-                // tag. Skip immediately — no TX, no RX, just advance.
-                Serial.printf("[%s] PP skip empty: cursor %u→%u (tag %u %s)\n",
-                              TAG,
-                              (unsigned)s_xchg.ppCursor,
-                              (unsigned)(s_xchg.ppCursor + 1),
-                              (unsigned)T,
-                              BadgeBoops::fieldShortName(T));
-                s_xchg.ppCursor++;
-                s_xchg.ppMySent = false;
-                s_xchg.ppLastFieldTxMs = 0;
-            } else if (!mySent) {
+            // Primary leads. Always TX FIELD(T) — even when our value
+            // is empty — so secondary, which is purely reactive, gets
+            // a frame to reply to and the cursor can advance in
+            // lockstep. The previous "skip silently if myEmpty &&
+            // !peerSent" optimization stranded boops where the two
+            // badges had different sparse field sets: secondary would
+            // sit at cursor T forever waiting for a primary FIELD that
+            // primary had decided not to send, and the boop only
+            // unwedged at the 120 s exchange timeout.  Empty FIELD
+            // frames are 3-word TLV-headers (~150 ms wire) — at most 7
+            // wasted per all-empty boop, far cheaper than the timeout
+            // they replace.
+            if (!mySent) {
                 ppSendField(T, nowMs);
                 s_xchg.ppMySent = true;
                 s_xchg.ppLastFieldTxMs = nowMs;
