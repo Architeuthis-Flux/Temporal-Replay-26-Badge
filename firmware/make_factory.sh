@@ -55,23 +55,47 @@ BUILD_DIR="$SCRIPT_DIR/.pio/build/$ENV"
 OUT="$SCRIPT_DIR/factory_${ENV}_16MB.bin"
 
 # ── Resolve which partitions CSV this env uses ────────────────────────────────
-# Walk platformio.ini for [env:<ENV>] then the first board_build.partitions
-# line under it. Falls back to the [base] block if the env doesn't override.
-resolve_partitions_csv() {
-  local env="$1"
-  local in_env=0 in_base=0 base_csv="" env_csv=""
+# Pull the value out of any [<section>] block (env:<name> or base). Returns
+# empty if the section doesn't define board_build.partitions.
+section_partitions_csv() {
+  local section="$1" in_sec=0 csv=""
   while IFS= read -r line; do
-    if [[ "$line" =~ ^\[env:${env}\] ]]; then in_env=1; in_base=0; continue; fi
-    if [[ "$line" =~ ^\[base\] ]]; then in_base=1; in_env=0; continue; fi
-    if [[ "$line" =~ ^\[ ]]; then in_env=0; in_base=0; continue; fi
-    if [[ $in_env -eq 1 && "$line" =~ ^[[:space:]]*board_build\.partitions[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-      env_csv="${BASH_REMATCH[1]}"; env_csv="${env_csv%%[[:space:]]*}"
-    fi
-    if [[ $in_base -eq 1 && "$line" =~ ^[[:space:]]*board_build\.partitions[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-      base_csv="${BASH_REMATCH[1]}"; base_csv="${base_csv%%[[:space:]]*}"
+    if [[ "$line" =~ ^\[${section}\] ]]; then in_sec=1; continue; fi
+    if [[ $in_sec -eq 1 && "$line" =~ ^\[ ]]; then break; fi
+    if [[ $in_sec -eq 1 && "$line" =~ ^[[:space:]]*board_build\.partitions[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      csv="${BASH_REMATCH[1]}"; csv="${csv%%[[:space:]]*}"
     fi
   done < "$SCRIPT_DIR/platformio.ini"
-  echo "${env_csv:-$base_csv}"
+  echo "$csv"
+}
+
+# Follow `extends = env:<other>` from the section so inherited values work.
+section_extends() {
+  local section="$1" in_sec=0 ext=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^\[${section}\] ]]; then in_sec=1; continue; fi
+    if [[ $in_sec -eq 1 && "$line" =~ ^\[ ]]; then break; fi
+    if [[ $in_sec -eq 1 && "$line" =~ ^[[:space:]]*extends[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      ext="${BASH_REMATCH[1]}"; ext="${ext%%[[:space:]]*}"
+    fi
+  done < "$SCRIPT_DIR/platformio.ini"
+  echo "$ext"
+}
+
+# Walk env:<env> → its extends parent → … → base, returning the first
+# board_build.partitions found. Mirrors PlatformIO's own resolution order.
+resolve_partitions_csv() {
+  local section="env:$1"
+  local seen=" "
+  while [[ -n "$section" ]]; do
+    case "$seen" in *" $section "*) break ;; esac
+    seen="$seen$section "
+    local csv
+    csv="$(section_partitions_csv "$section")"
+    if [[ -n "$csv" ]]; then echo "$csv"; return; fi
+    section="$(section_extends "$section")"
+  done
+  section_partitions_csv "base"
 }
 
 # Read offset (col 4) for partition <name> from a partitions CSV.
