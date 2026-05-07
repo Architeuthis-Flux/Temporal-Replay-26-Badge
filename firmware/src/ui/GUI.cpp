@@ -481,7 +481,10 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
 
   stackDepth_ = 0;
   routedBadgeState_ = static_cast<uint8_t>(badgeState);
-  pushScreen(kScreenBoot);
+  // BootScreen's Replay bitmap animation is suppressed — the BootSplash
+  // starfield (run from main.cpp setup() before GUI init) is the only
+  // boot visual. Go straight to the home screen for the current state.
+  pushScreen(homeScreenForBadgeState());
   active_ = true;
   gGuiActive = true;
 

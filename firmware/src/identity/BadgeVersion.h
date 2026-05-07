@@ -7,5 +7,10 @@
 #pragma once
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION "dev af"
+  // Tagged baseline. Bump this manually when cutting a flash batch
+  // (or override at build time via -DFIRMWARE_VERSION="..." once the
+  // build script wires it up to git describe). Visible on the boot
+  // splash bottom-right, the diagnostics screen, and any place that
+  // prints fw build info, so a wrong number here is noisy.
+  #define FIRMWARE_VERSION "v0.0.0"
 #endif
