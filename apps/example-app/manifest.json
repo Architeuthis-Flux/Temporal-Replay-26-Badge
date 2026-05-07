@@ -1,0 +1,7 @@
+{
+  "name": "Example App",
+  "version": "1.0.0",
+  "author": "your-name",
+  "description": "Starter template — shows how to use display, input, and badge API.",
+  "entry": "main.py"
+}

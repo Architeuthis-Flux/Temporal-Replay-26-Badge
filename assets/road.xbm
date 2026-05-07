@@ -1,0 +1,4 @@
+#define road_width 7
+#define road_height 4
+static unsigned char road_bits[] = {
+   0x41, 0x49, 0x49, 0x41 };

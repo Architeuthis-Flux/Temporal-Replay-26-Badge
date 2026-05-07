@@ -1,0 +1,411 @@
+{
+  "/API_REFERENCE.md": [
+    "0x0BB4F0F5",
+    "0x8BCB16DF",
+    "0xD3C727E3",
+    "0x8147C771",
+    "0xE5094A62",
+    "0x1134D3F0",
+    "0x817AB1A3",
+    "0xE68A1A50",
+    "0x40436BE1",
+    "0x47E9B5D8",
+    "0xC5622F12",
+    "0x8A48E3C3",
+    "0x15F6AC26",
+    "0x71E02B3F",
+    "0x24712D28",
+    "0x2EF4388B",
+    "0x1FAD8385",
+    "0xD80D36D2",
+    "0x14FB4701"
+  ],
+  "/apps/README.md": [
+    "0x2E1BA8D3",
+    "0x1FAC7A86",
+    "0x8453402B",
+    "0x7AEED101",
+    "0x5A16814D",
+    "0x9FB79005",
+    "0x89A294CD",
+    "0x787DA1A0",
+    "0x94173EC4",
+    "0xFB9CD101",
+    "0x4B283019",
+    "0x7D385DFD",
+    "0xB9155CB2",
+    "0xA132A84F",
+    "0x8A28CF28",
+    "0x8EFFA540",
+    "0x745612F6",
+    "0x8FD74868",
+    "0xC75F5509",
+    "0xDE9EEE46",
+    "0xB34F0409"
+  ],
+  "/apps/api_test.py": [
+    "0x48CB9116",
+    "0x69BB6986",
+    "0x36E9A78B"
+  ],
+  "/apps/breaksnake/bs_data.py": [
+    "0x12A77BD1",
+    "0x52EFB1A2",
+    "0x1A5D798F",
+    "0x2027BFC3"
+  ],
+  "/apps/breaksnake/bs_engine.py": [
+    "0x92DED705",
+    "0x81BFE92D",
+    "0x784DE0A9",
+    "0x4DC8F809"
+  ],
+  "/apps/breaksnake/bs_screens.py": [
+    "0xFD00C2AF",
+    "0x74017CFC",
+    "0x1033B2F4",
+    "0xEC3779B2",
+    "0x4DC129E5",
+    "0x9BE80A0C",
+    "0xF5535BBD",
+    "0xE9D08B09",
+    "0x3E57A3AB",
+    "0x939E9079",
+    "0x4509D87F",
+    "0xBD8A9658"
+  ],
+  "/apps/breaksnake/icon.py": [
+    "0x28389B86"
+  ],
+  "/apps/breaksnake/main.py": [
+    "0x86EAD3FE",
+    "0x0370193F",
+    "0xEFBF4887"
+  ],
+  "/apps/crash_log/main.py": [
+    "0xEE30F7CC"
+  ],
+  "/apps/flappy_asteroids/fa_data.py": [
+    "0x89BD350B",
+    "0xB63262D5",
+    "0x7539C384",
+    "0x93C0073B"
+  ],
+  "/apps/flappy_asteroids/fa_engine.py": [
+    "0x1010260F",
+    "0x509167DF",
+    "0x8F839A92",
+    "0x24CCA296"
+  ],
+  "/apps/flappy_asteroids/fa_screens.py": [
+    "0x63563925",
+    "0x5A4BDFF2",
+    "0x1692E43B"
+  ],
+  "/apps/flappy_asteroids/icon.py": [
+    "0x4EB40382"
+  ],
+  "/apps/flappy_asteroids/main.py": [
+    "0xB93A0E38",
+    "0x70307C46"
+  ],
+  "/apps/font_demo.py": [
+    "0xBF2B18C0",
+    "0x2356B360",
+    "0x1CC1D577"
+  ],
+  "/apps/hello.py": [
+    "0x1EA44405",
+    "0x3A544993",
+    "0xDDC1A730"
+  ],
+  "/apps/ir_block_battle/ibb_data.py": [
+    "0xEB0B32C7",
+    "0x80920474",
+    "0xB493CBE2"
+  ],
+  "/apps/ir_block_battle/ibb_engine.py": [
+    "0x49D6E9EF",
+    "0xBD12D5C0",
+    "0x16D20094",
+    "0x5FD4D48B",
+    "0x74590E63",
+    "0x6FFBDB0D",
+    "0xD84E49EB",
+    "0xE1633242",
+    "0x15D6FA9E"
+  ],
+  "/apps/ir_block_battle/ibb_net.py": [
+    "0x6A897EE9",
+    "0xA4FE8A54",
+    "0xF4850585",
+    "0x426B7591",
+    "0x0186A423"
+  ],
+  "/apps/ir_block_battle/ibb_screens.py": [
+    "0x96643D5C",
+    "0xD10166E5",
+    "0x82120332",
+    "0x168A2006",
+    "0x6D53E9AB",
+    "0xEEAB98BC",
+    "0x7DF284EC",
+    "0xD883B3F2",
+    "0x2516991C",
+    "0xD19AD3E5"
+  ],
+  "/apps/ir_block_battle/ibb_serial.py": [
+    "0x749DE433",
+    "0x95102F52",
+    "0xD99E0B42"
+  ],
+  "/apps/ir_block_battle/icon.py": [
+    "0x72B80AD7"
+  ],
+  "/apps/ir_block_battle/main.py": [
+    "0x85C0D5EF",
+    "0x299B4CDD"
+  ],
+  "/apps/ir_loopback_test.py": [
+    "0xC05E4F48",
+    "0x14CC9015",
+    "0xE1D119AF"
+  ],
+  "/apps/synth/main.py": [
+    "0xA6620D0C",
+    "0xB2C78C34",
+    "0xC004B683",
+    "0x5E9C48DD",
+    "0x6B8345C4",
+    "0x3F494871",
+    "0xE2F8B1F5",
+    "0x3445551D"
+  ],
+  "/apps/tilt_ball.py": [
+    "0xEBC27A70",
+    "0xECC014B3"
+  ],
+  "/apps/viperide_reinit.py": [
+    "0x338E3F50"
+  ],
+  "/apps/zigmoji.py": [
+    "0x77767015",
+    "0xC387A3A0"
+  ],
+  "/apps/zigmoji/blink_01.fb": [
+    "0xCEE555F0"
+  ],
+  "/apps/zigmoji/blink_02.fb": [
+    "0x3DB86FBB"
+  ],
+  "/apps/zigmoji/fly_01.fb": [
+    "0x06FE7186"
+  ],
+  "/apps/zigmoji/fly_02.fb": [
+    "0x411082E6"
+  ],
+  "/apps/zigmoji/fly_03.fb": [
+    "0x6E36444F"
+  ],
+  "/apps/zigmoji/fly_04.fb": [
+    "0xCB9B9959"
+  ],
+  "/apps/zigmoji/fly_05.fb": [
+    "0xFB3A2CAF"
+  ],
+  "/apps/zigmoji/fly_06.fb": [
+    "0x1F116DC5"
+  ],
+  "/apps/zigmoji/heart_01.fb": [
+    "0x0C091A1C"
+  ],
+  "/apps/zigmoji/heart_02.fb": [
+    "0xC92CB9DA"
+  ],
+  "/apps/zigmoji/heart_03.fb": [
+    "0xECDF6CC8"
+  ],
+  "/apps/zigmoji/s_theart.fb": [
+    "0x845AD69F"
+  ],
+  "/apps/zigmoji/s_tlogo.fb": [
+    "0x9C892A8F"
+  ],
+  "/apps/zigmoji/s_ziggy.fb": [
+    "0x6E36444F"
+  ],
+  "/apps/zigmoji/s_zighead.fb": [
+    "0x0C51FFD4"
+  ],
+  "/apps/zigmoji/sleep_01.fb": [
+    "0xD53A24D6"
+  ],
+  "/apps/zigmoji/sleep_02.fb": [
+    "0xEAC6137E"
+  ],
+  "/apps/zigmoji/sleep_03.fb": [
+    "0x0CAC9851"
+  ],
+  "/apps/zigmoji/sp_apartment.fb": [
+    "0x961A9DC0"
+  ],
+  "/apps/zigmoji/sp_augment.fb": [
+    "0x6FD460E2"
+  ],
+  "/apps/zigmoji/sp_bitovi.fb": [
+    "0xBD422CA5"
+  ],
+  "/apps/zigmoji/sp_braintrust.fb": [
+    "0x720E2C21"
+  ],
+  "/apps/zigmoji/sp_google.fb": [
+    "0xD92BA83A"
+  ],
+  "/apps/zigmoji/sp_grid.fb": [
+    "0xB1AB9AE1"
+  ],
+  "/apps/zigmoji/sp_liatro.fb": [
+    "0xC84B4EF3"
+  ],
+  "/apps/zigmoji/sp_tailscale.fb": [
+    "0xFC8A4A77"
+  ],
+  "/apps/zigmoji/sp_techno.fb": [
+    "0x5E23250D"
+  ],
+  "/apps/zigmoji/starry_01.fb": [
+    "0x83DD2C5E"
+  ],
+  "/apps/zigmoji/starry_02.fb": [
+    "0xD3034ED2"
+  ],
+  "/apps/zigmoji/starry_03.fb": [
+    "0x18E77436"
+  ],
+  "/apps/zigmoji/theart_01.fb": [
+    "0x1B0DAE15"
+  ],
+  "/apps/zigmoji/theart_02.fb": [
+    "0x3CBCF483"
+  ],
+  "/apps/zigmoji/theart_03.fb": [
+    "0xF507E263"
+  ],
+  "/apps/zigmoji/vulcan_01.fb": [
+    "0xF434381B"
+  ],
+  "/apps/zigmoji/vulcan_02.fb": [
+    "0x19CF3295"
+  ],
+  "/apps/zigmoji/vulcan_03.fb": [
+    "0x6EFC190D"
+  ],
+  "/apps/zigmoji/wow_01.fb": [
+    "0x20802000"
+  ],
+  "/apps/zigmoji/wow_02.fb": [
+    "0xB75AC8BE"
+  ],
+  "/docs/API_REFERENCE.md": [
+    "0xC430419F",
+    "0x8BCB16DF"
+  ],
+  "/docs/MicroPythonDeveloperGuide.md": [
+    "0x1B88D9FB",
+    "0x40CFFF5F",
+    "0xD741AA29"
+  ],
+  "/docs/README.md": [
+    "0x63109F19"
+  ],
+  "/lib/badge_app.py": [
+    "0x627BB71A",
+    "0xCBBD9712",
+    "0xA2908D9D"
+  ],
+  "/lib/badge_ui.py": [
+    "0x701E0EED",
+    "0x44B4C498",
+    "0x9771AB1D",
+    "0x23C7D20A",
+    "0x4C8B5CD5",
+    "0xB92B1B75",
+    "0x54BD901D",
+    "0x89CD45E4",
+    "0x5FC64FC0",
+    "0x591D0583"
+  ],
+  "/matrixApps/LED.py": [
+    "0x39B55BFB",
+    "0x4DE7283F",
+    "0x64AFC0DD",
+    "0x0257BEB3",
+    "0x5EB7A0C9",
+    "0xFF09D263",
+    "0xF7FEFB8D",
+    "0x45C29A52"
+  ],
+  "/matrixApps/led_runtime.py": [
+    "0xFF9F20D6",
+    "0x09ACC51E",
+    "0x431CB0F9",
+    "0x692CA585"
+  ],
+  "/messages.json": [
+    "0x86BABB46",
+    "0xD0F172F2",
+    "0x1800D955",
+    "0xEDEB3E34",
+    "0x240DBBDD"
+  ],
+  "/tests/gc_bench.py": [
+    "0xEE516BFE"
+  ],
+  "/tests/http_test.py": [
+    "0x591436D3",
+    "0xD79F565E"
+  ],
+  "/tests/import_block_test.py": [
+    "0x146BD5FE"
+  ],
+  "/tests/input_test.py": [
+    "0xCE36F0AF",
+    "0xD9AD3B8A",
+    "0xFA20C5B6",
+    "0x5527B172",
+    "0x05797D92",
+    "0x88FCB11B",
+    "0x94A69982"
+  ],
+  "/tests/ir_poll_test.py": [
+    "0x9579F584",
+    "0x9CF7D925"
+  ],
+  "/tests/oom_test.py": [
+    "0xF1FDDF5F"
+  ],
+  "/tests/syntax_error_test.py": [
+    "0x6D45E408"
+  ],
+  "/tests/testImports.py": [
+    "0x474064B2"
+  ],
+  "/tests/test_buttons.py": [
+    "0x7CC9B921"
+  ],
+  "/tests/test_haptics.py": [
+    "0x5A1BA4C3"
+  ],
+  "/tests/test_imu.py": [
+    "0x700370A8"
+  ],
+  "/tests/test_ir.py": [
+    "0x1B1E2386"
+  ],
+  "/tests/test_led.py": [
+    "0x1189FA26"
+  ],
+  "/tests/test_oled.py": [
+    "0xFCAD8323"
+  ]
+}

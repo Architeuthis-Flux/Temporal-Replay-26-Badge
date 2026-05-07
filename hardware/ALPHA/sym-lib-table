@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Seeed_Studio_XIAO")(type "KiCad")(uri "/home/alex/Projects/Assets/OPL_Kicad_Library/Seeed_Studio_XIAO.kicad_sym")(options "")(descr ""))
+)

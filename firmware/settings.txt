@@ -1,0 +1,19 @@
+# Replay Badge Settings
+# Copy to settings.txt for non-secret settings. WiFi credentials and server URL
+# live in wifi.local.env or BADGE_* environment variables at build time.
+
+[display]
+font_fam = Spleen
+font_size = 4
+
+[haptics]
+haptic_en = 1
+
+[wifi]
+ep_badge = /api/v1/badge
+ep_boops = /api/v1/boops
+
+[log]
+log_notify = 0
+log_zigmoji = 0
+log_imu = 0

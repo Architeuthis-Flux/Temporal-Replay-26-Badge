@@ -67,3 +67,15 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+/firmware/micropython/micropython_repo
+Temporal-Badge.code-workspace
+hardware/design-log.md
+/hardware/DELTA
+/ignition/secure_provision/__pycache__
+/ignition/flash_worker/__pycache__
+/hardware/CHARLIE/pcb/Temporal-Badge-CHARLIE-backups
+/hardware/CHARLIE/pcb/Temporal-Badge-backups
+/hardware/CHARLIE/pcb/Temporal-Badge-CHARLIE/Temporal-Badge-BRAVO-backups
+/hardware/BRAVO/pcb/Temporal-Badge-BRAVO-backups
+/hardware/BRAVO/pcb/Temporal-Badge-backups
+/hardware/ALPHA/Temporal-Badge-backups

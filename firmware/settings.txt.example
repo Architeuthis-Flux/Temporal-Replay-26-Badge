@@ -1,0 +1,28 @@
+# Replay Badge Settings
+# Copy to settings.txt for non-secret settings. Optional WiFi credentials live
+# in wifi.local.env or BADGE_WIFI_* environment variables at build time and are
+# used only by explicit MicroPython networking calls.
+
+[display]
+font_fam = Spleen
+font_size = 4
+
+[haptics]
+haptic_en = 1
+
+[input]
+swap_ok = 1        # 1=B confirm/A cancel, 0=A confirm/B cancel
+
+[nametag]
+# default = built-in text nametag; or 8-char composer animation id (persists across reboot)
+nametag = default
+
+[time]
+# POSIX TZ string. Default is Pacific time with daylight saving time.
+timezone = PST8PDT,M3.2.0,M11.1.0
+
+[wifi]
+# No badge backend is configured or polled by firmware.
+
+[log]
+log_imu = 0
