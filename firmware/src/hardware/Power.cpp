@@ -20,6 +20,7 @@
 #include "oled.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
+#include "esp_log.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Power namespace — radio defaults, loop pacing, CPU governor
@@ -223,7 +224,7 @@ BrownoutSilencer::BrownoutSilencer() {
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_RST_ENA);
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_CLOSE_FLASH_ENA);
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-  // Serial.printf("[BOD] silenced (was 0x%08x, now 0x%08x)\n",
+  // ESP_LOGI("POWER","[BOD] silenced (was 0x%08x, now 0x%08x)\n",
   //               static_cast<unsigned>(saved_),
   //               static_cast<unsigned>(REG_READ(RTC_CNTL_BROWN_OUT_REG)));
 }
@@ -303,7 +304,7 @@ void SleepService::service() {
   // Force deep sleep: hold UP for 5 seconds (skip if USB connected for dev safety)
   if (inputs_ && inputs_->heldMs(0) >= Power::Policy::kForceDeepSleepHoldMs
       && !isUsbConnected()) {
-    Serial.println("Force deep sleep (UP held 5s)");
+    ESP_LOGI("POWER","Force deep sleep (UP held 5s)\n");
     enterDeepSleep();
     return;
   }
@@ -358,10 +359,10 @@ void SleepService::processDeferredWake() {}
 
 void SleepService::requestDeepSleep() {
   if (!enabled_) {
-    Serial.println("Deep sleep requested while motion sleep service is disabled");
+    ESP_LOGI("POWER", "Deep sleep requested while motion sleep service is disabled\n");
     pinMode(wakePin_, INPUT_PULLUP);
   }
-  Serial.println("Deep sleep requested from UI");
+  ESP_LOGI("POWER","Deep sleep requested from UI\n");
   enterDeepSleep();
 }
 
@@ -378,12 +379,12 @@ void SleepService::preparePeripheralsForDeepSleep() {
 }
 
 void SleepService::enterDeepSleep() {
-  Serial.printf("Deep sleep idle reached (%lu ms)\n", (unsigned long)(millis() - lastMotionMs_));
+   ESP_LOGI("POWER","Deep sleep idle reached (%lu ms)\n", (unsigned long)(millis() - lastMotionMs_));
 
   preparePeripheralsForDeepSleep();
 
   if (!isLineStableHigh(wakePin_)) {
-    Serial.printf("Deep sleep pre-arm warning; wake line GPIO %u not stably high, continuing\n", wakePin_);
+     ESP_LOGI("POWER","Deep sleep pre-arm warning; wake line GPIO %u not stably high, continuing\n", wakePin_);
   }
 
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -394,12 +395,12 @@ void SleepService::enterDeepSleep() {
 
   const esp_err_t wakeCfg = esp_sleep_enable_ext0_wakeup((gpio_num_t)wakePin_, 0);
   if (wakeCfg != ESP_OK) {
-    Serial.printf("Wake config failed on GPIO %u, err=%d\n", wakePin_, wakeCfg);
+     ESP_LOGI("POWER","Wake config failed on GPIO %u, err=%d\n", wakePin_, wakeCfg);
     return;
   }
 
   if (!isLineStableHigh(wakePin_, 4, 1)) {
-    Serial.printf("Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n", wakePin_);
+     ESP_LOGI("POWER","Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n", wakePin_);
   }
 
   if (display_ != nullptr) {
@@ -409,7 +410,7 @@ void SleepService::enterDeepSleep() {
     delay(20);
   }
 
-  Serial.printf("Sleeping; wake on GPIO %u LOW\n", wakePin_);
+  ESP_LOGI("POWER","Sleeping; wake on GPIO %u LOW\n", wakePin_);
   Serial.flush();
   esp_deep_sleep_start();
 }
