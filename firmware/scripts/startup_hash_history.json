@@ -182,6 +182,7 @@
     "0x3445551D"
   ],
   "/apps/tardigotchi/engine.py": [
+    "0x6D939E93",
     "0xB98C4B4C"
   ],
   "/apps/tardigotchi/icon.py": [
@@ -189,6 +190,10 @@
   ],
   "/apps/tardigotchi/main.py": [
     "0x700ADC98"
+  ],
+  "/apps/tardigotchi/matrix.py": [
+    "0x0EA4F790",
+    "0x17D9CB8D"
   ],
   "/apps/tardigotchi/sprites.py": [
     "0xA9BD6BB0"

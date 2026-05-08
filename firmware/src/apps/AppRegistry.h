@@ -41,6 +41,12 @@ struct DynamicApp {
   char entryPath[kEntryPathCap];
   uint8_t icon[kIconBytes];
   bool hasCustomIcon;
+  // Set when /apps/<slug>/matrix.py exists. The LEDScreen carousel
+  // surfaces these as additional persistent ambient picks.
+  bool hasMatrixApp;
+  // Display label for the matrix-app entry. Defaults to the foreground
+  // app's title when the script omits __matrix_title__.
+  char matrixTitle[kTitleCap];
 };
 
 // Scan /apps for self-describing Python apps. Idempotent — re-running

@@ -3,12 +3,17 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../apps/AppRegistry.h"
 #include "../hardware/Haptics.h"
 #include "../hardware/Inputs.h"
 #include "../hardware/oled.h"
 #include "../ui/ButtonGlyphs.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
+
+extern "C" {
+#include "matrix_app_api.h"
+}
 
 namespace {
 constexpr uint8_t kCell = 5;
@@ -70,6 +75,28 @@ int16_t clampBrt(int16_t v) {
   return v;
 }
 
+uint8_t matrixAppCountHere() {
+  size_t total = AppRegistry::count();
+  uint8_t n = 0;
+  for (size_t i = 0; i < total; i++) {
+    const AppRegistry::DynamicApp* a = AppRegistry::at(i);
+    if (a && a->hasMatrixApp) n++;
+  }
+  return n;
+}
+
+const AppRegistry::DynamicApp* matrixAppByOffset(uint8_t offset) {
+  size_t total = AppRegistry::count();
+  uint8_t cursor = 0;
+  for (size_t i = 0; i < total; i++) {
+    const AppRegistry::DynamicApp* a = AppRegistry::at(i);
+    if (!a || !a->hasMatrixApp) continue;
+    if (cursor == offset) return a;
+    cursor++;
+  }
+  return nullptr;
+}
+
 void drawSideAction(oled& d, int laneX, int laneW, ButtonGlyphs::Button button,
                     const char* label) {
   const int glyphX = laneX + (laneW - ButtonGlyphs::kGlyphW) / 2;
@@ -85,26 +112,77 @@ LEDScreen::LEDScreen() = default;
 void LEDScreen::onEnter(GUIManager& gui) {
   (void)gui;
   committed_ = false;
-  modeIndex_ = LEDAppRuntime::modeIndex(ledAppRuntime.mode());
-  selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
+  // Refresh matrix-app discovery so newly-added /apps/<slug>/matrix.py files
+  // appear without a reboot. AppRegistry::rescan() also rebuilds the
+  // foreground main-menu cache via the GUI rebuild path; here we just need
+  // the list to be current for the carousel.
+  AppRegistry::rescan();
+  // Map the persisted runtime mode to a carousel index. PythonApp resolves
+  // to the discovered matrix-app entry whose slug matches state.
+  if (ledAppRuntime.mode() == LEDAppRuntime::Mode::PythonApp) {
+    modeIndex_ = LEDAppRuntime::modeCount();
+    const char* persisted = ledAppRuntime.pythonAppSlug();
+    uint8_t total = matrixAppCountHere();
+    for (uint8_t off = 0; off < total; off++) {
+      const AppRegistry::DynamicApp* a = matrixAppByOffset(off);
+      if (a && persisted && std::strcmp(a->slug, persisted) == 0) {
+        modeIndex_ = LEDAppRuntime::modeCount() + off;
+        break;
+      }
+    }
+    selectedMode_ = LEDAppRuntime::Mode::PythonApp;
+  } else {
+    modeIndex_ = LEDAppRuntime::modeIndex(ledAppRuntime.mode());
+    selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
+  }
   delay_ = ledAppRuntime.delay();
   brightness_ = ledAppRuntime.brightness();
   adjDelay_ = true;
   joyRamp_.reset();
+  // Pause any active Python matrix callback (e.g. tardigotchi) while
+  // we browse — otherwise its tick keeps drawing on top of the
+  // built-in carousel previews. onExit re-arms it if nothing was
+  // committed.
+  matrix_app_stop_from_c();
   enterCarousel();
+}
+
+uint8_t LEDScreen::carouselCount() const {
+  return static_cast<uint8_t>(LEDAppRuntime::modeCount() + matrixAppCountHere());
+}
+
+bool LEDScreen::isPythonAppIndex(uint8_t index) const {
+  return index >= LEDAppRuntime::modeCount();
+}
+
+uint8_t LEDScreen::matrixAppOffset(uint8_t index) const {
+  return static_cast<uint8_t>(index - LEDAppRuntime::modeCount());
 }
 
 void LEDScreen::onExit(GUIManager& gui) {
   (void)gui;
   if (!committed_) {
     ledAppRuntime.endPreview();
+    // We stopped the Python matrix cb on entry; re-source the persisted
+    // slug so backing out without committing leaves the previous Python
+    // ambient running again.
+    if (ledAppRuntime.mode() == LEDAppRuntime::Mode::PythonApp) {
+      ledAppRuntime.restoreAmbient();
+    }
   }
 }
 
 void LEDScreen::enterCarousel() {
   view_ = View::Carousel;
-  selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
-  ledAppRuntime.beginPreview(selectedMode_);
+  if (isPythonAppIndex(modeIndex_)) {
+    selectedMode_ = LEDAppRuntime::Mode::PythonApp;
+    // No native preview for Python matrix apps — keep whatever is on the
+    // matrix until commit. The OLED still shows the picker tile.
+    ledAppRuntime.endPreview();
+  } else {
+    selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
+    ledAppRuntime.beginPreview(selectedMode_);
+  }
 }
 
 void LEDScreen::enterEditor(LEDAppRuntime::Mode mode) {
@@ -141,10 +219,15 @@ void LEDScreen::saveEditor(GUIManager& gui) {
 }
 
 void LEDScreen::moveMode(int8_t dir) {
-  const uint8_t count = LEDAppRuntime::modeCount();
+  const uint8_t count = carouselCount();
   modeIndex_ = static_cast<uint8_t>((modeIndex_ + count + dir) % count);
-  selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
-  ledAppRuntime.updatePreview(selectedMode_);
+  if (isPythonAppIndex(modeIndex_)) {
+    selectedMode_ = LEDAppRuntime::Mode::PythonApp;
+    ledAppRuntime.endPreview();
+  } else {
+    selectedMode_ = LEDAppRuntime::modeAt(modeIndex_);
+    ledAppRuntime.updatePreview(selectedMode_);
+  }
   Haptics::shortPulse();
 }
 
@@ -194,16 +277,33 @@ void LEDScreen::drawGrid(oled& d, const uint8_t frame[8], int8_t cx, int8_t cy,
 }
 
 void LEDScreen::drawCarousel(oled& d) {
+  const uint8_t total = carouselCount();
+  const char* label = LEDAppRuntime::modeName(selectedMode_);
+  const AppRegistry::DynamicApp* pyApp = nullptr;
+  if (isPythonAppIndex(modeIndex_)) {
+    pyApp = matrixAppByOffset(matrixAppOffset(modeIndex_));
+    if (pyApp) {
+      label = pyApp->matrixTitle[0] ? pyApp->matrixTitle : pyApp->title;
+    }
+  }
   char title[32];
-  std::snprintf(title, sizeof(title), "%s %u/%u",
-                LEDAppRuntime::modeName(selectedMode_),
+  std::snprintf(title, sizeof(title), "%s %u/%u", label,
                 static_cast<unsigned>(modeIndex_ + 1),
-                static_cast<unsigned>(LEDAppRuntime::modeCount()));
+                static_cast<unsigned>(total));
   OLEDLayout::drawStatusHeader(d, title);
 
   uint8_t poster[8];
-  LEDAppRuntime::posterFrame(selectedMode_, ledAppRuntime.lifeSeed(),
-                             ledAppRuntime.customPattern(), poster);
+  if (isPythonAppIndex(modeIndex_)) {
+    // Show a glider-shaped placeholder for Python apps so the carousel tile
+    // isn't blank. The actual frame at runtime is whatever the app draws.
+    static constexpr uint8_t kPyPoster[8] = {
+        0x00, 0x20, 0x10, 0x70, 0x00, 0x18, 0x18, 0x00,
+    };
+    std::memcpy(poster, kPyPoster, 8);
+  } else {
+    LEDAppRuntime::posterFrame(selectedMode_, ledAppRuntime.lifeSeed(),
+                               ledAppRuntime.customPattern(), poster);
+  }
   drawGrid(d, poster, -1, -1, kCarouselGridX, kCarouselGridY, false);
 
   char line[16];
@@ -215,8 +315,10 @@ void LEDScreen::drawCarousel(oled& d) {
   d.drawStr(0, 36, line);
 
   OLEDLayout::drawGameFooter(d);
-  if (selectedMode_ == LEDAppRuntime::Mode::Life ||
-      selectedMode_ == LEDAppRuntime::Mode::Custom) {
+  if (isPythonAppIndex(modeIndex_)) {
+    OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "set");
+  } else if (selectedMode_ == LEDAppRuntime::Mode::Life ||
+             selectedMode_ == LEDAppRuntime::Mode::Custom) {
     OLEDLayout::drawFooterActions(d, "spd/brt", "lab", "back", "save");
   } else {
     OLEDLayout::drawFooterActions(d, "spd/brt", nullptr, "back", "save");
@@ -293,14 +395,23 @@ void LEDScreen::handleInput(const Inputs& inputs, int16_t, int16_t,
       gui.popScreen();
       return;
     }
-    if (e.yPressed && (selectedMode_ == LEDAppRuntime::Mode::Life ||
-                       selectedMode_ == LEDAppRuntime::Mode::Custom)) {
+    if (e.yPressed && !isPythonAppIndex(modeIndex_) &&
+        (selectedMode_ == LEDAppRuntime::Mode::Life ||
+         selectedMode_ == LEDAppRuntime::Mode::Custom)) {
       enterEditor(selectedMode_);
       return;
     }
     if (e.confirmPressed) {
       committed_ = true;
-      ledAppRuntime.commitMode(selectedMode_, delay_, brightness_);
+      if (isPythonAppIndex(modeIndex_)) {
+        const AppRegistry::DynamicApp* a =
+            matrixAppByOffset(matrixAppOffset(modeIndex_));
+        if (a) {
+          ledAppRuntime.commitMatrixApp(a->slug);
+        }
+      } else {
+        ledAppRuntime.commitMode(selectedMode_, delay_, brightness_);
+      }
       Haptics::shortPulse();
       gui.popScreen();
       return;

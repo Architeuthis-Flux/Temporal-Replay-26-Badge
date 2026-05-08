@@ -111,6 +111,10 @@ enum SettingIndex : uint8_t {
   kLogNotify,   // Reserved legacy notification/debug category
   kLogZigmoji,  // Reserved legacy zigmoji/debug category
   kLogImu,      // IMU samples, orientation thresholds, flip transitions
+
+  // Header-clock "artificial horizon" effect — when enabled, the centered
+  // time pill drifts/tilts with the IMU. Off = static text rendering.
+  kHorizonClock,
 };
 
 extern const uint8_t kFontFamilyCount;
@@ -188,6 +192,14 @@ class Config {
      const char* wifiSsid() const { return wifiSsid_; }
      const char* wifiPass() const { return wifiPass_; }
      bool wifiConfigured() const;
+     // UI-entered WiFi credentials. Stored under separate NVS keys
+     // (`ui_wifi_ssid`/`ui_wifi_pass`) so the legacy-secret cleanup pass
+     // doesn't wipe them. When non-empty they take precedence over the
+     // build-baked values from `BuildWifiConfig`.
+     void setWifiCredentials(const char* ssid, const char* pass);
+     // Set the wall clock to today's date (or 2026-01-01 if no date is
+     // available yet) at HH:MM:00 local time. Returns true on success.
+     bool setManualTime(int hour24, int minute);
      const char* timezone() const { return timezone_; }
      void setTimezone(const char* value);
      void applyTimezone() const;

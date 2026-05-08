@@ -2,7 +2,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 
+#include "../api/WiFiService.h"
 #include "../hardware/Inputs.h"
 #include "../hardware/LEDmatrix.h"
 #include "../hardware/oled.h"
@@ -12,6 +15,8 @@
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
 #include "../ui/UIFonts.h"
+#include "ScreenRefs.h"
+#include "TextInputScreen.h"
 
 extern LEDmatrix badgeMatrix;
 
@@ -62,46 +67,74 @@ static const uint8_t kSettingArrowLeftBits[] PROGMEM = {
 // the underlying values still load and apply in production builds, the
 // dropdown just isn't reachable from the UI.
 
-static const SettingIndex kDisplayItems[] = {
-    kOledContrast,
+// ── Group row model ──────────────────────────────────────────────────────
+//
+// A group row is either a numeric/toggle SettingIndex (handled by the
+// existing edit-mode flow) or an "action" — a one-shot row that fires a
+// callback on confirm and renders a static label + optional value on the
+// right. Used for "Set Time", "WiFi SSID", etc. where the row launches a
+// sub-screen rather than cycling a value in place.
+enum ActionId : uint8_t {
+  kActionSetTime,
+  kActionSetSsid,
+  kActionSetPassword,
+  kActionWifiConnect,
 };
-static const SettingIndex kHapticItems[] = {
-    kHapticEnabled, kHapticStrength, kHapticFreqHz, kHapticPulseMs,
+
+struct GroupItem {
+  bool        isAction;
+  SettingIndex setting;   // valid when !isAction
+  ActionId     action;    // valid when isAction
+  const char*  label;     // for action rows; setting rows resolve label themselves
 };
-static const SettingIndex kLedItems[] = {
-    kLedBrightness,
+
+#define SI(s)   {false, s, kActionSetTime, nullptr}
+#define ACT(a, l) {true, kLedBrightness, a, l}
+
+static const GroupItem kDisplayItems[] = {
+    SI(kOledContrast),
 };
-static const SettingIndex kInputItems[] = {
-    kSwapConfirmCancel,
+static const GroupItem kHapticItems[] = {
+    SI(kHapticEnabled), SI(kHapticStrength), SI(kHapticFreqHz), SI(kHapticPulseMs),
 };
-static const SettingIndex kSleepItems[] = {
-    kLightSleepSec, kDeepSleepSec,
+static const GroupItem kLedItems[] = {
+    SI(kLedBrightness),
+};
+static const GroupItem kInputItems[] = {
+    SI(kSwapConfirmCancel),
+};
+static const GroupItem kSleepItems[] = {
+    SI(kLightSleepSec), SI(kDeepSleepSec),
+};
+static const GroupItem kClockItems[] = {
+    SI(kHorizonClock),
+    ACT(kActionSetTime, "Set Time"),
+};
+static const GroupItem kWifiItems[] = {
+    ACT(kActionSetSsid,     "SSID"),
+    ACT(kActionSetPassword, "Password"),
+    ACT(kActionWifiConnect, "Connect"),
 };
 
 #ifdef BADGE_DEV_MENU
-static const SettingIndex kAdminItems[] = {
-    // Display tuning
-    kOledOsc, kOledDiv, kOledMux,
-    kOledPrecharge1, kOledPrecharge2, kOledRefreshMs,
-    // LED tuning
-    kLedServiceMs,
-    // Joystick raw
-    kJoySensitivity, kJoyDeadzone, kJoyPollMs,
-    // Button repeat
-    kBtnDebounceMs, kRptInitialDelayMs, kRptFirstIntervalMs,
-    kRptSecondDelayMs, kRptSecondIntervalMs,
-    // Flip / IMU
-    kAutoFlipEnable, kFlipUpThreshold, kFlipDownThreshold, kFlipDelayMs,
-    kImuSmoothing, kImuInt1Threshold, kImuInt1Duration,
-    // Scheduler / CPU / network
-    kSchHighDiv, kSchNormDiv, kSchLowDiv, kLoopDelayMs,
-    kCpuIdleMhz, kCpuActiveMhz, kWifiCheckMs,
+static const GroupItem kAdminItems[] = {
+    SI(kOledOsc), SI(kOledDiv), SI(kOledMux),
+    SI(kOledPrecharge1), SI(kOledPrecharge2), SI(kOledRefreshMs),
+    SI(kLedServiceMs),
+    SI(kJoySensitivity), SI(kJoyDeadzone), SI(kJoyPollMs),
+    SI(kBtnDebounceMs), SI(kRptInitialDelayMs), SI(kRptFirstIntervalMs),
+    SI(kRptSecondDelayMs), SI(kRptSecondIntervalMs),
+    SI(kAutoFlipEnable), SI(kFlipUpThreshold), SI(kFlipDownThreshold),
+    SI(kFlipDelayMs),
+    SI(kImuSmoothing), SI(kImuInt1Threshold), SI(kImuInt1Duration),
+    SI(kSchHighDiv), SI(kSchNormDiv), SI(kSchLowDiv), SI(kLoopDelayMs),
+    SI(kCpuIdleMhz), SI(kCpuActiveMhz), SI(kWifiCheckMs),
 };
 #endif
 
 struct SettingGroup {
   const char* label;
-  const SettingIndex* items;
+  const GroupItem* items;
   uint8_t itemCount;
 };
 
@@ -114,6 +147,8 @@ static const SettingGroup kGroups[] = {
     GROUP("LED",     kLedItems),
     GROUP("Input",   kInputItems),
     GROUP("Sleep",   kSleepItems),
+    GROUP("Clock",   kClockItems),
+    GROUP("WiFi",    kWifiItems),
 #ifdef BADGE_DEV_MENU
     GROUP("Admin",   kAdminItems),
 #endif
@@ -258,6 +293,40 @@ static void settingValue(uint8_t ci, const Config* cfg, char* out, uint8_t cap) 
 SettingsScreen::SettingsScreen(ScreenId sid, Config* config)
     : ListMenuScreen(sid, "SETTINGS"), config_(config) {}
 
+// Static trampoline from TextInputScreen → SettingsScreen.
+static void settingsTextSubmitTrampoline(const char* text, void* user) {
+  if (auto* self = static_cast<SettingsScreen*>(user)) {
+    self->onTextSubmit(text);
+  }
+}
+
+void SettingsScreen::onTextSubmit(const char* text) {
+  if (!text) return;
+  switch (static_cast<ActionId>(pendingAction_)) {
+    case kActionSetTime: {
+      // Accept "HH:MM" in 24-hour form. Lenient parsing — pull the
+      // first integer up to ':' for hours, the next for minutes.
+      int h = -1, m = -1;
+      if (std::sscanf(text, "%d:%d", &h, &m) == 2) {
+        if (config_) config_->setManualTime(h, m);
+      }
+      break;
+    }
+    case kActionSetSsid: {
+      if (config_) config_->setWifiCredentials(text, nullptr);
+      break;
+    }
+    case kActionSetPassword: {
+      if (config_) config_->setWifiCredentials(nullptr, text);
+      break;
+    }
+    case kActionWifiConnect:
+      // No text input — handled inline at confirm time.
+      break;
+  }
+  pendingAction_ = 0;
+}
+
 uint8_t SettingsScreen::itemCount() const {
   uint8_t total = kGroupCount;
   if (activeGroup_ >= 0 && activeGroup_ < (int8_t)kGroupCount) {
@@ -269,17 +338,30 @@ uint8_t SettingsScreen::itemCount() const {
 SettingsScreen::RowRef SettingsScreen::resolveRow(uint8_t cursor) const {
   uint8_t pos = 0;
   for (int8_t g = 0; g < (int8_t)kGroupCount; ++g) {
-    if (cursor == pos) return {g, -1};   // group header
+    if (cursor == pos) {
+      RowRef r; r.groupIdx = g; r.settingIdx = -1; return r;
+    }
     pos++;
     if (g == activeGroup_) {
       const uint8_t k = kGroups[g].itemCount;
       if (cursor < pos + k) {
-        return {g, static_cast<int8_t>(kGroups[g].items[cursor - pos])};
+        const GroupItem& gi = kGroups[g].items[cursor - pos];
+        RowRef r;
+        r.groupIdx = g;
+        if (gi.isAction) {
+          r.settingIdx  = -2;        // sentinel: action row
+          r.isAction    = true;
+          r.actionId    = static_cast<uint8_t>(gi.action);
+          r.actionLabel = gi.label;
+        } else {
+          r.settingIdx  = static_cast<int8_t>(gi.setting);
+        }
+        return r;
       }
       pos += k;
     }
   }
-  return {-1, -1};   // out of range (e.g. synthetic back row)
+  return {};  // out of range
 }
 
 void SettingsScreen::formatItem(uint8_t index, char* buf,
@@ -294,6 +376,10 @@ void SettingsScreen::formatSettingValue(uint8_t settingIdx,
                                         char* value, uint8_t valueSize) const {
   if (settingIdx == kHapticEnabled) {
     std::snprintf(label, labelSize, "Haptics");
+    std::snprintf(value, valueSize, "%s",
+                  config_->get(settingIdx) ? "On" : "Off");
+  } else if (settingIdx == kHorizonClock) {
+    std::snprintf(label, labelSize, "Horizon");
     std::snprintf(value, valueSize, "%s",
                   config_->get(settingIdx) ? "On" : "Off");
   } else if (settingIdx == kSwapConfirmCancel) {
@@ -316,8 +402,9 @@ void SettingsScreen::drawItem(oled& d, uint8_t index, uint8_t y,
   const RowRef row = resolveRow(index);
   if (row.groupIdx < 0) return;
 
-  const bool isHeader  = (row.settingIdx < 0);
-  const bool isEditing = (selected && editing_ && !isHeader);
+  const bool isHeader  = (row.groupIdx >= 0 && row.settingIdx == -1);
+  const bool isAction  = row.isAction;
+  const bool isEditing = (selected && editing_ && !isHeader && !isAction);
 
   // Erase whatever the base ListMenuScreen painted, then draw the
   // rounded selection outline. Width is pulled all the way to the
@@ -354,6 +441,55 @@ void SettingsScreen::drawItem(oled& d, uint8_t index, uint8_t y,
     d.setDrawColor(1);
     d.drawXBM(cx, cy, kChevronW, kChevronH, bits);
     d.drawStr(cx + kChevronW + 4, baseline, kGroups[row.groupIdx].label);
+    return;
+  }
+
+  // ── Action row ──────────────────────────────────────────────────────────
+  // Renders an indented label + optional right-aligned summary value
+  // (e.g. SSID shows the current SSID). Confirm fires the handler in
+  // handleInput().
+  if (isAction) {
+    const int labelX = 6 + kSettingIndent;
+    const char* lbl = row.actionLabel ? row.actionLabel : "?";
+    d.drawStr(labelX, baseline, lbl);
+
+    // Right-side summary text per action.
+    char summary[24] = {};
+    switch (static_cast<ActionId>(row.actionId)) {
+      case kActionSetTime: {
+        time_t now = 0;
+        if (wifiService.currentTime(&now)) {
+          struct tm local = {};
+          localtime_r(&now, &local);
+          int h12 = local.tm_hour % 12;
+          if (h12 == 0) h12 = 12;
+          std::snprintf(summary, sizeof(summary), "%d:%02d", h12, local.tm_min);
+        } else {
+          std::snprintf(summary, sizeof(summary), "--:--");
+        }
+        break;
+      }
+      case kActionSetSsid: {
+        const char* s = badgeConfig.wifiSsid();
+        if (s && s[0]) std::snprintf(summary, sizeof(summary), "%.10s", s);
+        else           std::snprintf(summary, sizeof(summary), "(unset)");
+        break;
+      }
+      case kActionSetPassword: {
+        const char* p = badgeConfig.wifiPass();
+        std::snprintf(summary, sizeof(summary), "%s",
+                      (p && p[0]) ? "********" : "(unset)");
+        break;
+      }
+      case kActionWifiConnect:
+        std::snprintf(summary, sizeof(summary), "%s",
+                      wifiService.isConnected() ? "online" : "go");
+        break;
+    }
+    if (summary[0]) {
+      const int sw = d.getStrWidth(summary);
+      d.drawStr(kValueRightX - sw, baseline, summary);
+    }
     return;
   }
 
@@ -586,6 +722,15 @@ void SettingsScreen::render(oled& d, GUIManager& gui) {
   } else if (editing_ && row.settingIdx >= 0) {
     footer = "Joystick left/right changes value";
     action = "done";
+  } else if (row.isAction) {
+    switch (static_cast<ActionId>(row.actionId)) {
+      case kActionSetTime:     footer = "Set the wall-clock time"; break;
+      case kActionSetSsid:     footer = "Network name to connect to"; break;
+      case kActionSetPassword: footer = "Network password"; break;
+      case kActionWifiConnect: footer = "Connect now (sets time via NTP)"; break;
+    }
+    action = (static_cast<ActionId>(row.actionId) == kActionWifiConnect)
+                 ? "go" : "edit";
   } else if (row.settingIdx >= 0) {
     footer = descFor(static_cast<uint8_t>(row.settingIdx));
     action = "edit";
@@ -642,8 +787,52 @@ void SettingsScreen::handleInput(const Inputs& inputs,
       gui.popScreen();
       return;
     }
-    if (row.settingIdx < 0) {
+    if (!row.isAction && row.settingIdx == -1) {
+      // Group header row — toggle expansion.
       activeGroup_ = (activeGroup_ == row.groupIdx) ? -1 : row.groupIdx;
+      return;
+    }
+    if (row.isAction) {
+      pendingAction_ = row.actionId;
+      switch (static_cast<ActionId>(row.actionId)) {
+        case kActionSetTime: {
+          time_t now = 0;
+          if (wifiService.currentTime(&now)) {
+            struct tm local = {};
+            localtime_r(&now, &local);
+            std::snprintf(inputBuf_, sizeof(inputBuf_), "%02d:%02d",
+                          local.tm_hour, local.tm_min);
+          } else {
+            std::snprintf(inputBuf_, sizeof(inputBuf_), "12:00");
+          }
+          sTextInput.configure("Set Time (HH:MM)", inputBuf_,
+                               sizeof(inputBuf_),
+                               &settingsTextSubmitTrampoline, this);
+          gui.pushScreen(kScreenTextInput);
+          break;
+        }
+        case kActionSetSsid: {
+          std::strncpy(inputBuf_, badgeConfig.wifiSsid(), sizeof(inputBuf_) - 1);
+          inputBuf_[sizeof(inputBuf_) - 1] = '\0';
+          sTextInput.configure("WiFi SSID", inputBuf_, sizeof(inputBuf_),
+                               &settingsTextSubmitTrampoline, this);
+          gui.pushScreen(kScreenTextInput);
+          break;
+        }
+        case kActionSetPassword: {
+          // Don't pre-fill the password field — start empty so the
+          // user types fresh. Avoids exposing the saved value on screen.
+          inputBuf_[0] = '\0';
+          sTextInput.configure("WiFi Password", inputBuf_, sizeof(inputBuf_),
+                               &settingsTextSubmitTrampoline, this);
+          gui.pushScreen(kScreenTextInput);
+          break;
+        }
+        case kActionWifiConnect:
+          wifiService.connect();
+          pendingAction_ = 0;
+          break;
+      }
       return;
     }
     enterEditMode();

@@ -10,6 +10,7 @@
 #endif
 #include "../infra/BadgeConfig.h"
 #include "../hardware/Power.h"
+#include "../hardware/IMU.h"
 #include "../hardware/oled.h"
 #include "BatteryIcons.h"
 #include "ButtonGlyphs.h"
@@ -18,6 +19,7 @@
 #include "WifiIcon.h"
 
 extern BatteryGauge batteryGauge;
+extern IMU imu;
 
 namespace OLEDLayout {
 namespace {
@@ -212,6 +214,87 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
   drawPercentDigits();
 }
 
+// Renders a short string as an "artificial horizon" — each character's
+// baseline is offset by IMU pitch (vertical translation) and roll
+// (slope across the string). Used by the centered time pill so the
+// "--:--" placeholder (or live "HH:MM") sloshes with the badge tilt.
+//
+// Smoothing is intentionally minimal — the IMU service already runs an
+// EMA, so we only add a featherweight follow-up filter to suppress
+// 200 Hz sample-to-sample noise without dampening the responsiveness
+// the artificial-horizon effect needs.
+void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
+  if (!text || !text[0]) return;
+  // User-toggleable in Settings → Clock → Horizon Clock. When off,
+  // fall through to a flat draw (no IMU sampling, no per-glyph offsets,
+  // no inter-glyph gap) so the time pill renders the way every other
+  // text element does.
+  const bool enabled = badgeConfig.get(kHorizonClock) != 0;
+  if (!enabled || !imu.isReady()) {
+    d.drawStr(baseX, baseY, text);
+    return;
+  }
+
+  static float emaXmg = 0.f;
+  static float emaYmg = 0.f;
+  static bool  emaInit = false;
+  const float xmgRaw = imu.tiltXMg();  // roll axis (left/right)
+  const float ymgRaw = imu.tiltYMg();  // pitch axis (forward/back)
+  if (!emaInit) {
+    emaXmg = xmgRaw;
+    emaYmg = ymgRaw;
+    emaInit = true;
+  }
+  // Very light follow-up filter — far more responsive than the
+  // IMU's own ~0.88 internal smoothing. Snaps within a few frames.
+  constexpr float kAlpha = 0.55f;
+  emaXmg += kAlpha * (xmgRaw - emaXmg);
+  emaYmg += kAlpha * (ymgRaw - emaYmg);
+
+  // Map mg → pixels. ±1000 mg ≈ ±90° tilt; cap so glyphs don't drift
+  // far enough to collide with the menu grid below the header.
+  constexpr float kPxPerG       = 4.0f;   // pitch translation
+  constexpr float kRollEdgePxG  = 4.0f;   // roll slope at left/right edge
+  constexpr int   kMaxOffsetUp   = 4;
+  constexpr int   kMaxOffsetDown = 3;
+
+  // Pitching the badge "back" (top toward the user) drops the horizon —
+  // negate so the digits fall when the user looks down at the badge.
+  const float pitchPx = -emaYmg * (kPxPerG / 1000.f);
+  const float rollPxPerG = kRollEdgePxG / 1000.f;
+
+  const int totalW = d.getStrWidth(text);
+  if (totalW <= 0) {
+    d.drawStr(baseX, baseY, text);
+    return;
+  }
+  const float halfW  = totalW * 0.5f;
+  const float midX   = baseX + halfW;
+
+  // Pull each glyph apart by 1 px so adjacent dashes in the unset
+  // "--:--" placeholder read as four discrete horizon segments instead
+  // of one continuous slanted bar. Same gap applies to the digit
+  // glyphs when a real time is showing — keeps the artificial-horizon
+  // segmentation visually consistent across both states.
+  constexpr int kGlyphGapPx = 1;
+
+  char glyph[2] = {0, 0};
+  int cursorX = baseX;
+  for (size_t i = 0; text[i]; ++i) {
+    glyph[0] = text[i];
+    const int gw = d.getStrWidth(glyph);
+    const float cx = cursorX + gw * 0.5f;
+    // Roll: characters left of center rise, right of center fall when
+    // the badge rolls right (positive emaXmg) — flip sign to taste.
+    const float rollOffset = ((cx - midX) / halfW) * (emaXmg * rollPxPerG);
+    int yOff = static_cast<int>(lroundf(pitchPx + rollOffset));
+    if (yOff < -kMaxOffsetUp)   yOff = -kMaxOffsetUp;
+    if (yOff >  kMaxOffsetDown) yOff =  kMaxOffsetDown;
+    d.drawStr(cursorX, baseY + yOff, glyph);
+    cursorX += gw + kGlyphGapPx;
+  }
+}
+
 void copyHeaderText(char* out, size_t cap, const char* src) {
   if (!out || cap == 0) return;
   out[0] = '\0';
@@ -280,7 +363,16 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
   char timeBuf[8] = {};
   const bool syncing = wifiService.isAutoSyncInProgress();
   formatSfTime(timeBuf, sizeof(timeBuf));
-  const int timeW = d.getStrWidth(timeBuf);
+  // drawHorizonText() inserts a 1 px gap between glyphs when the
+  // artificial-horizon effect is enabled; account for it in the pill
+  // width so the rounded frame still wraps the full string. Toggle
+  // off → no gap, no inflation.
+  int timeW = d.getStrWidth(timeBuf);
+  if (badgeConfig.get(kHorizonClock) != 0 && imu.isReady()) {
+    for (size_t i = 0; timeBuf[i]; ++i) {
+      if (timeBuf[i + 1]) timeW += 1;
+    }
+  }
 
   // Battery on the right edge, optional network activity icon to its left.
   const int batX  = kScreenW - kBatteryIconW;
@@ -331,7 +423,7 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
   d.drawHLine(pillX + 1, kPillTopY, pillW - 2);
   d.setDrawColor(1);
 
-  d.drawStr(pillX + kPillPadX, 6, timeBuf);
+  drawHorizonText(d, pillX + kPillPadX, 6, timeBuf);
 
   // While a BLE scan is active, the venue-proximity glyph can stand in
   // for the network slot. Otherwise the offline firmware leaves this

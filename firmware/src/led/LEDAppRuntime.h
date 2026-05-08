@@ -18,7 +18,10 @@ class LEDAppRuntime : public IService {
     LifeRandom,
     Custom,
     Off,
+    PythonApp,
   };
+
+  static constexpr uint8_t kPythonSlugCap = 32;
 
   static constexpr uint8_t kFrameRows = 8;
   static constexpr uint8_t kStaleGrace = 8;
@@ -39,6 +42,16 @@ class LEDAppRuntime : public IService {
   void commitMode(Mode mode, uint16_t delay, uint8_t brightness);
   void commitLife(const uint8_t* seed);
   void commitCustom(const uint8_t* pattern);
+
+  // Persist a Python-driven ambient matrix app. The slug names a folder
+  // under /apps/ whose matrix.py registers a callback via
+  // badge.matrix_app_start(...). After commit, MicroPythonMatrixService
+  // drains the pending-exec request and sources the registration script.
+  void commitMatrixApp(const char* slug);
+  const char* pythonAppSlug() const { return state_.pythonAppSlug; }
+  // Pop-and-clear the pending exec slug. Returns true and copies the
+  // slug into `out` (NUL-terminated) when there is work to do.
+  bool consumePendingExec(char* out, size_t cap);
 
   void beginOverride();
   void endOverride();
@@ -71,6 +84,7 @@ class LEDAppRuntime : public IService {
         0x66, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00,
     };
     bool lifeRandomize = false;
+    char pythonAppSlug[kPythonSlugCap] = {};
   };
 
   static bool isLifeMode(Mode m) {
@@ -113,6 +127,9 @@ class LEDAppRuntime : public IService {
   uint8_t rain_[kFrameRows] = {};
   uint32_t rng_ = 0x43C9A1D7;
   uint8_t overrideDepth_ = 0;
+
+  bool pendingPyExec_ = false;
+  char pendingPySlug_[kPythonSlugCap] = {};
 };
 
 extern LEDAppRuntime ledAppRuntime;

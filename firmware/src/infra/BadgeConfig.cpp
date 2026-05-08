@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <cstdlib>
 #include <cstring>
+#include <sys/time.h>
 #include <time.h>
 
 #include "BuildWifiConfig.h"
@@ -114,6 +115,9 @@ int8_t fontFamilyFromName(const char* name) {
      {"log_notify",  "Log Notify",   0,    0,        1,      1},
      {"log_zigmoji", "Log Zigmoji",  0,    0,        1,      1},
      {"log_imu",     "Log IMU",      0,    0,        1,      1},
+
+     // UI toggles
+     {"horiz_clk",   "Horizon Clock",1,    0,        1,      1},
  };
   const uint8_t Config::kCount = sizeof(Config::kDefs) / sizeof(Config::kDefs[0]);
 
@@ -313,6 +317,49 @@ int8_t fontFamilyFromName(const char* name) {
     BuildWifiConfig::decodePass(wifiPass_, kStringMaxLen);
   }
 
+  void Config::setWifiCredentials(const char* ssid, const char* pass) {
+    if (ssid) {
+      strncpy(wifiSsid_, ssid, kStringMaxLen - 1);
+      wifiSsid_[kStringMaxLen - 1] = '\0';
+    }
+    if (pass) {
+      strncpy(wifiPass_, pass, kStringMaxLen - 1);
+      wifiPass_[kStringMaxLen - 1] = '\0';
+    }
+    Preferences p;
+    if (!p.begin(kNvsNamespace, false)) return;
+    if (ssid) p.putString("ui_wifi_ssid", wifiSsid_);
+    if (pass) p.putString("ui_wifi_pass", wifiPass_);
+    p.end();
+  }
+
+  bool Config::setManualTime(int hour24, int minute) {
+    if (hour24 < 0 || hour24 > 23 || minute < 0 || minute > 59) return false;
+
+    // Build a tm in local time. Use the existing wall-clock date if the
+    // RTC has any valid value; otherwise fall back to a sane stand-in
+    // so the badge boots with a believable date.
+    time_t now = time(nullptr);
+    struct tm local = {};
+    if (now > 1700000000) {
+      localtime_r(&now, &local);
+    } else {
+      local.tm_year = 2026 - 1900;
+      local.tm_mon  = 0;   // Jan
+      local.tm_mday = 1;
+    }
+    local.tm_hour = hour24;
+    local.tm_min  = minute;
+    local.tm_sec  = 0;
+    local.tm_isdst = -1;   // let the resolver decide
+
+    applyTimezone();       // ensure TZ is set so mktime() reads as local
+    const time_t epoch = mktime(&local);
+    if (epoch <= 0) return false;
+    struct timeval tv = {epoch, 0};
+    return settimeofday(&tv, nullptr) == 0;
+  }
+
   void Config::setTimezone(const char* value) {
     if (!value || !value[0]) {
       strncpy(timezone_, kDefaultTimezone, sizeof(timezone_) - 1);
@@ -384,13 +431,20 @@ int8_t fontFamilyFromName(const char* name) {
   }
   
   void Config::loadStringsFromNvs() {
+    loadNetworkFromBuild();
+    // UI-entered credentials take precedence over build-baked values
+    // when present. Keys live under `kNvsNamespace` but are distinct
+    // from the legacy `wifi_ssid`/`wifi_pass` keys so they survive the
+    // cleanup pass run on boot.
     Preferences p;
-    if (!p.begin(kNvsNamespace, true)) {
-      loadNetworkFromBuild();
-      return;
+    if (!p.begin(kNvsNamespace, true)) return;
+    if (p.isKey("ui_wifi_ssid")) {
+      p.getString("ui_wifi_ssid", wifiSsid_, kStringMaxLen);
+    }
+    if (p.isKey("ui_wifi_pass")) {
+      p.getString("ui_wifi_pass", wifiPass_, kStringMaxLen);
     }
     p.end();
-    loadNetworkFromBuild();
   }
   
   void Config::saveStringsToNvs() {

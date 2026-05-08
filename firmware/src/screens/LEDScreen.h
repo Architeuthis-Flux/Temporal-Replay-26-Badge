@@ -31,6 +31,12 @@ class LEDScreen : public Screen {
   void saveEditor(GUIManager& gui);
   void loadPreset(uint8_t index);
   void moveMode(int8_t dir);
+  // Total carousel slots: built-in modes + discovered Python matrix apps.
+  uint8_t carouselCount() const;
+  // True when carouselIndex points past the built-ins into a matrix app.
+  bool isPythonAppIndex(uint8_t index) const;
+  // 0..matrixAppCount-1 — caller must check isPythonAppIndex first.
+  uint8_t matrixAppOffset(uint8_t index) const;
   void moveCursor(int8_t dx, int8_t dy);
   void drawGrid(oled& d, const uint8_t frame[8], int8_t cursorX,
                 int8_t cursorY, int x, int y, bool showOffDots);

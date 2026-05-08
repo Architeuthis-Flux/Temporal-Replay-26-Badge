@@ -6,6 +6,10 @@
 #include "../hardware/LEDmatrix.h"
 #include "../infra/Filesystem.h"
 
+extern "C" {
+#include "matrix_app_api.h"
+}
+
 namespace {
 constexpr const char* kStatePath = "/led_state.json";
 
@@ -117,6 +121,10 @@ void LEDAppRuntime::loadState() {
 
   state_.lifeRandomize = doc["life_randomize"] | false;
 
+  const char* pyslug = doc["matrix_app"] | "";
+  strncpy(state_.pythonAppSlug, pyslug, kPythonSlugCap - 1);
+  state_.pythonAppSlug[kPythonSlugCap - 1] = '\0';
+
   JsonArray life = doc["life_seed"].as<JsonArray>();
   if (!life.isNull() && life.size() == kFrameRows) {
     for (uint8_t i = 0; i < kFrameRows; i++) state_.lifeSeed[i] = life[i] | 0;
@@ -133,6 +141,7 @@ void LEDAppRuntime::saveState() {
   doc["delay"] = state_.delay;
   doc["brightness"] = state_.brightness;
   doc["life_randomize"] = state_.lifeRandomize;
+  doc["matrix_app"] = state_.pythonAppSlug;
   JsonArray life = doc.createNestedArray("life_seed");
   JsonArray custom = doc.createNestedArray("custom");
   for (uint8_t i = 0; i < kFrameRows; i++) {
@@ -153,6 +162,15 @@ void LEDAppRuntime::restoreAmbient() {
   previewHasDraft_ = false;
   runningValid_ = false;
   lastTickMs_ = 0;
+
+  // If the persisted state names a Python matrix app, queue its registration
+  // script for execution. MicroPythonMatrixService drains this on its next
+  // service tick (which runs in a context where mp_embed_exec_str is safe).
+  if (state_.mode == Mode::PythonApp && state_.pythonAppSlug[0]) {
+    pendingPyExec_ = true;
+    strncpy(pendingPySlug_, state_.pythonAppSlug, kPythonSlugCap - 1);
+    pendingPySlug_[kPythonSlugCap - 1] = '\0';
+  }
 }
 
 void LEDAppRuntime::beginPreview(Mode mode, const uint8_t* draft) {
@@ -177,6 +195,13 @@ void LEDAppRuntime::endPreview() {
 
 void LEDAppRuntime::commitMode(Mode mode) {
   state_.mode = mode;
+  // Switching to any built-in mode tears down the persistent Python
+  // matrix callback (e.g. tardigotchi's ziggy) and clears the saved slug
+  // so the next reboot doesn't resurrect it.
+  if (mode != Mode::PythonApp) {
+    state_.pythonAppSlug[0] = '\0';
+    matrix_app_stop_from_c();
+  }
   saveState();
   restoreAmbient();
 }
@@ -185,6 +210,10 @@ void LEDAppRuntime::commitMode(Mode mode, uint16_t delay, uint8_t brightness) {
   state_.mode = mode;
   state_.delay = delay < 5 ? 5 : (delay > 10000 ? 10000 : delay);
   state_.brightness = brightness;
+  if (mode != Mode::PythonApp) {
+    state_.pythonAppSlug[0] = '\0';
+    matrix_app_stop_from_c();
+  }
   saveState();
   restoreAmbient();
 }
@@ -197,6 +226,31 @@ void LEDAppRuntime::commitLife(const uint8_t* seed) {
 void LEDAppRuntime::commitCustom(const uint8_t* pattern) {
   copyFrame(state_.custom, pattern, kHeart);
   commitMode(Mode::Custom);
+}
+
+void LEDAppRuntime::commitMatrixApp(const char* slug) {
+  if (!slug || !slug[0]) return;
+  state_.mode = Mode::PythonApp;
+  // Tear down whatever Python callback was previously registered so the
+  // outgoing app stops drawing immediately. The new slug's matrix.py will
+  // re-register on the next MicroPythonMatrixService service tick.
+  matrix_app_stop_from_c();
+  strncpy(state_.pythonAppSlug, slug, kPythonSlugCap - 1);
+  state_.pythonAppSlug[kPythonSlugCap - 1] = '\0';
+  saveState();
+  // restoreAmbient queues pendingPyExec_ from the freshly-saved state.
+  restoreAmbient();
+}
+
+bool LEDAppRuntime::consumePendingExec(char* out, size_t cap) {
+  if (!pendingPyExec_ || cap == 0) return false;
+  size_t n = strlen(pendingPySlug_);
+  if (n >= cap) n = cap - 1;
+  memcpy(out, pendingPySlug_, n);
+  out[n] = '\0';
+  pendingPyExec_ = false;
+  pendingPySlug_[0] = '\0';
+  return true;
 }
 
 void LEDAppRuntime::beginOverride() {
@@ -234,6 +288,9 @@ void LEDAppRuntime::service() {
   if (overrideDepth_ > 0 || matrix_->isMicropythonMode()) return;
 
   const Mode mode = activeMode();
+  // When a Python ambient matrix app is selected, MicroPythonMatrixService
+  // drives the frames; the native runtime stays out of the way.
+  if (mode == Mode::PythonApp) return;
   const uint32_t now = millis();
   if (!runningValid_ || runningMode_ != mode) {
     runningMode_ = mode;
@@ -343,6 +400,7 @@ void LEDAppRuntime::buildFrame(Mode mode, uint8_t out[kFrameRows]) {
     case Mode::Temporal:
       frameFrom32(kTemporalLogo32, 12, 12, out);
       return;
+    case Mode::PythonApp:
     case Mode::Off:
     default:
       memcpy(out, kBlank, kFrameRows);
@@ -419,6 +477,7 @@ const char* LEDAppRuntime::modeId(Mode mode) {
     case Mode::LifeRandom: return "life_random";
     case Mode::Custom: return "custom";
     case Mode::Off: return "off";
+    case Mode::PythonApp: return "python_app";
     default: return "temporal";
   }
 }
@@ -434,6 +493,7 @@ const char* LEDAppRuntime::modeName(Mode mode) {
     case Mode::LifeRandom: return "Random Life";
     case Mode::Custom: return "Custom";
     case Mode::Off: return "Off";
+    case Mode::PythonApp: return "App";
     default: return "LED";
   }
 }
@@ -448,6 +508,8 @@ uint8_t LEDAppRuntime::modeIndex(Mode mode) {
 }
 
 uint8_t LEDAppRuntime::modeCount() {
+  // Excludes PythonApp; that mode is selectable only by picking a discovered
+  // matrix-app entry and is never reached by the built-in carousel cycle.
   return static_cast<uint8_t>(Mode::Off) + 1;
 }
 
@@ -483,6 +545,7 @@ void LEDAppRuntime::posterFrame(Mode mode, const uint8_t* lifeSeed,
     case Mode::Custom:
       memcpy(out, custom ? custom : kHeart, kFrameRows);
       return;
+    case Mode::PythonApp:
     case Mode::Off:
     default:
       memcpy(out, kBlank, kFrameRows);

@@ -271,6 +271,25 @@ bool entryPathHasMain(const char* slug) {
   return Filesystem::fileExists(path);
 }
 
+void detectMatrixApp(const char* slug, DynamicApp& app) {
+  app.hasMatrixApp = false;
+  app.matrixTitle[0] = '\0';
+  char path[kEntryPathCap];
+  snprintf(path, kEntryPathCap, "/apps/%s/matrix.py", slug);
+  if (!Filesystem::fileExists(path)) return;
+  app.hasMatrixApp = true;
+  // Best-effort __matrix_title__ extraction; fall back to the app title.
+  char buf[1024];
+  int32_t bytes = readFileChunk(path, buf, sizeof(buf));
+  if (bytes > 0) {
+    findDunder(buf, bytes, "__matrix_title__", app.matrixTitle, kTitleCap);
+  }
+  if (!app.matrixTitle[0]) {
+    strncpy(app.matrixTitle, app.title, kTitleCap - 1);
+    app.matrixTitle[kTitleCap - 1] = '\0';
+  }
+}
+
 }  // namespace
 
 size_t scan() {
@@ -304,6 +323,7 @@ size_t scan() {
   for (size_t i = 0; i < slugCount && s_count < kMaxDynamicApps; i++) {
     if (!entryPathHasMain(slugs[i])) continue;
     parseAppMain(slugs[i], s_apps[s_count]);
+    detectMatrixApp(slugs[i], s_apps[s_count]);
     s_count++;
   }
 

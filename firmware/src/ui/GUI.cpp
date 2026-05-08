@@ -156,12 +156,6 @@ static void launchFlappyAsteroids(GUIManager& gui) {
   launchPythonApp(gui, "/apps/flappy_asteroids/main.py", "Flappy Asteroids");
 }
 
-#ifdef BADGE_DEV_MENU
-static void launchCrashLog(GUIManager& gui) {
-  launchPythonApp(gui, "/apps/crash_log/main.py", "Crash Log");
-}
-#endif
-
 static void launchIRBlockBattle(GUIManager& gui) {
   launchPythonApp(gui, "/apps/ir_block_battle/main.py", "IR Block Battle");
 }
@@ -185,8 +179,7 @@ static const GridMenuItem kCuratedMenuItems[] = {
      AppIcons::map,       kScreenMap,      nullptr, nullptr, nullptr},
     {"SCHEDULE", "See conference sessions, workshops, and what's next",
      AppIcons::schedule, kScreenSchedule, nullptr, nullptr, nullptr},
-    {"LED", "Choose LED matrix modes and animations",
-     AppIcons::apps,      kScreenMatrixApps, nullptr, nullptr, nullptr},
+
     {"DRAW", "Draw frames and animations with stickers and pixels",
      DrawIcons::menuDraw, kScreenDrawPicker, nullptr, nullptr, nullptr},
 #ifndef BADGE_DEV_MENU
@@ -206,21 +199,22 @@ static const GridMenuItem kCuratedMenuItems[] = {
     {"SPONSORS", "Thank you to our sponsors!",
      AppIcons::about,     kScreenAboutSponsors, nullptr, nullptr, nullptr},
 #ifdef BADGE_DEV_MENU
-    {"INPUT TEST",  "Check joystick, buttons, tilt, and raw input values",
-     AppIcons::apps,      kScreenInputTest,   nullptr, nullptr, nullptr},
+
+
     {"APPS",        "Run MicroPython apps stored on the badge",
      AppIcons::apps,      kScreenApps,        nullptr, nullptr, nullptr},
-    {"CRASH LOG",   "View the last MicroPython app crash",
-     AppIcons::about,     kScreenNone,        launchCrashLog, nullptr, nullptr},
-    {"HAPTICS",     "Preview vibration strength, frequency, and duration",
-     AppIcons::workflow,  kScreenHaptics,     nullptr, nullptr, nullptr},
+     {"MATRIX", "Pick a persistent LED matrix animation or app",
+      AppIcons::apps,      kScreenMatrixApps, nullptr, nullptr, nullptr},
+    // {"HAPTICS",     "Preview vibration strength, frequency, and duration",
+    //  AppIcons::workflow,  kScreenHaptics,     nullptr, nullptr, nullptr},
     {"FILES",       "Browse files on the badge filesystem",
      AppIcons::directory, kScreenFiles,       nullptr, nullptr, nullptr},
-    {"ANIM TEST",   "Preview OLED and LED matrix animations",
+    {"ANIMATIONS",   "Preview OLED and LED matrix animations",
      AppIcons::apps,      kScreenAnimTest,    nullptr, nullptr, nullptr},
     {"DIAGNOSTICS", "Inspect runtime state, tasks, battery, and memory",
      AppIcons::about,     kScreenDiagnostics, nullptr, nullptr, nullptr},
 #endif
+
     {"SETTINGS", "Adjust display, input, power, and haptics",
      AppIcons::settings,  kScreenSettings, nullptr, nullptr, nullptr},
 };

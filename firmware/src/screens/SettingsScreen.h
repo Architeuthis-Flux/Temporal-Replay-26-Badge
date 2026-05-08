@@ -31,6 +31,9 @@ class SettingsScreen : public ListMenuScreen {
   void onItemAdjust(uint8_t index, int8_t dir, GUIManager& gui) override;
   void onExit(GUIManager& gui) override;
   const char* hintText() const override;
+
+  // Called by the static TextInputScreen submit trampoline.
+  void onTextSubmit(const char* text);
   void render(oled& d, GUIManager& gui) override;
   void handleInput(const Inputs& inputs, int16_t cursorX, int16_t cursorY,
                    GUIManager& gui) override;
@@ -40,11 +43,14 @@ class SettingsScreen : public ListMenuScreen {
   void drawItem(oled& d, uint8_t index, uint8_t y, uint8_t rowHeight,
                 bool selected) const override;
 
-  // Resolve the visible cursor index to either a group header or a
-  // concrete SettingIndex.
+  // Resolve the visible cursor index to either a group header, a
+  // concrete SettingIndex, or an action row.
   struct RowRef {
     int8_t groupIdx    = -1;   // -1 if cursor doesn't resolve
     int8_t settingIdx  = -1;   // -1 means "this row is the group header"
+    bool   isAction    = false;
+    uint8_t actionId   = 0;
+    const char* actionLabel = nullptr;
   };
   RowRef resolveRow(uint8_t cursor) const;
 
@@ -65,4 +71,12 @@ class SettingsScreen : public ListMenuScreen {
   int8_t  activeGroup_    = -1;     // -1 = no group expanded
   JoyRamp joyRamp_;                 // ramped Y-scroll cadence
   JoyRamp joyAdjustRamp_;           // ramped X value-change cadence
+
+  // Pending text-input action — set when a row pushes TextInputScreen
+  // and consumed in the static onDone callback. Buffer is the scratch
+  // area handed to the keyboard.
+  uint8_t pendingAction_ = 0;
+  // Sized to fit the longest WiFi password (63 chars + NUL) plus
+  // headroom; SSIDs cap at 32, "HH:MM" at 5.
+  char    inputBuf_[96]  = {};
 };
