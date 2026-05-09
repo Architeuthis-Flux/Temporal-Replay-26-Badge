@@ -10,6 +10,8 @@ extern volatile bool mpy_app_force_exit;
 
 namespace {
 
+// Tick period × tick count = real-world hold duration. Keep the
+// callsite log lines + Help screen in sync with these.
 constexpr uint32_t kPollPeriodUs   = 50000;    // 50 ms
 constexpr uint16_t kMpyExitTicks   = 20;        // 1 s
 constexpr uint16_t kRebootTicks    = 40;        // 2 s
@@ -83,13 +85,13 @@ void panicResetTimerCb(void*) {
         printDiagnostics();
         if (kShowRebootScreen) showRebootScreen();
         if (!kWaitForRelease) {
-            Serial.println("[PanicReset] 4s — rebooting immediately");
+            Serial.println("[PanicReset] 2s — rebooting immediately");
             esp_restart();
         }
     }
 
     if (s_holdTicks >= kForceRebootTicks) {
-        Serial.println("[PanicReset] 8s timeout — forcing reboot");
+        Serial.println("[PanicReset] 4s timeout — forcing reboot");
         esp_restart();
     }
 }
@@ -110,7 +112,7 @@ void begin(oled* display) {
     };
     esp_timer_create(&args, &s_timer);
     esp_timer_start_periodic(s_timer, kPollPeriodUs);
-    Serial.println("[PanicReset] armed (1s=mpy-exit, 4s=reset, 8s=force)");
+    Serial.println("[PanicReset] armed (1s=mpy-exit, 2s=reset, 4s=force)");
 }
 
 bool rebootPending() {

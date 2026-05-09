@@ -17,12 +17,13 @@ class DoomScreen : public Screen {
   bool needsRender() override;
 
  private:
-  enum class Phase : uint8_t { kHelp, kSettings, kRunning, kExiting };
+  enum class Phase : uint8_t { kHelp, kSettings, kRunning, kExiting, kNoWad };
   Phase phase_ = Phase::kHelp;
   uint8_t settingsCursor_ = 0;
 
   void renderHelpScreen(oled& d);
   void renderSettingsScreen(oled& d);
+  void renderNoWadScreen(oled& d);
   void launchDoom(GUIManager& gui);
 
   static void oledPresentCb(const uint8_t* fb, void* user);

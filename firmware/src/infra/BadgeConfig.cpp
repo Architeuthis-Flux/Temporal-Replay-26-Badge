@@ -886,11 +886,18 @@ int8_t fontFamilyFromName(const char* name) {
     bool ok = parseSettingsFile(buf, settingsLen);
     free(buf);
   
+    // Always snapshot the on-disk stat after a successful read, even
+    // when no recognized settings landed (e.g. an empty file or one
+    // that only contained legacy keys we now drop). Without this the
+    // watcher's lastFileSize_/Date/Time stay at their constructor
+    // zeros and `checkFileChanged()` returns true on every poll,
+    // spamming "settings.txt changed, reloading" forever.
+    snapshotFileStat();
+
     if (ok) {
       const bool migratedFlipDelay =
           (values_[kFlipDelayMs] == 0 || values_[kFlipDelayMs] == 3000);
       migrateFlipDelayDefault(values_);
-      snapshotFileStat();
       applyTimezone();
       Serial.println("Config: loaded from settings.txt");
       if (hadLegacyNetworkSecrets) {
@@ -1226,8 +1233,13 @@ int8_t fontFamilyFromName(const char* name) {
     if (!config_->checkFileChanged()) return;
 
     Serial.println("ConfigWatcher: settings.txt changed, reloading");
-    if (config_->loadFromFile()) {
-      config_->snapshotFileStat();
+    const bool ok = config_->loadFromFile();
+    // loadFromFile() now snapshots file stat unconditionally so the
+    // watcher won't re-trigger when the file parses to 0 keys, but we
+    // also snapshot here as a safety net in case loadFromFile bailed
+    // out early (FS unmounted, malloc failure, …) without snapshotting.
+    config_->snapshotFileStat();
+    if (ok) {
       config_->applyAll();
     }
   }

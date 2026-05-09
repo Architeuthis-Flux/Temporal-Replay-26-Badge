@@ -111,7 +111,8 @@ void DoomScreen::onExit(GUIManager& gui) {
 }
 
 bool DoomScreen::needsRender() {
-    return phase_ == Phase::kHelp || phase_ == Phase::kSettings;
+    return phase_ == Phase::kHelp || phase_ == Phase::kSettings ||
+           phase_ == Phase::kNoWad;
 }
 
 void DoomScreen::render(oled& d, GUIManager& gui) {
@@ -119,6 +120,8 @@ void DoomScreen::render(oled& d, GUIManager& gui) {
         renderHelpScreen(d);
     else if (phase_ == Phase::kSettings)
         renderSettingsScreen(d);
+    else if (phase_ == Phase::kNoWad)
+        renderNoWadScreen(d);
     (void)gui;
 }
 
@@ -136,6 +139,11 @@ void DoomScreen::handleInput(const Inputs& inp, int16_t cursorX,
             settingsCursor_ = 0;
         } else if (e.confirmPressed) {
             launchDoom(gui);
+        }
+    } else if (phase_ == Phase::kNoWad) {
+        if (e.cancelPressed || e.confirmPressed ||
+            e.xPressed || e.yPressed) {
+            gui.popScreen();
         }
     } else if (phase_ == Phase::kSettings) {
         doom_render_settings_t* s = doom_render_settings();
@@ -293,6 +301,25 @@ void DoomScreen::renderHelpScreen(oled& d) {
     ButtonGlyphs::drawInlineHintRight(d, 126, 63, "X:Settings");
 }
 
+void DoomScreen::renderNoWadScreen(oled& d) {
+    d.setDrawColor(1);
+
+    d.setFontPreset(FONT_SMALL);
+    const char* title = "No DOOM WAD";
+    int tw = d.getStrWidth(title);
+    d.drawStr((128 - tw) / 2, 11, title);
+    d.drawHLine(0, 14, 128);
+
+    d.setFontPreset(FONT_TINY);
+    d.drawStr(2, 24, "doom1.wad not found on");
+    d.drawStr(2, 33, "the badge filesystem.");
+    d.drawStr(2, 45, "Upload one by going to");
+    d.drawStr(2, 54, "ide.jumperless.org");
+
+    d.drawHLine(0, 56, 128);
+    ButtonGlyphs::drawInlineHint(d, 2, 63, "Any:Back");
+}
+
 void DoomScreen::renderSettingsScreen(oled& d) {
     doom_render_settings_t* s = doom_render_settings();
 
@@ -382,7 +409,9 @@ void DoomScreen::renderSettingsScreen(oled& d) {
 void DoomScreen::launchDoom(GUIManager& gui) {
     const char* wad_path = findWadPath();
     if (!wad_path) {
-        phase_ = Phase::kHelp;
+        Serial.println("[DoomScreen] no WAD on filesystem; showing kNoWad screen");
+        phase_ = Phase::kNoWad;
+        (void)gui;
         return;
     }
 

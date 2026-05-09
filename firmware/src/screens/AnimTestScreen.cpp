@@ -61,9 +61,10 @@ void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
   std::snprintf(buf, sizeof(buf), "%d/%d", imageIdx_ + 1, kImageCatalogCount);
   d.drawStr(0, 32, buf);
 
-  OLEDLayout::drawGameFooter(d);
-  OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr);
-  OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "next");
+  // Draw a single footer row combining all actions side-by-side.
+  // We'll concatenate "slow" (Y), "fast" (X), "back" (B), "next" (A) into one row.
+  // Use the standard footer row for this.
+  OLEDLayout::drawFooterActions(d, "slow", "fast", "back", "next");
 
   // Advance frame
   uint32_t now = millis();

@@ -41,10 +41,104 @@ static const uint8_t about[] PROGMEM = {
     0xdf, 0x07, 0xfe, 0x03, 0xfc, 0x01, 0xf8, 0x00
 };
 
+// Generic "apps" launcher — 3×3 grid. Used by APPS dev tile only; do
+// not reuse as a fallback for tiles that can't parse their own icon
+// (use AppIcons::unknown for that).
 static const uint8_t apps[] PROGMEM = {
     0x00, 0x00, 0xfe, 0x07, 0x92, 0x04, 0x92, 0x04,
     0xfe, 0x07, 0x92, 0x04, 0x92, 0x04, 0xfe, 0x07,
     0x92, 0x04, 0x92, 0x04, 0xfe, 0x07, 0x00, 0x00
+};
+
+// "Unknown app" placeholder — square frame with a centered '?'. Shown
+// when AppRegistry can't parse a dynamic app's icon.py (missing file,
+// 0 bytes, malformed DATA tuple, etc.). Distinct from AppIcons::apps
+// so the user can tell at a glance which tiles are misconfigured.
+static const uint8_t unknown[] PROGMEM = {
+    0x00, 0x00,   // ............
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0x02, 0x04,   // .X........X.
+    0x72, 0x04,   // .X.XXXX...X.
+    0x42, 0x04,   // .X.X..X...X.
+    0x02, 0x04,   // .X..X.....X.   (shaft of '?')
+    0x12, 0x04,   // .X..X.....X.
+    0x02, 0x04,   // .X........X.
+    0x12, 0x04,   // .X..X.....X.   (dot of '?')
+    0x02, 0x04,   // .X........X.
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0x00, 0x00,   // ............
+};
+
+// Persistent LED-matrix-app picker (MATRIX APPS tile). 4×4 grid of
+// single-pixel dots evenly spaced (cols 1/4/7/10, rows 1/4/7/10) with
+// no border — distinct from the 3×3 framed `apps` grid above.
+static const uint8_t matrixApps[] PROGMEM = {
+    0x00, 0x00,   // ............
+    0x92, 0x04,   // .X..X..X..X.
+    0x00, 0x00,   // ............
+    0x00, 0x00,   // ............
+    0x92, 0x04,   // .X..X..X..X.
+    0x00, 0x00,   // ............
+    0x00, 0x00,   // ............
+    0x92, 0x04,   // .X..X..X..X.
+    0x00, 0x00,   // ............
+    0x00, 0x00,   // ............
+    0x92, 0x04,   // .X..X..X..X.
+    0x00, 0x00,   // ............
+};
+
+// 12×12 mini-ziggy silhouette — chubby oval body with four stubby
+// legs underneath. Used for the curated TARDIGOTCHI tile so the
+// dynamic /apps/tardigotchi entry doesn't fall back to the generic
+// "unknown" placeholder.
+static const uint8_t tardigotchi[] PROGMEM = {
+    0x06, 0x00,   // .XX.........
+    0x1b, 0x00,   // XX.XX.......
+    0xff, 0x00,   // XXXXXXXX....
+    0xff, 0x03,   // XXXXXXXXXX..
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0xff, 0x07,   // XXXXXXXXXXX.
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0xfc, 0x03,   // .XXXXXXXXX..
+    0x92, 0x04,   // .X..X..X..X.   ← 4 legs
+    0x92, 0x04,   // .X..X..X..X.
+    0x00, 0x00,   // ............
+    0x00, 0x00,   // ............
+};
+
+// Animations preview tile — film-strip with sprockets along top/bottom
+// and a play-arrow in the center.
+static const uint8_t animations[] PROGMEM = {
+    0x00, 0x00,   // ............
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0x55, 0x05,   // .XXX.X.X.X..
+    0x02, 0x04,   // .X........X.
+    0x32, 0x04,   // .X.XX.....X.
+    0x72, 0x04,   // .X.XXX....X.
+    0x72, 0x04,   // .X.XXX....X.
+    0x32, 0x04,   // .X.XX.....X.
+    0x02, 0x04,   // .X........X.
+    0x55, 0x05,   // .XXX.X.X.X..
+    0xfe, 0x07,   // .XXXXXXXXXX.
+    0x00, 0x00,   // ............
+};
+
+// Crash-log icon — a stack-trace stylised as a couple of broken
+// lines. Kept around for dev-only forks that re-add the crash-log
+// dynamic app; the menu's curated table no longer references it.
+static const uint8_t crashLog[] PROGMEM = {
+    0x00, 0x00,   // ............
+    0xfc, 0x03,   // .XXXXXXXX...
+    0x04, 0x02,   // .X......X...
+    0x84, 0x02,   // .X..X...X...
+    0x44, 0x02,   // .X..X.X.X...
+    0x04, 0x02,   // .X......X...
+    0xa4, 0x02,   // .X..X.X.X...
+    0x14, 0x02,   // .X..X.X.X...
+    0x04, 0x02,   // .X......X...
+    0xfc, 0x03,   // .XXXXXXXX...
+    0x40, 0x00,   // .....X......
+    0x60, 0x00,   // ......X.....
 };
 
 static const uint8_t booper[] PROGMEM = {
@@ -106,6 +200,24 @@ static const uint8_t map[] PROGMEM = {
     0x00, 0x00, 0xf8, 0x01, 0x0c, 0x03, 0x64, 0x02,
     0xf4, 0x02, 0xf4, 0x02, 0x64, 0x02, 0x08, 0x01,
     0x98, 0x01, 0x90, 0x00, 0x60, 0x00, 0x00, 0x00
+};
+
+// Two-line "open book / page with text" launcher icon for the on-badge
+// developer-docs screen. 12x12, two bytes per row (LSB = leftmost
+// column) — same convention as every other AppIcons glyph.
+static const uint8_t docs[] PROGMEM = {
+    0x00, 0x00,   // ............
+    0xfe, 0x03,   // .XXXXXXXXX..
+    0x02, 0x02,   // .X.......X..
+    0xfa, 0x02,   // .X.XXXXX.X..
+    0x02, 0x02,   // .X.......X..
+    0xfa, 0x02,   // .X.XXXXX.X..
+    0x02, 0x02,   // .X.......X..
+    0xfa, 0x02,   // .X.XXXXX.X..
+    0x02, 0x02,   // .X.......X..
+    0x02, 0x02,   // .X.......X..
+    0xfe, 0x03,   // .XXXXXXXXX..
+    0x00, 0x00,   // ............
 };
 
 static const uint8_t notes[] PROGMEM = {

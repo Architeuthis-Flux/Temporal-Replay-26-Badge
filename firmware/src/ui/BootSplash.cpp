@@ -19,9 +19,9 @@ namespace {
 constexpr int kWidth  = 128;
 constexpr int kHeight = 64;
 constexpr int kFrameMs = 33;        // ~30 FPS
-constexpr int kMaxStars = 80;
+constexpr int kMaxStars = 90;
 constexpr int kBrightCount = 6;
-constexpr int kSparkleCount = 4;    // stars rendered as a 3×3 corner-and-centre glyph
+constexpr int kSparkleCount = 5;    // stars rendered as a 3×3 corner-and-centre glyph
 
 // Extra dead-zone around the temporal logo's tight bounding box so the
 // starfield doesn't crowd the stroke edges. Applied symmetrically to
@@ -61,12 +61,12 @@ inline float urand01() {
 // no global memory cost outside this animation.
 #ifdef BADGE_HAS_LED_MATRIX
 constexpr int   kLedCells       = LED_MATRIX_WIDTH * LED_MATRIX_HEIGHT;
-constexpr uint8_t  kLedSparkleMaxBrt = 50;
-constexpr uint8_t  kLedSparkleMaxLive = 8;   // bounded — keep matrix airy
-constexpr uint8_t  kLedSparkleSpawnPct = 30; // % per tick; 8x8 is small
-constexpr int8_t   kLedSparkleSpeedMin = 4;
+constexpr uint8_t  kLedSparkleMaxBrt = 60;
+constexpr uint8_t  kLedSparkleMaxLive = 9;   // bounded — keep matrix airy
+constexpr uint8_t  kLedSparkleSpawnPct = 35; // % per tick; 8x8 is small
+constexpr int8_t   kLedSparkleSpeedMin = 5;
 constexpr int8_t   kLedSparkleSpeedMax = 16;
-constexpr uint32_t kLedSparkleTickMs   = 33;
+constexpr uint32_t kLedSparkleTickMs   = 23;
 
 struct LedSparkle {
   uint8_t bright;

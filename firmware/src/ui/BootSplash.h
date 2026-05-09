@@ -8,7 +8,7 @@
 
 namespace BootSplash {
 
-void playStarfield(uint32_t durationMs = 3000, int numStars = 60);
+void playStarfield(uint32_t durationMs = 2500, int numStars = 69);
 
 }  // namespace BootSplash
 

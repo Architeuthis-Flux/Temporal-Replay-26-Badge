@@ -9,6 +9,7 @@
 #include "screens/ContactDetailScreen.h"
 #include "screens/ContactsScreen.h"
 #include "screens/DiagnosticsScreen.h"
+#include "screens/HelpScreen.h"
 #include "screens/FileViewScreen.h"
 #include "screens/FilesScreen.h"
 #include "screens/GridMenuScreen.h"
@@ -168,6 +169,10 @@ static void launchBreakSnake(GUIManager& gui) {
   launchPythonApp(gui, "/apps/breaksnake/main.py", "BreakSnake");
 }
 
+static void launchTardigotchi(GUIManager& gui) {
+  launchPythonApp(gui, "/apps/tardigotchi/main.py", "Tardigotchi");
+}
+
 // ── Curated C++ menu items ────────────────────────────────────────────────
 // These are the always-on items the firmware ships with. Dynamic Python
 // apps discovered by AppRegistry are appended after this list when the
@@ -196,10 +201,14 @@ static const GridMenuItem kCuratedMenuItems[] = {
 #endif
     {"SYNTH", "Play joystick tones, loops, and loadable sounds",
      AppIcons::synth,     kScreenNone,       launchSynth, nullptr, nullptr},
+    {"TARDIGOTCHI", "Hatch and care for a tiny tardigrade",
+     AppIcons::tardigotchi, kScreenNone, launchTardigotchi, nullptr, nullptr},
 #ifdef BADGE_HAS_DOOM
     {"DOOM",        "Play DOOM on the badge",
      AppIcons::doom,      kScreenDoom,        nullptr, nullptr, nullptr},
 #endif
+    {"HELP", "Tips, button shortcuts, and links to the developer docs",
+     AppIcons::docs,      kScreenHelp,         nullptr, nullptr, nullptr},
     {"SPONSORS", "Thank you to our sponsors!",
      AppIcons::about,     kScreenAboutSponsors, nullptr, nullptr, nullptr},
 #ifdef BADGE_DEV_MENU
@@ -207,14 +216,14 @@ static const GridMenuItem kCuratedMenuItems[] = {
 
     {"APPS",        "Run MicroPython apps stored on the badge",
      AppIcons::apps,      kScreenApps,        nullptr, nullptr, nullptr},
-     {"MATRIX", "Pick a persistent LED matrix animation or app",
-      AppIcons::apps,      kScreenMatrixApps, nullptr, nullptr, nullptr},
+    {"MATRIX", "Pick a persistent LED matrix animation or app",
+     AppIcons::matrixApps, kScreenMatrixApps, nullptr, nullptr, nullptr},
     // {"HAPTICS",     "Preview vibration strength, frequency, and duration",
     //  AppIcons::workflow,  kScreenHaptics,     nullptr, nullptr, nullptr},
     {"FILES",       "Browse files on the badge filesystem",
      AppIcons::directory, kScreenFiles,       nullptr, nullptr, nullptr},
     {"ANIMATIONS",   "Preview OLED and LED matrix animations",
-     AppIcons::apps,      kScreenAnimTest,    nullptr, nullptr, nullptr},
+     AppIcons::animations, kScreenAnimTest,   nullptr, nullptr, nullptr},
     {"DIAGNOSTICS", "Inspect runtime state, tasks, battery, and memory",
      AppIcons::about,     kScreenDiagnostics, nullptr, nullptr, nullptr},
 #endif
@@ -361,6 +370,7 @@ static InputTestScreen sInputTest;
 TextInputScreen sTextInput;
 static BadgeInfoViewScreen sBadgeInfoView;
 static AboutSponsorsScreen sAboutSponsors;
+static HelpScreen sHelp;
 static MenuOrderScreen sMenuOrder;
 #ifdef BADGE_HAS_DOOM
 static DoomScreen sDoom;
@@ -377,6 +387,10 @@ static DoomScreen sDoom;
 static constexpr int16_t kCuratedOrderStride = 10;
 static constexpr int16_t kDynamicDefaultOrderBase = 10000;
 static constexpr int16_t kSettingsAlwaysLastOrder = 30000;
+// HELP pins past SETTINGS so the developer-guide QRs + tips are the
+// last tile the user scrolls past. Same override mechanism: NVS
+// reorder still wins if the user explicitly moves it.
+static constexpr int16_t kHelpAlwaysLastOrder = 30100;
 
 // Effective order = NVS override → manifest hint → fallback.
 static int16_t resolveItemOrder(const char* label, int16_t fallback) {
@@ -394,11 +408,16 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
        i++) {
     GridMenuItem& slot = sMenuItems[cursor];
     slot = kCuratedMenuItems[i];
-    // SETTINGS pins to the back unless explicitly reordered.
-    int16_t fallback =
-        (slot.label && strcmp(slot.label, "SETTINGS") == 0)
-            ? kSettingsAlwaysLastOrder
-            : static_cast<int16_t>(kCuratedOrderStride * i);
+    // SETTINGS pins to the back, DOCS pins past SETTINGS, unless
+    // explicitly reordered.
+    int16_t fallback;
+    if (slot.label && strcmp(slot.label, "HELP") == 0) {
+      fallback = kHelpAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "SETTINGS") == 0) {
+      fallback = kSettingsAlwaysLastOrder;
+    } else {
+      fallback = static_cast<int16_t>(kCuratedOrderStride * i);
+    }
     slot.order = resolveItemOrder(slot.label, fallback);
     cursor++;
   }
@@ -412,6 +431,28 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
   for (size_t i = 0; i < dynCount && cursor < kMaxMenuItems; i++) {
     const AppRegistry::DynamicApp* app = AppRegistry::at(i);
     if (!app) break;
+
+    // Dedupe against curated tiles. If a curated entry already
+    // launches the exact same /apps/<slug>/main.py path (SYNTH,
+    // BREAKSNAKE, FLAPPY, IR BLOCK, etc.), skip the auto-discovered
+    // dynamic tile so the user doesn't see two icons that do the same
+    // thing — a hand-drawn one and a generic one.
+    bool isCuratedDuplicate = false;
+    for (size_t c = 0; c < kCuratedMenuItemCount; c++) {
+      // Curated launchers stash the script path inside their action's
+      // closure (we can't introspect that), so match heuristically on
+      // label: "SYNTH" → "Synth" slug, etc. Both forms share the
+      // case-insensitive prefix of the label up to the first space.
+      const char* curLabel = kCuratedMenuItems[c].label;
+      if (!curLabel) continue;
+      if (strcasecmp(curLabel, app->title) == 0 ||
+          (strncasecmp(curLabel, app->slug, strlen(app->slug)) == 0 &&
+           strlen(curLabel) == strlen(app->slug))) {
+        isCuratedDuplicate = true;
+        break;
+      }
+    }
+    if (isCuratedDuplicate) continue;
 
     strncpy(sDynamicLabel[i], app->title, AppRegistry::kTitleCap - 1);
     sDynamicLabel[i][AppRegistry::kTitleCap - 1] = '\0';
@@ -427,7 +468,11 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     slot = GridMenuItem{};
     slot.label = sDynamicLabel[i];
     slot.description = sDynamicDescription[i];
-    slot.icon = app->hasCustomIcon ? sDynamicIcon[i] : AppIcons::apps;
+    // Fallback when icon.py is missing/empty/malformed: use the
+    // distinct "unknown app" placeholder rather than AppIcons::apps,
+    // so the user can tell at a glance that the tile is misconfigured
+    // (and doesn't see five identical 3×3-grid tiles).
+    slot.icon = app->hasCustomIcon ? sDynamicIcon[i] : AppIcons::unknown;
     slot.target = kScreenNone;
     slot.action = kDynamicLaunchTable[i];
     slot.iconW = AppRegistry::kIconWidth;
@@ -520,6 +565,7 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   registerScreen(&sStickerPicker);
   registerScreen(&sScalePicker);
   registerScreen(&sAboutSponsors);
+  registerScreen(&sHelp);
   registerScreen(&sMenuOrder);
 #ifdef BADGE_HAS_DOOM
   registerScreen(&sDoom);

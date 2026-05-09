@@ -12,6 +12,7 @@
 #include "../hardware/oled.h"
 #include "../infra/BadgeConfig.h"
 #include "../led/LEDAppRuntime.h"
+#include "../micropython/StartupFiles.h"
 #include "../ui/ButtonGlyphs.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
@@ -84,6 +85,8 @@ enum ActionId : uint8_t {
   kActionWifiConnect,
   kActionReorderMenu,
   kActionResetMenuOrder,
+  kActionResyncStartupFiles,
+  kActionReformatFFat,
 };
 
 struct GroupItem {
@@ -146,6 +149,8 @@ static const GroupItem kWifiItems[] = {
 static const GroupItem kMenuItems[] = {
     ACT(kActionReorderMenu,    "Reorder"),
     ACT(kActionResetMenuOrder, "Reset Order"),
+    ACT(kActionResyncStartupFiles, "Resync Files"),
+    ACT(kActionReformatFFat,   "Reformat FFat"),
 };
 
 #ifdef BADGE_DEV_MENU
@@ -359,6 +364,8 @@ void SettingsScreen::onTextSubmit(const char* text) {
       break;
     case kActionReorderMenu:
     case kActionResetMenuOrder:
+    case kActionResyncStartupFiles:
+    case kActionReformatFFat:
       // No text input — pushed/handled inline at confirm time.
       break;
   }
@@ -532,6 +539,12 @@ void SettingsScreen::drawItem(oled& d, uint8_t index, uint8_t y,
         break;
       case kActionResetMenuOrder:
         std::snprintf(summary, sizeof(summary), "%s", "do");
+        break;
+      case kActionResyncStartupFiles:
+        std::snprintf(summary, sizeof(summary), "%s", "do");
+        break;
+      case kActionReformatFFat:
+        std::snprintf(summary, sizeof(summary), "%s", "wipe");
         break;
     }
     if (summary[0]) {
@@ -779,10 +792,16 @@ void SettingsScreen::render(oled& d, GUIManager& gui) {
       case kActionReorderMenu: footer = "Reorder home-screen icons"; break;
       case kActionResetMenuOrder:
         footer = "Forget your saved menu order"; break;
+      case kActionResyncStartupFiles:
+        footer = "Restore /lib + /apps from firmware blob"; break;
+      case kActionReformatFFat:
+        footer = "Wipe FFat partition (recovery only)"; break;
     }
     const ActionId aid = static_cast<ActionId>(row.actionId);
     action = (aid == kActionWifiConnect || aid == kActionReorderMenu ||
-              aid == kActionResetMenuOrder)
+              aid == kActionResetMenuOrder ||
+              aid == kActionResyncStartupFiles ||
+              aid == kActionReformatFFat)
                  ? "go" : "edit";
   } else if (row.settingIdx >= 0) {
     footer = descFor(static_cast<uint8_t>(row.settingIdx));
@@ -891,6 +910,27 @@ void SettingsScreen::handleInput(const Inputs& inputs,
           break;
         case kActionResetMenuOrder:
           MenuOrderStore::clearAll();
+          rebuildMainMenuFromRegistry();
+          pendingAction_ = 0;
+          break;
+        case kActionResyncStartupFiles:
+          // Force-overwrite every file under /apps and /lib with the
+          // version embedded in this firmware build. Used when the
+          // on-FAT lib copies have drifted out of sync with the
+          // firmware blob (e.g. an older lib that lacks `run_app` is
+          // marked "user-modified" by the upstream-marker logic and
+          // therefore never updated automatically).
+          provisionStartupFiles(/*forceSync=*/true);
+          rebuildMainMenuFromRegistry();
+          pendingAction_ = 0;
+          break;
+        case kActionReformatFFat:
+          // Last-resort recovery for a wedged FAT (e.g. partition
+          // resized in firmware but the on-disk FAT still references
+          // the old smaller layout, so writes silently truncate to
+          // 0 bytes). Wipes everything in /apps, /lib, settings.txt,
+          // tardigotchi save, etc., then re-creates the embedded set.
+          formatAndReprovisionFFat();
           rebuildMainMenuFromRegistry();
           pendingAction_ = 0;
           break;

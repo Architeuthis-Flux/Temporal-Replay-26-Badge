@@ -42,6 +42,7 @@ enum ScreenId : uint8_t {
   kScreenDrawScalePicker,
   kScreenAboutSponsors,
   kScreenMenuOrder,
+  kScreenHelp,
 #ifdef BADGE_HAS_DOOM
   kScreenDoom,
 #endif

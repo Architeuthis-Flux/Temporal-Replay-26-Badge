@@ -146,10 +146,29 @@ bool parseIconData(const char* text, size_t len, uint8_t* out) {
   size_t produced = 0;
   while (remaining > 0 && produced < kIconBytes) {
     char c = *hit;
+    // Hex literal: 0x.. / 0X..
     if (c == '0' && remaining > 1 && (hit[1] == 'x' || hit[1] == 'X')) {
       char* endp = nullptr;
       long v = strtol(hit, &endp, 16);
       if (endp == hit) break;
+      out[produced++] = static_cast<uint8_t>(v & 0xFF);
+      remaining -= (endp - hit);
+      hit = endp;
+      continue;
+    }
+    // Binary literal: 0b.. / 0B.. — must be checked before the
+    // decimal-digit branch below, otherwise that branch eats the
+    // leading '0' of "0b01110111" as the decimal number 0, then
+    // re-enters and parses "01110111" as decimal 1110111. Project
+    // convention writes bitmap byte arrays in 0b00001111 form so the
+    // dot pattern is human-readable; this branch keeps the runtime
+    // icon scanner in sync with that convention. strtol(base=2) does
+    // not accept the "0b" prefix itself, so we step past it manually.
+    if (c == '0' && remaining > 1 && (hit[1] == 'b' || hit[1] == 'B')) {
+      const char* digits = hit + 2;
+      char* endp = nullptr;
+      long v = strtol(digits, &endp, 2);
+      if (endp == digits) break;
       out[produced++] = static_cast<uint8_t>(v & 0xFF);
       remaining -= (endp - hit);
       hit = endp;
