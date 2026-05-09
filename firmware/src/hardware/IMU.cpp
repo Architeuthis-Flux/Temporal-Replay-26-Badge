@@ -128,13 +128,13 @@ void IMU::handleInt1_() {
 
   lis2dh12_int1_src_t src;
   if (lis2dh12_int1_gen_source_get(&sensor_.dev_ctx, &src) != 0) {
-    Serial.printf("[FLIP] hw->handle dt=%lu ms (read INT1_SRC failed)\n",
-                  static_cast<unsigned long>(handleMs - isrMs));
+    // Serial.printf("[FLIP] hw->handle dt=%lu ms (read INT1_SRC failed)\n",
+                  // static_cast<unsigned long>(handleMs - isrMs));
     return;
   }
-  Serial.printf("[FLIP] hw->handle dt=%lu ms src ia=%u xh=%u xl=%u yh=%u yl=%u zh=%u zl=%u\n",
-                static_cast<unsigned long>(handleMs - isrMs),
-                src.ia, src.xh, src.xl, src.yh, src.yl, src.zh, src.zl);
+  // Serial.printf("[FLIP] hw->handle dt=%lu ms src ia=%u xh=%u xl=%u yh=%u yl=%u zh=%u zl=%u\n",
+                // static_cast<unsigned long>(handleMs - isrMs),
+                // src.ia, src.xh, src.xl, src.yh, src.yl, src.zh, src.zl);
   if (!src.ia) return;
 
   motionEventLatched_ = true;

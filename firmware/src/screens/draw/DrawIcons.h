@@ -166,6 +166,20 @@ static const uint8_t gear8[kIcon8Bytes] PROGMEM = {
     0x18, 0x3c, 0x7e, 0xdb, 0xdb, 0x7e, 0x3c, 0x18,
 };
 
+// Tag8 — three horizontal lines of varying lengths, like a tiny nametag
+// (heading on top, two shorter body lines below). Used for the "Fields"
+// tool that places BadgeInfo field values as text.
+static const uint8_t tag8[kIcon8Bytes] PROGMEM = {
+    0x00,  // .........
+    0xff,  // ######### (top — full width)
+    0x00,
+    0x3f,  // ######... (middle)
+    0x00,
+    0x3f,  // ######... (bottom)
+    0x00,
+    0x00,
+};
+
 // Pencil + page — main-menu launcher icon for "Draw".
 static const uint8_t menuDraw[kIconBytes] PROGMEM = {
     0x00, 0x00, 0xfe, 0x01, 0x02, 0x07, 0x02, 0x06, 0x02, 0x05,

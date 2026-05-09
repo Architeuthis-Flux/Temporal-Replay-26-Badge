@@ -1,8 +1,11 @@
 #include "DrawPickerScreen.h"
 
+#include <Arduino.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "../../BadgeGlobals.h"
 #include "../../hardware/Inputs.h"
@@ -35,6 +38,19 @@ void DrawPickerScreen::onEnter(GUIManager& /*gui*/) {
     lastJoyNavMs_ = 0;
     mode_ = Mode::List;
     pendingActionId_[0] = '\0';
+    cancelHoldStartMs_ = 0;
+}
+
+void DrawPickerScreen::onResume(GUIManager& /*gui*/) {
+    // Returning from the editor / TextInput sub-screen: refresh the listing
+    // so renames, new files, deletions are visible without a re-enter.
+    reload();
+    if (cursor_ >= totalRows()) cursor_ = totalRows() ? totalRows() - 1 : 0;
+    if (scroll_ + kVisibleRows > totalRows()) {
+        scroll_ = totalRows() > kVisibleRows ? totalRows() - kVisibleRows : 0;
+    }
+    cancelHoldStartMs_ = 0;
+    mode_ = Mode::List;
 }
 
 void DrawPickerScreen::reload() {
@@ -62,6 +78,29 @@ void DrawPickerScreen::moveCursor(int8_t delta) {
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
+
+void DrawPickerScreen::drawHelpMarquee(oled& d, const char* msg, uint32_t nowMs,
+                                        int16_t rightEdge) {
+    if (!msg || !msg[0]) return;
+    d.setFont(UIFonts::kText);
+    constexpr int16_t kBandLeft = 1;
+    const int16_t bandRight = rightEdge;
+    const int16_t kBandW = (int16_t)(bandRight - kBandLeft);
+    if (kBandW <= 4) return;
+    constexpr int16_t kBaseY = 63;
+    const int textW = d.getStrWidth(msg);
+    if (textW <= kBandW - 2) {
+        d.drawStr(kBandLeft + (kBandW - textW) / 2, kBaseY, msg);
+        return;
+    }
+    constexpr int kGap = 16;
+    const int loop = textW + kGap;
+    const int offset = (loop > 0) ? (int)((nowMs / 35) % loop) : 0;
+    d.setClipWindow(kBandLeft, kBaseY - 7, bandRight - 1, kBaseY + 1);
+    d.drawStr(kBandLeft - offset, kBaseY, msg);
+    d.drawStr(kBandLeft - offset + loop, kBaseY, msg);
+    d.setMaxClipWindow();
+}
 
 void DrawPickerScreen::render(oled& d, GUIManager& /*gui*/) {
     if (mode_ == Mode::List) renderList(d);
@@ -120,45 +159,113 @@ void DrawPickerScreen::renderList(oled& d) {
 
     OLEDLayout::clearFooter(d);
     OLEDLayout::drawGameFooter(d);
+
+    // Right-edge button-hint chips (drawn first so we know how much room
+    // they take, then the marquee fills the remaining left band).
+    int chipsW = 0;
     if (isSavedRow(cursor_)) {
-        OLEDLayout::drawFooterActions(d, nullptr, "menu", "back", "open");
+        chipsW = OLEDLayout::drawFooterActions(d, nullptr, "menu", "back", "open");
     } else {
-        OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "new");
+        chipsW = OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "new");
     }
+
+    // Scrolling description of what the highlighted row does — a 4 px gap
+    // keeps it from kissing the chip glyphs.
+    char helpBuf[160];
+    if (cursor_ == 0) {
+        std::snprintf(helpBuf, sizeof(helpBuf),
+                      "New 128x64 drawing - CONFIRM to start - hold CANCEL to leave");
+    } else if (cursor_ == 1) {
+        std::snprintf(helpBuf, sizeof(helpBuf),
+                      "New 48x48 zigmoji - CONFIRM to start - hold CANCEL to leave");
+    } else if (isSavedRow(cursor_)) {
+        const auto& s = entries_[savedIndex(cursor_)];
+        const char* nm = s.name[0] ? s.name : "Untitled";
+        const bool isNametag =
+            std::strcmp(s.animId, badgeConfig.nametagSetting()) == 0;
+        std::snprintf(helpBuf, sizeof(helpBuf),
+                      "%s - UP for menu%s",
+                      nm, isNametag ? " - current nametag" : "");
+    } else {
+        helpBuf[0] = '\0';
+    }
+    const int16_t marqueeRight = (chipsW > 0) ? (int16_t)(128 - chipsW - 4) : 128;
+    drawHelpMarquee(d, helpBuf, millis(), marqueeRight);
 }
 
 void DrawPickerScreen::renderContext(oled& d) {
     OLEDLayout::drawHeader(d, "DRAW", nullptr);
 
-    const bool showNametag = ctxIsFullScreen();
-    const char* labels[4] = {"Rename", "Duplicate", "Delete", "Nametag"};
-    const uint8_t count = showNametag ? 4 : 3;
+    constexpr uint8_t kCount = (uint8_t)CtxRow::Count;
+    const char* labels[kCount] = {"Nametag", "Rename", "Duplicate", "Delete"};
 
-    const uint8_t boxW = 80;
-    const uint8_t boxH = (uint8_t)(6 + count * 10);
-    const uint8_t boxX = (128 - boxW) / 2;
-    const uint8_t boxY = 12;
+    constexpr uint8_t boxW = 96;
+    constexpr uint8_t rowH = 9;
+    constexpr uint8_t boxH = (uint8_t)(6 + kCount * rowH);
+    constexpr uint8_t boxX = (128 - boxW) / 2;
+    constexpr uint8_t boxY = 11;
     d.setDrawColor(0);
     d.drawBox(boxX, boxY, boxW, boxH);
     d.setDrawColor(1);
     d.drawRFrame(boxX, boxY, boxW, boxH, 2);
 
-    for (uint8_t i = 0; i < count; i++) {
-        uint8_t y = boxY + 4 + i * 10;
+    const bool nametagOn = isCurrentNametag();
+    for (uint8_t i = 0; i < kCount; i++) {
+        uint8_t y = (uint8_t)(boxY + 3 + i * rowH);
         const bool selected = (i == ctxCursor_);
         if (selected) {
-            OLEDLayout::drawSelectedRow(d, y, 10, boxX + 2, boxW - 4);
-            d.setDrawColor(0);
-        } else {
             d.setDrawColor(1);
+            d.drawBox(boxX + 2, y, boxW - 4, rowH);
+            d.setDrawColor(0);
         }
-        d.drawStr(boxX + 6, y + 8, labels[i]);
+        // Nametag row: leading checkbox (filled vs outline 7x7).
+        if (i == (uint8_t)CtxRow::Nametag) {
+            const int16_t cbX = boxX + 5;
+            const int16_t cbY = y + 1;
+            d.drawHLine(cbX, cbY, 7);
+            d.drawHLine(cbX, cbY + 6, 7);
+            d.drawVLine(cbX, cbY, 7);
+            d.drawVLine(cbX + 6, cbY, 7);
+            if (nametagOn) {
+                d.drawBox(cbX + 2, cbY + 2, 3, 3);
+            }
+            d.drawStr(boxX + 16, y + rowH - 1, labels[i]);
+        } else {
+            d.drawStr(boxX + 6, y + rowH - 1, labels[i]);
+        }
         d.setDrawColor(1);
     }
 
     OLEDLayout::clearFooter(d);
     OLEDLayout::drawGameFooter(d);
-    OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "ok");
+    const int chipsW =
+        OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "ok");
+
+    char helpBuf[160];
+    switch ((CtxRow)ctxCursor_) {
+        case CtxRow::Nametag:
+            std::snprintf(helpBuf, sizeof(helpBuf),
+                          "%s nametag - CONFIRM toggles",
+                          nametagOn ? "Currently set as" : "Set this drawing as");
+            break;
+        case CtxRow::Rename:
+            std::snprintf(helpBuf, sizeof(helpBuf),
+                          "Edit the drawing name - CONFIRM opens keyboard");
+            break;
+        case CtxRow::Duplicate:
+            std::snprintf(helpBuf, sizeof(helpBuf),
+                          "Make a copy of this drawing");
+            break;
+        case CtxRow::Delete:
+            std::snprintf(helpBuf, sizeof(helpBuf),
+                          "Permanently remove this drawing");
+            break;
+        default:
+            helpBuf[0] = '\0';
+            break;
+    }
+    const int16_t marqueeRight = (chipsW > 0) ? (int16_t)(128 - chipsW - 4) : 128;
+    drawHelpMarquee(d, helpBuf, millis(), marqueeRight);
 }
 
 void DrawPickerScreen::renderConfirm(oled& d) {
@@ -176,6 +283,23 @@ void DrawPickerScreen::renderConfirm(oled& d) {
 void DrawPickerScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
                                    int16_t /*cy*/, GUIManager& gui) {
     const Inputs::ButtonEdges& e = inputs.edges();
+    const Inputs::ButtonStates& b = inputs.buttons();
+    const uint32_t now = millis();
+
+    // Hold-Cancel-to-leave (4s). Only armed in the list view; popups handle
+    // Cancel via their own edge press. Reset the hold timer whenever we
+    // leave the list so re-entering with the button held doesn't fire pop.
+    if (mode_ == Mode::List && b.cancel) {
+        if (cancelHoldStartMs_ == 0) cancelHoldStartMs_ = now;
+        if (now - cancelHoldStartMs_ >= kCancelHoldMs) {
+            cancelHoldStartMs_ = 0;
+            gui.popScreen();
+            return;
+        }
+        gui.requestRender();
+    } else {
+        cancelHoldStartMs_ = 0;
+    }
 
     if (mode_ == Mode::Confirm) {
         if (e.confirmPressed) {
@@ -197,19 +321,19 @@ void DrawPickerScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
             return;
         }
         if (e.confirmPressed) {
-            switch (ctxCursor_) {
-                case 0: doRename(gui); return;
-                case 1: doDuplicate(gui); return;
-                case 2:
+            switch ((CtxRow)ctxCursor_) {
+                case CtxRow::Nametag:   doToggleNametag(gui); return;
+                case CtxRow::Rename:    doRename(gui); return;
+                case CtxRow::Duplicate: doDuplicate(gui); return;
+                case CtxRow::Delete:
                     mode_ = Mode::Confirm;
                     gui.requestRender();
                     return;
-                case 3: doSetNametag(gui); return;
+                default: return;
             }
             return;
         }
-        const uint8_t ctxCount = ctxIsFullScreen() ? 4 : 3;
-        const uint32_t now = millis();
+        const uint8_t ctxCount = (uint8_t)CtxRow::Count;
         const int16_t dy = (int16_t)inputs.joyY() - 2047;
         if (abs(dy) > (int16_t)kJoyDeadband) {
             if (lastJoyNavMs_ == 0 || now - lastJoyNavMs_ >= 250) {
@@ -235,7 +359,9 @@ void DrawPickerScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
         else enterEditorForCurrent(gui);
         return;
     }
-    if (e.cancelPressed) {
+    if (e.cancelReleased) {
+        // Quick tap-and-release: leave the picker. Long holds were already
+        // handled above and would have popped before this edge fired.
         gui.popScreen();
         return;
     }
@@ -245,7 +371,6 @@ void DrawPickerScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
         return;
     }
 
-    const uint32_t now = millis();
     const int16_t dy = (int16_t)inputs.joyY() - 2047;
     if (abs(dy) > (int16_t)kJoyDeadband) {
         const uint32_t repeatMs = abs(dy) > 1500 ? 80 : (abs(dy) > 900 ? 160 : 300);
@@ -337,34 +462,41 @@ void DrawPickerScreen::doDelete(GUIManager& gui) {
     gui.requestRender();
 }
 
-bool DrawPickerScreen::ctxIsFullScreen() const {
-    for (const auto& s : entries_) {
-        if (std::strcmp(s.animId, pendingActionId_) == 0) {
-            return s.w == draw::kCanvasFullW && s.h == draw::kCanvasFullH;
-        }
-    }
-    return false;
+bool DrawPickerScreen::isCurrentNametag() const {
+    if (!pendingActionId_[0]) return false;
+    return std::strcmp(pendingActionId_, badgeConfig.nametagSetting()) == 0;
 }
 
-void DrawPickerScreen::doSetNametag(GUIManager& gui) {
-    if (!pendingActionId_[0]) { mode_ = Mode::List; return; }
-
-    // Load the chosen animation into the live nametag doc.
-    auto* newDoc = new draw::AnimDoc();
-    if (!draw::load(pendingActionId_, *newDoc) || newDoc->frames.empty()) {
+void DrawPickerScreen::setNametag(const char* animId) {
+    if (!animId || !animId[0]) return;
+    auto* newDoc = new (std::nothrow) draw::AnimDoc();
+    if (!newDoc) return;
+    if (!draw::load(animId, *newDoc) || newDoc->frames.empty()) {
         draw::freeAll(*newDoc);
         delete newDoc;
-        mode_ = Mode::List;
-        gui.requestRender();
         return;
     }
-
-    adoptNametagAnimationDoc(pendingActionId_, newDoc);
-
-    badgeConfig.setNametagSetting(pendingActionId_);
+    adoptNametagAnimationDoc(animId, newDoc);
+    badgeConfig.setNametagSetting(animId);
     badgeConfig.saveToFile();
+}
 
-    pendingActionId_[0] = '\0';
-    mode_ = Mode::List;
+void DrawPickerScreen::clearNametagToDefault() {
+    // Drop any custom nametag doc; the renderer falls back to the built-in
+    // default text nametag whenever gCustomNametagEnabled is false.
+    unloadNametagAnimationDoc();
+    gCustomNametagEnabled = false;
+    badgeConfig.setNametagSetting("default");
+    badgeConfig.saveToFile();
+}
+
+void DrawPickerScreen::doToggleNametag(GUIManager& gui) {
+    if (!pendingActionId_[0]) { mode_ = Mode::List; return; }
+    if (isCurrentNametag()) {
+        clearNametagToDefault();
+    } else {
+        setNametag(pendingActionId_);
+    }
+    // Stay in the context popup so the user sees the checkbox flip.
     gui.requestRender();
 }

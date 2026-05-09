@@ -21,6 +21,9 @@
     "0x14FB4701"
   ],
   "/apps/README.md": [
+    "0xD3EC7B77",
+    "0x133996F7",
+    "0x4EE7EA8D",
     "0x2E1BA8D3",
     "0x1FAC7A86",
     "0x8453402B",
@@ -75,6 +78,7 @@
     "0xBD8A9658"
   ],
   "/apps/breaksnake/icon.py": [
+    "0x2FB734C4",
     "0x28389B86"
   ],
   "/apps/breaksnake/main.py": [
@@ -103,6 +107,7 @@
     "0x1692E43B"
   ],
   "/apps/flappy_asteroids/icon.py": [
+    "0x14BC4578",
     "0x4EB40382"
   ],
   "/apps/flappy_asteroids/main.py": [
@@ -160,6 +165,7 @@
     "0xD99E0B42"
   ],
   "/apps/ir_block_battle/icon.py": [
+    "0x35239FFA",
     "0x72B80AD7"
   ],
   "/apps/ir_block_battle/main.py": [
@@ -192,6 +198,7 @@
     "0x700ADC98"
   ],
   "/apps/tardigotchi/matrix.py": [
+    "0x717E44B3",
     "0x0EA4F790",
     "0x17D9CB8D"
   ],

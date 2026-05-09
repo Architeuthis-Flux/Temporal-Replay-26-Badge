@@ -224,6 +224,47 @@ list        # List available apps on VFS
 
 ---
 
+## Style conventions
+
+- **Bitmap arrays should be human-readable.** When writing pixel arrays
+  (LED matrix frames, OLED tiles, icon data, font glyphs, sprites…), use
+  binary literals `0b00000000` with one literal per row, padded to the row
+  width, so the 0s and 1s spatially match the rendered shape. Reading the
+  source should reveal the bitmap.
+  - For MSB-first formats (`led_set_frame`, OLED `drawXBM`-via-rows, most
+    custom blits): write the literal directly — bit 7 is the leftmost
+    pixel and the visual is correct.
+  - For LSB-first / XBM byte-pair formats (`AppRegistry` icon DATA tuples,
+    U8G2 `drawXBM`): the firmware parser reads the byte tuple, but the
+    docs/examples should still show a leading visual block of
+    `0b<width-bits>` per row so authors can see the shape. Either keep
+    the byte tuple for the parser and add a leading visualization
+    comment, or generate both from a single source of truth.
+  - Never bury bitmaps in opaque hex blobs without a visual companion.
+    Hex is fine for the on-disk parser, never for the example you ship
+    in docs or comments.
+
+---
+
+## Code Style
+
+- **Bitmap byte arrays use 8-bit binary literals**, never hex. When a
+  `uint8_t[]` / `tuple` / `list` represents a row-major bitmap, write
+  each byte as `0b00001111` (always padded to 8 bits) so the dot
+  pattern is visible by reading the source. Hex hides the bits.
+  - C++17 and MicroPython both accept `0b` literals natively, so this
+    works in both `firmware/src/` and `firmware/initial_filesystem/apps/`.
+  - The LED matrix and most U8G2 paths are MSB-first (bit 7 = leftmost
+    pixel), so the binary literal reads in the natural visual order.
+  - U8G2 XBM byte order is LSB-first, so 12×12 `icon.py` `DATA` tuples
+    read mirrored — that is acceptable; equivalence at the bit level is
+    what matters and `0b00000001` is still strictly the same value as
+    `0x01`. Annotate the row's intended visual with a comment when the
+    mirror would confuse readers.
+  - Bulk sprite/data blobs (e.g. `apps/tardigotchi/sprites.py`,
+    `breaksnake/bs_data.py`) stay hex; they're machine-generated and
+    not meant for hand-editing.
+
 ## Gotchas
 
 - **Kill serial before flashing** — `serial_log.py` and the ignition flash worker compete for the same USB port. `pkill -f serial_log.py` first.

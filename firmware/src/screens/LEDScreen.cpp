@@ -24,23 +24,67 @@ constexpr uint8_t kEditorGridX = kCarouselGridX;
 constexpr uint8_t kEditorGridY = 13;
 constexpr uint16_t kJoyDeadband = 500;
 
+// 8x8 LED-matrix bitmaps, MSB-first (bit 7 = leftmost pixel) so the dot
+// pattern reads naturally left-to-right as written.
 constexpr uint8_t kHeart[8] = {
-    0x66, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00,
+    0b01100110,
+    0b11111111,
+    0b11111111,
+    0b11111111,
+    0b01111110,
+    0b00111100,
+    0b00011000,
+    0b00000000,
 };
 constexpr uint8_t kSmiley[8] = {
-    0x3C, 0x42, 0xA5, 0x81, 0xA5, 0x99, 0x42, 0x3C,
+    0b00111100,
+    0b01000010,
+    0b10100101,
+    0b10000001,
+    0b10100101,
+    0b10011001,
+    0b01000010,
+    0b00111100,
 };
 constexpr uint8_t kGlider[8] = {
-    0x00, 0x00, 0x20, 0x10, 0x70, 0x00, 0x00, 0x00,
+    0b00000000,
+    0b00000000,
+    0b00100000,
+    0b00010000,
+    0b01110000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
 };
 constexpr uint8_t kBlinker[8] = {
-    0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,
+    0b00000000,
+    0b00000000,
+    0b00000000,
+    0b01110000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
 };
 constexpr uint8_t kPulsar[8] = {
-    0x00, 0x38, 0x24, 0x38, 0x38, 0x24, 0x38, 0x00,
+    0b00000000,
+    0b00111000,
+    0b00100100,
+    0b00111000,
+    0b00111000,
+    0b00100100,
+    0b00111000,
+    0b00000000,
 };
 constexpr uint8_t kRPent[8] = {
-    0x00, 0x18, 0x30, 0x10, 0x00, 0x00, 0x00, 0x00,
+    0b00000000,
+    0b00011000,
+    0b00110000,
+    0b00010000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
 };
 
 void drawBox(oled& d, int x, int y, int w, int h, uint8_t color = 1) {

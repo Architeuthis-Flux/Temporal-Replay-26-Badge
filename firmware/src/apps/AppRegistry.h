@@ -47,6 +47,10 @@ struct DynamicApp {
   // Display label for the matrix-app entry. Defaults to the foreground
   // app's title when the script omits __matrix_title__.
   char matrixTitle[kTitleCap];
+  // `__order__` dunder, parsed as a signed integer. Sentinel
+  // INT16_MAX means "unspecified" — the rebuild path falls back to the
+  // dynamic-app default order in that case.
+  int16_t orderHint;
 };
 
 // Scan /apps for self-describing Python apps. Idempotent — re-running

@@ -3,31 +3,21 @@
 The bytes match AppIcons::irBlockBattle in firmware/src/ui/AppIcons.h.
 """
 
+# 12x12 packed XBM, two bytes per row (low = cols 0..7, high = cols
+# 8..11). XBM is LSB-first; the binary literal reads mirrored.
 WIDTH = 12
 HEIGHT = 12
 DATA = (
-    0x0F,
-    0x01,
-    0x08,
-    0x03,
-    0x08,
-    0x02,
-    0x00,
-    0x04,
-    0x33,
-    0x00,
-    0x33,
-    0x07,
-    0x30,
-    0x04,
-    0x38,
-    0x00,
-    0x00,
-    0x04,
-    0xCE,
-    0x01,
-    0xCE,
-    0x01,
-    0x00,
-    0x00,
+    0b00001111, 0b00000001,
+    0b00001000, 0b00000011,
+    0b00001000, 0b00000010,
+    0b00000000, 0b00000100,
+    0b00110011, 0b00000000,
+    0b00110011, 0b00000111,
+    0b00110000, 0b00000100,
+    0b00111000, 0b00000000,
+    0b00000000, 0b00000100,
+    0b11001110, 0b00000001,
+    0b11001110, 0b00000001,
+    0b00000000, 0b00000000,
 )

@@ -1,5 +1,6 @@
 #include "GUI.h"
 #include "screens/AboutSponsorsScreen.h"
+#include "screens/MenuOrderScreen.h"
 #include "screens/AnimTestScreen.h"
 #include "screens/AppsScreen.h"
 #include "screens/BadgeInfoViewScreen.h"
@@ -34,6 +35,9 @@
 
 #include "../BadgeGlobals.h"
 #include "../apps/AppRegistry.h"
+#include "../apps/MenuOrderStore.h"
+#include <algorithm>
+#include <climits>
 #ifdef BADGE_ENABLE_BLE_PROXIMITY
 #include "../ble/BadgeBeaconAdv.h"
 #include "../ble/BleBeaconScanner.h"
@@ -316,6 +320,11 @@ static_assert(sizeof(kDynamicLaunchTable) /
 // Forward decl so badge.rescan_apps() can drive a refresh.
 extern "C" void rebuildMainMenuFromRegistry(void);
 
+// Snapshot accessor used by MenuOrderScreen — exposes the live items
+// array (already stable-sorted by the rebuild path) without leaking
+// the static. The pointer is valid until the next rebuild.
+extern "C" const GridMenuItem* mainMenuSnapshot(uint8_t* outCount);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Screen instances
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -352,9 +361,29 @@ static InputTestScreen sInputTest;
 TextInputScreen sTextInput;
 static BadgeInfoViewScreen sBadgeInfoView;
 static AboutSponsorsScreen sAboutSponsors;
+static MenuOrderScreen sMenuOrder;
 #ifdef BADGE_HAS_DOOM
 static DoomScreen sDoom;
 #endif
+
+// Default sort key offsets:
+//   Curated items: 10 * array index, leaving room (1, 2, ..., 9) for
+//                  inserts via __order__/user override.
+//   Dynamic apps:  10000 + appIdx by default. __order__ from the app
+//                  manifest, when present, replaces this. NVS user
+//                  overrides further override either default.
+// Sentinel `kSettingsAlwaysLastOrder` keeps the SETTINGS tile pinned
+// to the end of the menu unless the user explicitly reorders it.
+static constexpr int16_t kCuratedOrderStride = 10;
+static constexpr int16_t kDynamicDefaultOrderBase = 10000;
+static constexpr int16_t kSettingsAlwaysLastOrder = 30000;
+
+// Effective order = NVS override → manifest hint → fallback.
+static int16_t resolveItemOrder(const char* label, int16_t fallback) {
+  int16_t override_ = MenuOrderStore::lookup(label);
+  if (override_ != MenuOrderStore::kNoOverride) return override_;
+  return fallback;
+}
 
 // Rebuild sMenuItems from curated items + AppRegistry. Safe to call on
 // boot and from badge.rescan_apps() at runtime. Re-points sMainMenu at
@@ -363,7 +392,15 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
   size_t cursor = 0;
   for (size_t i = 0; i < kCuratedMenuItemCount && cursor < kMaxMenuItems;
        i++) {
-    sMenuItems[cursor++] = kCuratedMenuItems[i];
+    GridMenuItem& slot = sMenuItems[cursor];
+    slot = kCuratedMenuItems[i];
+    // SETTINGS pins to the back unless explicitly reordered.
+    int16_t fallback =
+        (slot.label && strcmp(slot.label, "SETTINGS") == 0)
+            ? kSettingsAlwaysLastOrder
+            : static_cast<int16_t>(kCuratedOrderStride * i);
+    slot.order = resolveItemOrder(slot.label, fallback);
+    cursor++;
   }
 
   AppRegistry::rescan();
@@ -395,15 +432,34 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     slot.action = kDynamicLaunchTable[i];
     slot.iconW = AppRegistry::kIconWidth;
     slot.iconH = AppRegistry::kIconHeight;
+    int16_t fallback =
+        (app->orderHint != INT16_MAX)
+            ? app->orderHint
+            : static_cast<int16_t>(kDynamicDefaultOrderBase + i);
+    slot.order = resolveItemOrder(slot.label, fallback);
   }
 
   sMenuItemCount = static_cast<uint8_t>(cursor);
+
+  // Stable sort by `order`. Ties preserve the placement order above
+  // (curated array index, then AppRegistry discovery order).
+  std::stable_sort(
+      sMenuItems, sMenuItems + sMenuItemCount,
+      [](const GridMenuItem& a, const GridMenuItem& b) {
+        return a.order < b.order;
+      });
+
   sMainMenu.setItems(sMenuItems, sMenuItemCount);
   Serial.printf(
       "[apps] main menu rebuilt: %u curated + %u dynamic = %u total\n",
       static_cast<unsigned>(kCuratedMenuItemCount),
       static_cast<unsigned>(dynCount),
       static_cast<unsigned>(sMenuItemCount));
+}
+
+extern "C" const GridMenuItem* mainMenuSnapshot(uint8_t* outCount) {
+  if (outCount) *outCount = sMenuItemCount;
+  return sMenuItems;
 }
 
 // Used by GridMenuScreen for the "Hi <name>" main-menu title.
@@ -464,6 +520,7 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   registerScreen(&sStickerPicker);
   registerScreen(&sScalePicker);
   registerScreen(&sAboutSponsors);
+  registerScreen(&sMenuOrder);
 #ifdef BADGE_HAS_DOOM
   registerScreen(&sDoom);
 #endif

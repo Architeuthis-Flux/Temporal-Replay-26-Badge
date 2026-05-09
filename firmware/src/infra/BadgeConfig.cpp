@@ -7,6 +7,8 @@
 #include <time.h>
 
 #include "BuildWifiConfig.h"
+#include "../api/WiFiService.h"
+#include "../identity/BadgeUID.h"
 #include "hardware/Haptics.h"
 #include "hardware/IMU.h"
 #include "hardware/Inputs.h"
@@ -59,15 +61,15 @@ int8_t fontFamilyFromName(const char* name) {
       {"haptic_freq", "Haptic Hz",   80,   10,  1000, 10},
       {"haptic_ms",   "Pulse ms",    35,   5,   500,  5},
       {"joy_sens",    "Joy Sens %",  80,   5,   100,  5},
-      {"joy_dead",  "Joy Dead %",    8,    1,    30,   1},
+      {"joy_dead",  "Joy Dead %",    12,    1,    254,   1},
       {"font_fam",    "Font",        8,    0,   9,    1},
       {"font_size",   "Font Size",   4,    0,   9,    1},
-      {"lsleep_s",    "LightSlp s",  300,  30,  600,  30},
-      {"dsleep_s",    "DeepSlp s",   1200, 300, 3600, 60},
+      {"lsleep_s",    "LightSlp s",  300,  0,  6000,  30},
+      {"dsleep_s",    "DeepSlp s",   1200, 30, 36000, 60},
       {"flip_en",     "Auto Flip",   1,    0,      1,     1},
-      {"flip_up",     "Flip Up mG",  -200, -900,   0,     50},
-      {"flip_dn",     "Flip Dn mG",  200,  0,      900,   50},
-      {"flip_ms",     "Flip Delay",  100,  0,      30000,  50},
+      {"flip_up",     "Flip Up mG",  -100, -950,   950,     50},
+      {"flip_dn",     "Flip Dn mG",  750,  -950,      950,   50},
+      {"flip_ms",     "Flip Delay",  0,  0,      30000,  50},
       {"flip_btn",    "Flip Btns",   1,    0,      1,     1},
       {"flip_joy",    "Flip Joy",    1,    0,      1,     1},
       {"oled_osc",    "OLED Osc",    15,    0,     15,     1},
@@ -78,7 +80,7 @@ int8_t fontFamilyFromName(const char* name) {
       {"oled_ctr",    "Contrast",  255,    0,    255,     5},
 
       // Dev-tuning settings
-      {"imu_smooth",  "IMU Smooth%", 88,   0,    99,    1},
+      {"imu_smooth",  "IMU Smooth%", 18,   0,    99,    1},
       {"imu_thr",     "IMU Thr",     10,   0,    127,   1},
       {"imu_dur",     "IMU Dur",     0,    0,    127,   1},
       {"btn_dbnc",    "Debounce ms", 20,   5,    100,   5},
@@ -96,7 +98,7 @@ int8_t fontFamilyFromName(const char* name) {
       // CPU freqs snap to kCpuValidMhz[]; step is unused for these indices.
       {"cpu_idle",    "CPU Idle",    80,   20,   240,   1},
       {"cpu_actv",    "CPU Active",  160,  20,   240,   1},
-      {"wifi_chk",    "WiFi Chk ms", 10000,1000, 60000, 1000},
+      {"wifi_chk",    "WiFi Chk ms", 30000,1000, 600000, 1000},
 
      // Boop / IR settings
      {"boop_ir_info","Boop Info",    1,    0,      1,     1},
@@ -118,6 +120,10 @@ int8_t fontFamilyFromName(const char* name) {
 
      // UI toggles
      {"horiz_clk",   "Horizon Clock",1,    0,        1,      1},
+
+     // Networking master switch. 0 = WiFi never auto-connects and explicit
+     // connect attempts (incl. MicroPython badge.http_get/post) bail.
+     {"wifi_en",     "WiFi",         1,    0,        1,      1},
  };
   const uint8_t Config::kCount = sizeof(Config::kDefs) / sizeof(Config::kDefs[0]);
 
@@ -161,6 +167,46 @@ int8_t fontFamilyFromName(const char* name) {
       }
     }
     return best;
+  }
+
+  // ─── WiFi-password obfuscation ──────────────────────────────────────────────
+  //
+  // We store the WiFi password in NVS as a byte blob XORed against a
+  // 32-byte key derived from the eFuse MAC plus a fixed salt. This is
+  // *not* real encryption — anyone who can read flash AND knows our
+  // scheme can recover it — but it prevents the password from showing
+  // up in a casual `nvs_dump` / strings(1) of the partition, and the
+  // key is per-device so a leaked blob from one badge can't trivially
+  // be replayed against another. Avoid logging plaintext passwords.
+
+  constexpr uint8_t kWifiPwdSalt[16] = {
+      0x4f, 0xa1, 0x37, 0xe8, 0x12, 0x9c, 0x60, 0xb5,
+      0xd4, 0x73, 0x2b, 0xee, 0x55, 0x88, 0x1f, 0xca,
+  };
+
+  void buildWifiPwdKey(uint8_t out[32]) {
+    for (uint8_t i = 0; i < 32; ++i) {
+      out[i] = static_cast<uint8_t>(uid[i % UID_SIZE] ^
+                                    kWifiPwdSalt[i % sizeof(kWifiPwdSalt)] ^
+                                    (i * 0x9D));
+    }
+  }
+
+  void scrambleWifiPwd(const char* in, uint8_t* out, size_t len) {
+    uint8_t key[32];
+    buildWifiPwdKey(key);
+    for (size_t i = 0; i < len; ++i) {
+      out[i] = static_cast<uint8_t>(in[i]) ^ key[i % sizeof(key)];
+    }
+  }
+
+  void unscrambleWifiPwd(const uint8_t* in, char* out, size_t len) {
+    uint8_t key[32];
+    buildWifiPwdKey(key);
+    for (size_t i = 0; i < len; ++i) {
+      out[i] = static_cast<char>(in[i] ^ key[i % sizeof(key)]);
+    }
+    out[len] = '\0';
   }
 
   void trimInPlace(char* s) {
@@ -329,8 +375,26 @@ int8_t fontFamilyFromName(const char* name) {
     Preferences p;
     if (!p.begin(kNvsNamespace, false)) return;
     if (ssid) p.putString("ui_wifi_ssid", wifiSsid_);
-    if (pass) p.putString("ui_wifi_pass", wifiPass_);
+    if (pass) {
+      const size_t plen = strlen(wifiPass_);
+      if (plen == 0) {
+        if (p.isKey("ui_wifi_pwd")) p.remove("ui_wifi_pwd");
+        if (p.isKey("ui_wifi_pass")) p.remove("ui_wifi_pass");
+      } else {
+        uint8_t scrambled[kStringMaxLen];
+        scrambleWifiPwd(wifiPass_, scrambled, plen);
+        p.putBytes("ui_wifi_pwd", scrambled, plen);
+        // Drop any legacy plaintext copy now that the scrambled blob
+        // is the source of truth.
+        if (p.isKey("ui_wifi_pass")) p.remove("ui_wifi_pass");
+      }
+    }
     p.end();
+  }
+
+  bool Config::wifiEnabled() const {
+    if (kWifiEnabled >= kCount) return wifiConfigured();
+    return values_[kWifiEnabled] != 0 && wifiConfigured();
   }
 
   bool Config::setManualTime(int hour24, int minute) {
@@ -436,15 +500,40 @@ int8_t fontFamilyFromName(const char* name) {
     // when present. Keys live under `kNvsNamespace` but are distinct
     // from the legacy `wifi_ssid`/`wifi_pass` keys so they survive the
     // cleanup pass run on boot.
-    Preferences p;
-    if (!p.begin(kNvsNamespace, true)) return;
-    if (p.isKey("ui_wifi_ssid")) {
-      p.getString("ui_wifi_ssid", wifiSsid_, kStringMaxLen);
+    //
+    // The password is stored as a scrambled byte blob under
+    // `ui_wifi_pwd`. If we still see the legacy plaintext
+    // `ui_wifi_pass` key, migrate it forward and remove the original.
+    bool needMigrate = false;
+    char migratedPass[kStringMaxLen] = "";
+    {
+      Preferences p;
+      if (!p.begin(kNvsNamespace, true)) return;
+      if (p.isKey("ui_wifi_ssid")) {
+        p.getString("ui_wifi_ssid", wifiSsid_, kStringMaxLen);
+      }
+      if (p.isKey("ui_wifi_pwd")) {
+        size_t blen = p.getBytesLength("ui_wifi_pwd");
+        if (blen > 0 && blen < kStringMaxLen) {
+          uint8_t buf[kStringMaxLen];
+          if (p.getBytes("ui_wifi_pwd", buf, blen) == blen) {
+            unscrambleWifiPwd(buf, wifiPass_, blen);
+          }
+        }
+      } else if (p.isKey("ui_wifi_pass")) {
+        p.getString("ui_wifi_pass", wifiPass_, kStringMaxLen);
+        strncpy(migratedPass, wifiPass_, kStringMaxLen - 1);
+        migratedPass[kStringMaxLen - 1] = '\0';
+        needMigrate = (migratedPass[0] != '\0');
+      }
+      p.end();
     }
-    if (p.isKey("ui_wifi_pass")) {
-      p.getString("ui_wifi_pass", wifiPass_, kStringMaxLen);
+    if (needMigrate) {
+      Serial.println("Config: migrating WiFi password to scrambled blob");
+      // setWifiCredentials writes the scrambled blob and removes the
+      // plaintext key.
+      setWifiCredentials(nullptr, migratedPass);
     }
-    p.end();
   }
   
   void Config::saveStringsToNvs() {
@@ -548,12 +637,16 @@ int8_t fontFamilyFromName(const char* name) {
       }
 
       if (strcmp(section, "wifi") == 0) {
+        // Legacy network-secret keys are intentionally ignored — they
+        // used to live in this file and the parser just drops them on
+        // the floor (the legacy-cleanup pass rewrites the file).
         if (strcmp(key, "ssid") == 0 || strcmp(key, "pass") == 0 ||
             strcmp(key, "server") == 0 ||
             strcmp(key, "ep_badge") == 0 || strcmp(key, "ep_boops") == 0) {
           continue;
         }
-        continue;
+        // Fall through so kDefs lookup can match `wifi_en` (and any
+        // future per-section toggle) below.
       }
   
       for (uint8_t i = 0; i < kCount; ++i) {
@@ -715,9 +808,15 @@ int8_t fontFamilyFromName(const char* name) {
     pos += snprintf(buf + pos, room(), "timezone = %s\n\n", timezone_[0] ? timezone_ : kDefaultTimezone);
 
     pos += snprintf(buf + pos, room(), "[wifi]\n");
-    pos += snprintf(buf + pos, room(), "# Optional build-time WiFi credentials are used only by explicit\n");
-    pos += snprintf(buf + pos, room(), "# MicroPython calls such as badge.http_get/post. The badge does not\n");
-    pos += snprintf(buf + pos, room(), "# auto-connect or poll any backend service.\n\n");
+    pos += snprintf(buf + pos, room(), "# Master WiFi enable. When 0, the badge never connects on boot and\n");
+    pos += snprintf(buf + pos, room(), "# explicit connect attempts (incl. badge.http_get/post) bail out.\n");
+    pos += snprintf(buf + pos, room(), "# When 1 *and* an SSID/password are configured (via Settings ->\n");
+    pos += snprintf(buf + pos, room(), "# WiFi), the badge will auto-connect once at boot and reuse the\n");
+    pos += snprintf(buf + pos, room(), "# connection for any subsequent network calls. Credentials are\n");
+    pos += snprintf(buf + pos, room(), "# stored in NVS (password obfuscated per-device); we never write\n");
+    pos += snprintf(buf + pos, room(), "# SSID/password to this file.\n");
+    pos += snprintf(buf + pos, room(), "wifi_en = %ld;          # 0=off, 1=on\n\n",
+        (long)values_[kWifiEnabled]);
 
   pos += snprintf(buf + pos, room(), "[boop]\n");
   pos += snprintf(buf + pos, room(), "# IR identity exchange during offline boops\n");
@@ -1058,6 +1157,15 @@ int8_t fontFamilyFromName(const char* name) {
       case kBoopInfoFields:
         break;
       case kNotifyIrEnable:
+        break;
+      case kWifiEnabled:
+        // Toggling off should sever any live connection immediately;
+        // toggling on does nothing here — the user can press the
+        // Connect action or reboot to retry the boot auto-connect.
+        if (values_[kWifiEnabled] == 0 && wifiService.isConnected()) {
+          Serial.println("[WiFi] disabled in settings — disconnecting");
+          wifiService.disconnect();
+        }
         break;
       default:
         break;

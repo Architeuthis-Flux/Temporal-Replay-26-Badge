@@ -20,6 +20,11 @@ struct GridMenuItem {
   uint8_t iconW = 0;
   uint8_t iconH = 0;
   bool iconWhiteOnBlack = false;
+  // Sort key used by the main-menu rebuild path. Lower = earlier. The
+  // rebuilder fills this from (curated array index)/(__order__ dunder)/
+  // (NVS user override) and then `std::stable_sort`s the array, so ties
+  // fall back to the order in which items were placed.
+  int16_t order = 0;
 };
 
 class GridMenuScreen : public Screen {
@@ -32,6 +37,12 @@ class GridMenuScreen : public Screen {
   // next render walks the fresh array. Items must remain valid for
   // the lifetime of the screen — caller owns storage.
   void setItems(const GridMenuItem* items, uint8_t count);
+
+  // Snapshot accessors used by MenuOrderScreen and other diagnostics.
+  // Returns the array currently in use; the pointer is owned by whoever
+  // called setItems().
+  const GridMenuItem* items() const { return items_; }
+  uint8_t itemCount() const { return count_; }
 
   void onEnter(GUIManager& gui) override;
   void render(oled& d, GUIManager& gui) override;

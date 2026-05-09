@@ -6,6 +6,7 @@
 #include <ctime>
 
 #include "../api/WiFiService.h"
+#include "../apps/MenuOrderStore.h"
 #include "../hardware/Inputs.h"
 #include "../hardware/LEDmatrix.h"
 #include "../hardware/oled.h"
@@ -17,6 +18,8 @@
 #include "../ui/UIFonts.h"
 #include "ScreenRefs.h"
 #include "TextInputScreen.h"
+
+extern "C" void rebuildMainMenuFromRegistry(void);
 
 extern LEDmatrix badgeMatrix;
 
@@ -79,6 +82,8 @@ enum ActionId : uint8_t {
   kActionSetSsid,
   kActionSetPassword,
   kActionWifiConnect,
+  kActionReorderMenu,
+  kActionResetMenuOrder,
 };
 
 struct GroupItem {
@@ -92,16 +97,38 @@ struct GroupItem {
 #define ACT(a, l) {true, kLedBrightness, a, l}
 
 static const GroupItem kDisplayItems[] = {
+    SI(kAutoFlipEnable),
+    SI(kFlipUpThreshold),
+    SI(kFlipDownThreshold),
+    SI(kFlipDelayMs),
+    SI(kFlipButtons),
+    SI(kFlipJoystick),
     SI(kOledContrast),
+    SI(kOledOsc),
+    SI(kOledDiv),
+    SI(kOledMux),
+    SI(kOledPrecharge1),
+    SI(kOledPrecharge2),
+    SI(kOledRefreshMs),
 };
 static const GroupItem kHapticItems[] = {
     SI(kHapticEnabled), SI(kHapticStrength), SI(kHapticFreqHz), SI(kHapticPulseMs),
 };
 static const GroupItem kLedItems[] = {
     SI(kLedBrightness),
+    SI(kLedServiceMs),
+  
 };
 static const GroupItem kInputItems[] = {
     SI(kSwapConfirmCancel),
+    SI(kJoySensitivity),
+    SI(kJoyDeadzone),
+    SI(kJoyPollMs),
+    SI(kBtnDebounceMs),
+    SI(kRptInitialDelayMs),
+    SI(kRptFirstIntervalMs),
+    SI(kRptSecondDelayMs),
+    SI(kRptSecondIntervalMs),
 };
 static const GroupItem kSleepItems[] = {
     SI(kLightSleepSec), SI(kDeepSleepSec),
@@ -111,24 +138,24 @@ static const GroupItem kClockItems[] = {
     ACT(kActionSetTime, "Set Time"),
 };
 static const GroupItem kWifiItems[] = {
+    SI(kWifiEnabled),
     ACT(kActionSetSsid,     "SSID"),
     ACT(kActionSetPassword, "Password"),
     ACT(kActionWifiConnect, "Connect"),
 };
+static const GroupItem kMenuItems[] = {
+    ACT(kActionReorderMenu,    "Reorder"),
+    ACT(kActionResetMenuOrder, "Reset Order"),
+};
 
 #ifdef BADGE_DEV_MENU
 static const GroupItem kAdminItems[] = {
-    SI(kOledOsc), SI(kOledDiv), SI(kOledMux),
-    SI(kOledPrecharge1), SI(kOledPrecharge2), SI(kOledRefreshMs),
-    SI(kLedServiceMs),
-    SI(kJoySensitivity), SI(kJoyDeadzone), SI(kJoyPollMs),
-    SI(kBtnDebounceMs), SI(kRptInitialDelayMs), SI(kRptFirstIntervalMs),
-    SI(kRptSecondDelayMs), SI(kRptSecondIntervalMs),
-    SI(kAutoFlipEnable), SI(kFlipUpThreshold), SI(kFlipDownThreshold),
-    SI(kFlipDelayMs),
     SI(kImuSmoothing), SI(kImuInt1Threshold), SI(kImuInt1Duration),
     SI(kSchHighDiv), SI(kSchNormDiv), SI(kSchLowDiv), SI(kLoopDelayMs),
     SI(kCpuIdleMhz), SI(kCpuActiveMhz), SI(kWifiCheckMs),
+    SI(kBoopIrInfo), SI(kBoopInfoFields), SI(kIrTxPowerPct),
+    SI(kNotifyIrEnable),
+    SI(kLogIr), SI(kLogBoop), SI(kLogNotify), SI(kLogZigmoji), SI(kLogImu),
 };
 #endif
 
@@ -142,13 +169,19 @@ struct SettingGroup {
   {NAME, ARR, sizeof(ARR) / sizeof(ARR[0])}
 
 static const SettingGroup kGroups[] = {
+  GROUP("WiFi",    kWifiItems),
+  GROUP("Menu",    kMenuItems),
+  GROUP("Clock",   kClockItems),
+  GROUP("Input",   kInputItems),
+  GROUP("Sleep",   kSleepItems),
     GROUP("Display", kDisplayItems),
     GROUP("Haptics", kHapticItems),
     GROUP("LED",     kLedItems),
-    GROUP("Input",   kInputItems),
-    GROUP("Sleep",   kSleepItems),
-    GROUP("Clock",   kClockItems),
-    GROUP("WiFi",    kWifiItems),
+
+  
+    
+
+   
 #ifdef BADGE_DEV_MENU
     GROUP("Admin",   kAdminItems),
 #endif
@@ -212,6 +245,7 @@ static const SettingDesc kSettingDescs[] = {
     {kCpuIdleMhz,         "CPU MHz when idle"},
     {kCpuActiveMhz,       "CPU MHz when active"},
     {kWifiCheckMs,        "WiFi check interval (ms)"},
+    {kWifiEnabled,        "Enable WiFi (auto-connect on boot)"},
 };
 
 const char* descFor(uint8_t idx) {
@@ -323,6 +357,10 @@ void SettingsScreen::onTextSubmit(const char* text) {
     case kActionWifiConnect:
       // No text input — handled inline at confirm time.
       break;
+    case kActionReorderMenu:
+    case kActionResetMenuOrder:
+      // No text input — pushed/handled inline at confirm time.
+      break;
   }
   pendingAction_ = 0;
 }
@@ -376,6 +414,10 @@ void SettingsScreen::formatSettingValue(uint8_t settingIdx,
                                         char* value, uint8_t valueSize) const {
   if (settingIdx == kHapticEnabled) {
     std::snprintf(label, labelSize, "Haptics");
+    std::snprintf(value, valueSize, "%s",
+                  config_->get(settingIdx) ? "On" : "Off");
+  } else if (settingIdx == kWifiEnabled) {
+    std::snprintf(label, labelSize, "WiFi");
     std::snprintf(value, valueSize, "%s",
                   config_->get(settingIdx) ? "On" : "Off");
   } else if (settingIdx == kHorizonClock) {
@@ -484,6 +526,12 @@ void SettingsScreen::drawItem(oled& d, uint8_t index, uint8_t y,
       case kActionWifiConnect:
         std::snprintf(summary, sizeof(summary), "%s",
                       wifiService.isConnected() ? "online" : "go");
+        break;
+      case kActionReorderMenu:
+        std::snprintf(summary, sizeof(summary), "%s", "→");
+        break;
+      case kActionResetMenuOrder:
+        std::snprintf(summary, sizeof(summary), "%s", "do");
         break;
     }
     if (summary[0]) {
@@ -728,8 +776,13 @@ void SettingsScreen::render(oled& d, GUIManager& gui) {
       case kActionSetSsid:     footer = "Network name to connect to"; break;
       case kActionSetPassword: footer = "Network password"; break;
       case kActionWifiConnect: footer = "Connect now (sets time via NTP)"; break;
+      case kActionReorderMenu: footer = "Reorder home-screen icons"; break;
+      case kActionResetMenuOrder:
+        footer = "Forget your saved menu order"; break;
     }
-    action = (static_cast<ActionId>(row.actionId) == kActionWifiConnect)
+    const ActionId aid = static_cast<ActionId>(row.actionId);
+    action = (aid == kActionWifiConnect || aid == kActionReorderMenu ||
+              aid == kActionResetMenuOrder)
                  ? "go" : "edit";
   } else if (row.settingIdx >= 0) {
     footer = descFor(static_cast<uint8_t>(row.settingIdx));
@@ -830,6 +883,15 @@ void SettingsScreen::handleInput(const Inputs& inputs,
         }
         case kActionWifiConnect:
           wifiService.connect();
+          pendingAction_ = 0;
+          break;
+        case kActionReorderMenu:
+          pendingAction_ = 0;
+          gui.pushScreen(kScreenMenuOrder);
+          break;
+        case kActionResetMenuOrder:
+          MenuOrderStore::clearAll();
+          rebuildMainMenuFromRegistry();
           pendingAction_ = 0;
           break;
       }

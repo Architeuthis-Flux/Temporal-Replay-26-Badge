@@ -10,7 +10,10 @@ class WiFiService : public IService {
  public:
   void begin();
 
-  // Explicit-only networking. No background service calls connect().
+  // Explicit-only networking with one exception: if WiFi is enabled in
+  // settings AND credentials are configured, begin() schedules a
+  // single auto-connect attempt shortly after boot. Subsequent
+  // connect() calls are still on-demand (e.g. badge.http_get/post).
   bool connect();
   void disconnect();
   bool isConnected() const;

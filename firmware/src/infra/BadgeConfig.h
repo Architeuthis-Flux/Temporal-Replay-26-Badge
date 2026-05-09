@@ -115,6 +115,12 @@ enum SettingIndex : uint8_t {
   // Header-clock "artificial horizon" effect — when enabled, the centered
   // time pill drifts/tilts with the IMU. Off = static text rendering.
   kHorizonClock,
+
+  // Master WiFi enable. When 0, the badge never auto-connects on boot
+  // and explicit connect attempts (including badge.http_get/post from
+  // MicroPython) bail immediately. Default 1; effectively forced off
+  // when no SSID/password is configured.
+  kWifiEnabled,
 };
 
 extern const uint8_t kFontFamilyCount;
@@ -192,6 +198,9 @@ class Config {
      const char* wifiSsid() const { return wifiSsid_; }
      const char* wifiPass() const { return wifiPass_; }
      bool wifiConfigured() const;
+     // Master WiFi enable toggle (kWifiEnabled). Returns false when the
+     // setting is off OR when no SSID/password are configured.
+     bool wifiEnabled() const;
      // UI-entered WiFi credentials. Stored under separate NVS keys
      // (`ui_wifi_ssid`/`ui_wifi_pass`) so the legacy-secret cleanup pass
      // doesn't wipe them. When non-empty they take precedence over the

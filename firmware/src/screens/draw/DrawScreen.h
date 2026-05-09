@@ -57,7 +57,7 @@ class DrawScreen : public Screen {
     Canvas,
     // Left strip tools (single-column). "Draw" is a combined pen/erase
     // tool: CONFIRM strokes draw, CANCEL strokes erase.
-    ToolDraw, ToolStickerAdd, ToolTextAdd, ToolHand, ToolSettings, ToolDuration, ToolEdit, ToolDelFrame,
+    ToolDraw, ToolStickerAdd, ToolTextAdd, ToolFieldAdd, ToolHand, ToolSettings, ToolDuration, ToolEdit, ToolDelFrame,
     // Top-right bar (8x8 icons).
     ToolUndo, ToolRedo, ToolPlay, ToolSave, ToolExit,
     // Bottom timeline.
@@ -84,6 +84,8 @@ class DrawScreen : public Screen {
     ContextMenu,
     ZAdjust,
     TextAppearance,
+    FieldPicker,
+    ExitNametagPrompt,
   };
 
   enum class TextOp : uint8_t { None, Add, Edit };
@@ -258,12 +260,20 @@ class DrawScreen : public Screen {
   void renderSettingsPopup(oled& d);
   void renderZAdjustPopup(oled& d);
   void renderTextAppearancePopup(oled& d);
+  void renderFieldPickerPopup(oled& d);
+  void renderExitNametagPrompt(oled& d);
   void renderTutorial(oled& d);
   void renderHelpScroll(oled& d);
   void renderSaveExitPrompt(oled& d);
   void renderModeCursor(oled& d);
   void renderFooterActions(oled& d, const char* xLabel, const char* yLabel,
                            const char* bLabel, const char* aLabel);
+  // Marquee for hovered tool / hit-zone description; renders into the
+  // standard OLED footer band. Skipped while painting or while a popup
+  // owns the bottom of the screen.
+  void renderHelpMarquee(oled& d);
+  // Returns a static description string for a given hit zone, or empty.
+  const char* helpForZone(HitZone z, uint8_t extra) const;
   // Hand/Edit hover indicator: blinking XOR outline around the sticker the
   // cursor is currently over. Edit tool only highlights DrawnAnims (the
   // only type it can target); Hand highlights any sticker.
@@ -357,6 +367,28 @@ class DrawScreen : public Screen {
   char          textEditBuf_[draw::kTextContentMax + 1] = {};
   char          replaceTargetObjId_[draw::kObjIdLen + 1] = {};
   char          scaleTargetObjId_[draw::kObjIdLen + 1] = {};
+
+  // Hold-Cancel-4s = save+exit (skipped when Draw tool owns Cancel = erase).
+  uint32_t      cancelHoldStartMs_ = 0;
+  static constexpr uint32_t kCancelHoldMs = 4000;
+
+  // Field picker popup state (Mode::FieldPicker).
+  uint8_t       fieldPickerCursor_ = 0;
+  uint8_t       fieldPickerScroll_ = 0;
+  uint32_t      fieldPickerJoyMs_ = 0;
+
+  // Tool strip pagination — when more entries than fit visually, this offset
+  // shifts which slots are drawn / hit-tested in the on-canvas left strip.
+  uint8_t       toolStripScroll_ = 0;
+  uint32_t      toolMenuScrollMs_ = 0;
+
+  // After a successful Save+Exit, prompt the user to set the saved drawing
+  // as their nametag before popping the screen.
+  uint8_t       exitNametagSel_ = 1;  // 0=Yes, 1=No (default off-by-one)
+  uint32_t      exitNametagJoyMs_ = 0;
+
+  // Auto-open TextAppearance popup once after placing freshly-created text.
+  bool          autoOpenAppearance_ = false;
 
   // Undo.
   UndoState     undo_;

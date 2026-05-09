@@ -6,10 +6,13 @@
 #include <cstring>
 #include <utility>
 
+#include "../../BadgeGlobals.h"
 #include "../../hardware/Haptics.h"
 #include "../../hardware/Inputs.h"
 #include "../../hardware/IMU.h"
 #include "../../hardware/oled.h"
+#include "../../identity/BadgeInfo.h"
+#include "../../infra/BadgeConfig.h"
 #include "../../infra/Filesystem.h"
 #include "../../infra/PsramAllocator.h"
 #include "../../ui/ButtonGlyphs.h"
@@ -23,6 +26,8 @@
 #include "ScalePickerScreen.h"
 #include "../../ui/FontCatalog.h"
 
+#include <new>
+
 extern "C" {
 #include "lib/oofatfs/ff.h"
 FATFS* replay_get_fatfs(void);
@@ -34,7 +39,7 @@ namespace {
 
 // Cursor integration tunables. Joystick raw is 0..4095, center 2047.
 constexpr int16_t kJoyCenter   = 2047;
-constexpr int16_t kJoyDeadzone = 220;
+constexpr int16_t kCursorJoyDeadzone = 220;
 constexpr int16_t kJoyDeadzonePainting = 300;   // narrower while pen down (less sticky)
 constexpr int16_t kJoyMenuDeadzone = 650;       // large deadzone for one-shot menu nav
 constexpr uint32_t kOneShotRepeatMs = 800;       // ms before one-shot gating allows repeat
@@ -104,10 +109,40 @@ const ToolSlot kToolSlots[] = {
     {0, DrawScreen::HitZone::ToolDraw,       DrawIcons::pen8,     "draw"},
     {1, DrawScreen::HitZone::ToolStickerAdd, DrawIcons::sticker8, "zig"},
     {2, DrawScreen::HitZone::ToolTextAdd,    DrawIcons::text8,    "text"},
-    {3, DrawScreen::HitZone::ToolHand,       DrawIcons::hand8,    "hand"},
-    {4, DrawScreen::HitZone::ToolSettings,   DrawIcons::gear8,    "cfg"},
+    {3, DrawScreen::HitZone::ToolFieldAdd,   DrawIcons::tag8,     "field"},
+    {4, DrawScreen::HitZone::ToolHand,       DrawIcons::hand8,    "hand"},
+    {5, DrawScreen::HitZone::ToolSettings,   DrawIcons::gear8,    "cfg"},
 };
 constexpr uint8_t kToolSlotCount = sizeof(kToolSlots) / sizeof(kToolSlots[0]);
+// Visual capacity of the on-canvas left strip in rows. Anything beyond this
+// requires the strip to scroll (or the user can use the LEFT-button popup
+// which paginates with the joystick).
+constexpr uint8_t kToolStripVisibleRows = 5;
+
+// ── Field picker (BadgeInfo fields placed as text) ─────────────────────────
+struct FieldDef {
+    const char* label;
+    size_t      offset;
+    size_t      cap;
+};
+#define BIFIELD(L, M)                                                        \
+    {L,                                                                       \
+     offsetof(BadgeInfo::Fields, M),                                          \
+     sizeof(((BadgeInfo::Fields*)0)->M)}
+const FieldDef kFieldDefs[] = {
+    BIFIELD("Name",    name),
+    BIFIELD("Title",   title),
+    BIFIELD("Company", company),
+    BIFIELD("Type",    attendeeType),
+    BIFIELD("Email",   email),
+    BIFIELD("Web",     website),
+    BIFIELD("Phone",   phone),
+    BIFIELD("Bio",     bio),
+    BIFIELD("UUID",    ticketUuid),
+};
+#undef BIFIELD
+constexpr uint8_t kFieldDefCount = sizeof(kFieldDefs) / sizeof(kFieldDefs[0]);
+constexpr uint8_t kFieldPickerVisibleRows = 5;
 
 // Top-right icon table (play/save/exit).
 struct TopRightSlot {
@@ -544,16 +579,37 @@ void DrawScreen::integrateCursor(const Inputs& inputs) {
     lastCursorMs_ = now;
     if (dt == 0) return;
 
-    uint16_t rawX = inputs.joyX();
-    uint16_t rawY = inputs.joyY();
+    // Read both raw and smoothed values: smoothed gives us a stable feel
+    // during normal motion, but its IIR tail can keep delivering above-
+    // deadzone deflection for tens of ms after the user releases the stick,
+    // producing visible "skating" drift. Gating cursor integration on the
+    // raw reading being inside a tighter idle threshold kills the drift the
+    // moment the stick physically returns to center.
+    uint16_t rawX = 0, rawY = 0;
+    inputs.readJoystickImmediate(&rawX, &rawY, /*applyDeadzone=*/true);
+    uint16_t smX = inputs.joyX();
+    uint16_t smY = inputs.joyY();
     if (painting_ && immediateJoystickWhilePainting_) {
-        inputs.readJoystickImmediate(&rawX, &rawY, /*applyDeadzone=*/true);
+        smX = rawX;
+        smY = rawY;
     }
-    const float fx = (float)((int16_t)rawX - kJoyCenter);
-    const float fy = (float)((int16_t)rawY - kJoyCenter);
-    const float dz = (float)(painting_ ? kJoyDeadzonePainting : kJoyDeadzone);
+    const float fxRaw = (float)((int16_t)rawX - kJoyCenter);
+    const float fyRaw = (float)((int16_t)rawY - kJoyCenter);
+    const float fx = (float)((int16_t)smX - kJoyCenter);
+    const float fy = (float)((int16_t)smY - kJoyCenter);
+    const float dz = (float)(painting_ ? kJoyDeadzonePainting : kCursorJoyDeadzone);
 
+    const float magRaw = std::sqrt(fxRaw * fxRaw + fyRaw * fyRaw);
     const float mag = std::sqrt(fx * fx + fy * fy);
+    // Idle if the *raw* stick is parked. A 60% threshold is the sweet spot
+    // — strict enough to kill smoothed drift, lax enough that legitimate
+    // micro-deflections still register.
+    const float idleThresh = dz * 0.6f;
+    if (magRaw <= idleThresh) {
+        cursorRampStartMs_ = 0;
+        clampCursorToScreen();
+        return;
+    }
     if (mag <= dz) {
         cursorRampStartMs_ = 0;  // reset hold-to-accelerate ramp
         clampCursorToScreen();
@@ -1693,7 +1749,12 @@ void DrawScreen::render(oled& d, GUIManager& gui) {
                          [&](uint8_t a, uint8_t b) {
                              return placements[a].z < placements[b].z;
                          });
-        const uint32_t now = millis();
+        const uint32_t now2 = millis();
+        // While the TextAppearance popup is active we re-render the active
+        // text object with pending settings inside renderTextAppearancePopup,
+        // so suppress the canvas-level render of that placement to avoid the
+        // baked-in version sitting underneath the live preview.
+        const bool suppressActiveText = (mode_ == Mode::TextAppearance);
         for (uint8_t idx : order) {
             auto p = placements[idx];
             int16_t dx = 0, dy = 0;
@@ -1704,7 +1765,11 @@ void DrawScreen::render(oled& d, GUIManager& gui) {
             for (const auto& d2 : doc_.objects) {
                 if (std::strcmp(d2.id, p.objId) == 0) { def = &d2; break; }
             }
-            if (def) renderObjectInstance(d, ox, oy, p, *def, now);
+            if (suppressActiveText && def && def->type == draw::ObjectType::Text &&
+                std::strcmp(def->id, textAppear_.targetObjId) == 0) {
+                continue;
+            }
+            if (def) renderObjectInstance(d, ox, oy, p, *def, now2);
         }
     }
 
@@ -1757,9 +1822,15 @@ void DrawScreen::render(oled& d, GUIManager& gui) {
     else if (mode_ == Mode::HelpScroll) renderHelpScroll(d);
     else if (mode_ == Mode::ZAdjust) renderZAdjustPopup(d);
     else if (mode_ == Mode::TextAppearance) renderTextAppearancePopup(d);
+    else if (mode_ == Mode::FieldPicker) renderFieldPickerPopup(d);
     else if (mode_ == Mode::SaveExitPrompt) renderSaveExitPrompt(d);
+    else if (mode_ == Mode::ExitNametagPrompt) renderExitNametagPrompt(d);
     else if (mode_ == Mode::ContextMenu) {
         renderFooterActions(d, nullptr, nullptr, nullptr, "ok");
+    }
+    if (mode_ == Mode::Editing || mode_ == Mode::ToolMenu) {
+        // Marquee help under the timeline whenever a chrome icon is hovered.
+        renderHelpMarquee(d);
     }
 
     renderModeCursor(d);
@@ -2112,12 +2183,26 @@ void DrawScreen::renderToolStrip(oled& d) {
 
     d.setFont(UIFonts::kText);
 
-    for (uint8_t i = 0; i < kToolSlotCount; i++) {
+    // ToolMenu owns its own pagination via toolMenuCursor_ + toolMenuScrollMs_;
+    // in editing mode the strip just shows the first window of slots. We
+    // ensure the cursor's slot is visible by adjusting toolStripScroll_ when
+    // the on-canvas hit zone reaches the bottom row.
+    const uint8_t maxVisible =
+        kToolSlotCount > kToolStripVisibleRows ? kToolStripVisibleRows : kToolSlotCount;
+    uint8_t scroll = (mode_ == Mode::ToolMenu)
+        ? (uint8_t)(toolMenuCursor_ >= maxVisible
+                        ? toolMenuCursor_ + 1 - maxVisible : 0)
+        : toolStripScroll_;
+    if (scroll + maxVisible > kToolSlotCount) {
+        scroll = (kToolSlotCount > maxVisible)
+                     ? (uint8_t)(kToolSlotCount - maxVisible) : 0;
+    }
+
+    for (uint8_t row = 0; row < maxVisible; row++) {
+        const uint8_t i = (uint8_t)(scroll + row);
+        if (i >= kToolSlotCount) break;
         const ToolSlot& s = kToolSlots[i];
-        const int16_t y = kToolStripY + s.row * kToolRowH;
-        // In ToolMenu mode navigation is joystick/button-driven; only the
-        // cursor item is highlighted — not the currently-active tool, so
-        // exactly one row is ever lit.
+        const int16_t y = kToolStripY + (int16_t)row * kToolRowH;
         const bool hot = (mode_ == Mode::ToolMenu)
             ? (toolMenuCursor_ == i)
             : (hitZoneAtCursor(nullptr) == s.zone);
@@ -2138,6 +2223,23 @@ void DrawScreen::renderToolStrip(oled& d) {
         } else {
             d.drawXBM(kToolStripX + 1, y, kToolIconW, kToolIconH, s.icon);
             d.drawStr(kToolStripX + kToolIconW + 2, y + 7, s.label);
+        }
+    }
+
+    // Up/down arrow chips to indicate hidden tool slots (only in ToolMenu so
+    // the on-canvas strip stays visually quiet during normal editing).
+    if (mode_ == Mode::ToolMenu) {
+        const int16_t arrowX = (int16_t)(kToolStripW - 4);
+        if (scroll > 0) {
+            d.fillTriangle(arrowX, kToolStripY + 1,
+                           arrowX - 2, kToolStripY + 4,
+                           arrowX + 2, kToolStripY + 4);
+        }
+        if (scroll + maxVisible < kToolSlotCount) {
+            const int16_t ay = (int16_t)(kToolStripY + kToolStripH - 1);
+            d.fillTriangle(arrowX, ay,
+                           arrowX - 2, ay - 3,
+                           arrowX + 2, ay - 3);
         }
     }
 }
@@ -2322,19 +2424,109 @@ void DrawScreen::renderZAdjustPopup(oled& d) {
 }
 
 void DrawScreen::renderTextAppearancePopup(oled& d) {
-    const uint8_t boxW = 104, boxH = 43;
-    const uint8_t boxX = (128 - boxW) / 2;
-    const uint8_t boxY = (64 - boxH) / 2;
+    // Render the placed text using the *pending* settings so the user sees
+    // the live result on the canvas as they cycle through values. We swap
+    // the def's settings, draw, then put them back so commit/cancel
+    // semantics still go through the existing finish() path.
+    draw::ObjectDef* def = findObjectDef(textAppear_.targetObjId);
+    const draw::ObjectPlacement* placement = nullptr;
+    int16_t pw = 0, ph = 0;
+    int16_t px = 0, py = 0;
+    if (def && def->type == draw::ObjectType::Text &&
+        currentFrame_ < doc_.frames.size()) {
+        placement = findPlacement(currentFrame_, textAppear_.targetObjId);
+        if (placement) {
+            const uint8_t prevFamily = def->textFontFamily;
+            const uint8_t prevSlot = def->textFontSlot;
+            const draw::TextStackMode prevStack = def->textStackMode;
+            def->textFontFamily = textAppear_.fontFamily;
+            def->textFontSlot = textAppear_.fontSlot;
+            def->textStackMode = textAppear_.stack;
+
+            int16_t ox, oy;
+            canvasOriginScreen(&ox, &oy);
+            int16_t dx = 0, dy = 0;
+            parallaxOffset(placement->z, &dx, &dy);
+            const draw::ObjectPlacement parallaxP = [&]() {
+                draw::ObjectPlacement out = *placement;
+                out.x = (int16_t)(out.x + dx);
+                out.y = (int16_t)(out.y + dy);
+                return out;
+            }();
+            d.setBitmapTransparent(true);
+            renderObjectInstance(d, ox, oy, parallaxP, *def, millis());
+            d.setBitmapTransparent(false);
+            d.setFontMode(0);
+            d.setDrawColor(1);
+
+            objectDimensions(*placement, *def, &pw, &ph);
+            px = (int16_t)(ox + parallaxP.x);
+            py = (int16_t)(oy + parallaxP.y);
+
+            def->textFontFamily = prevFamily;
+            def->textFontSlot = prevSlot;
+            def->textStackMode = prevStack;
+        }
+    }
+
+    constexpr uint8_t kBoxW = 78;
+    constexpr uint8_t kBoxH = 30;
+    // Pick a popup position that doesn't cover the placement and stays
+    // within the visible 0..127 / 0..(footer-edge) area. Try four positions
+    // around the placement bbox; fall back to the corner farthest from the
+    // bbox if none fit.
+    constexpr int16_t kFooterTop = 53;  // leave the footer row clear
+    auto fits = [](int16_t x, int16_t y) {
+        return x >= 0 && y >= 0 &&
+               x + (int16_t)kBoxW <= 128 &&
+               y + (int16_t)kBoxH <= kFooterTop;
+    };
+    auto overlaps = [&](int16_t x, int16_t y) {
+        if (!placement || pw <= 0 || ph <= 0) return false;
+        const int16_t bx2 = x + (int16_t)kBoxW;
+        const int16_t by2 = y + (int16_t)kBoxH;
+        const int16_t tx2 = px + pw;
+        const int16_t ty2 = py + ph;
+        return !(bx2 <= px || tx2 <= x || by2 <= py || ty2 <= y);
+    };
+    int16_t boxX = (128 - kBoxW) / 2;
+    int16_t boxY = 1;
+    if (placement) {
+        const struct { int16_t x; int16_t y; } cand[] = {
+            { (int16_t)((128 - kBoxW) / 2), (int16_t)(py + ph + 2) },           // below
+            { (int16_t)((128 - kBoxW) / 2), (int16_t)(py - kBoxH - 2) },        // above
+            { (int16_t)(px + pw + 2),      (int16_t)((kFooterTop - kBoxH) / 2) },// right
+            { (int16_t)(px - kBoxW - 2),   (int16_t)((kFooterTop - kBoxH) / 2) },// left
+        };
+        bool chose = false;
+        for (const auto& c : cand) {
+            if (fits(c.x, c.y) && !overlaps(c.x, c.y)) {
+                boxX = c.x; boxY = c.y; chose = true; break;
+            }
+        }
+        if (!chose) {
+            // Stick to whichever screen corner is farthest from the bbox center.
+            const int16_t bcX = px + pw / 2;
+            const int16_t bcY = py + ph / 2;
+            boxX = (bcX < 64) ? (int16_t)(128 - kBoxW - 1) : 1;
+            boxY = (bcY < (kFooterTop / 2)) ? (int16_t)(kFooterTop - kBoxH - 1) : 1;
+        }
+        if (boxX < 1) boxX = 1;
+        if (boxX + kBoxW > 127) boxX = (int16_t)(127 - kBoxW);
+        if (boxY < 1) boxY = 1;
+        if (boxY + kBoxH > kFooterTop) boxY = (int16_t)(kFooterTop - kBoxH);
+    }
+
     d.setDrawColor(0);
-    d.drawBox(boxX, boxY, boxW, boxH);
+    d.drawBox(boxX, boxY, kBoxW, kBoxH);
     d.setDrawColor(1);
-    d.drawRFrame(boxX, boxY, boxW, boxH, 2);
+    d.drawRFrame(boxX, boxY, kBoxW, kBoxH, 2);
     d.setFont(UIFonts::kText);
 
     auto drawMarkedRow = [&](int16_t y, bool sel, const char* text) {
         if (sel) {
             d.setDrawColor(1);
-            d.drawBox(boxX + 4, y - 6, boxW - 8, 9);
+            d.drawBox(boxX + 4, y - 6, kBoxW - 8, 9);
             d.setDrawColor(0);
             d.drawStr(boxX + 6, y, text);
             d.setDrawColor(1);
@@ -2344,40 +2536,21 @@ void DrawScreen::renderTextAppearancePopup(oled& d) {
     };
 
     char line[38];
-    std::snprintf(line, sizeof(line), "Fam%u", (unsigned)textAppear_.fontFamily);
-    drawMarkedRow(boxY + 13, textAppear_.fieldSel == 0, line);
+    const uint8_t fam = textAppear_.fontFamily;
+    const char* famName =
+        (fam < kFontFamilyCount) ? kFontFamilyNames[fam] : "Default";
+    std::snprintf(line, sizeof(line), "Font %s", famName);
+    drawMarkedRow((int16_t)(boxY + 9), textAppear_.fieldSel == 0, line);
 
     std::snprintf(line, sizeof(line), "Size %s", kSizeLabels[textAppear_.fontSlot]);
-    drawMarkedRow(boxY + 22, textAppear_.fieldSel == 1, line);
+    drawMarkedRow((int16_t)(boxY + 18), textAppear_.fieldSel == 1, line);
 
     const char* stack =
         textAppear_.stack == draw::TextStackMode::XOR ? "XOR" :
         textAppear_.stack == draw::TextStackMode::RoundedBox ? "BOX" : "OR";
     std::snprintf(line, sizeof(line), "stack %s", stack);
-    drawMarkedRow(boxY + 31, textAppear_.fieldSel == 2, line);
+    drawMarkedRow((int16_t)(boxY + 27), textAppear_.fieldSel == 2, line);
 
-    d.setFontFamilyAndSlot(textAppear_.fontFamily, textAppear_.fontSlot);
-    const draw::ObjectDef* def = findObjectDef(textAppear_.targetObjId);
-    const char* preview = (def && def->textContent[0]) ? def->textContent : "Text";
-    // Compute preview area from font metrics so it fits regardless of size.
-    const int prevAscent = d.getAscent();
-    const int prevDescent = d.getDescent();
-    const int prevH = prevAscent - prevDescent + 2;
-    const int16_t prevTop = boxY + 35;
-    const int16_t prevBot = (int16_t)(prevTop + prevH);
-    const int16_t prevBaseline = (int16_t)(prevTop + prevAscent + 1);
-    // Draw a thin frame around the preview region.
-    d.drawHLine(boxX + 3, prevTop - 1, boxW - 6);
-    d.setClipWindow(boxX + 4, prevTop, boxX + boxW - 4, prevBot);
-    const uint8_t* previewFont = kFontGrid[textAppear_.fontFamily][textAppear_.fontSlot];
-    const bool hasEmoji = EmojiText::stringHasEmoji(preview);
-    if (hasEmoji) {
-        EmojiText::drawMixedLine(d, boxX + 4, prevBaseline, prevBaseline + 4,
-                                 preview, previewFont);
-    } else {
-        d.drawUTF8(boxX + 4, prevBaseline, preview);
-    }
-    d.setMaxClipWindow();
     d.setFont(UIFonts::kText);
     renderFooterActions(d, nullptr, nullptr, nullptr, "ok");
 }
@@ -2417,6 +2590,218 @@ void DrawScreen::renderFooterActions(oled& d, const char* xLabel,
     OLEDLayout::drawFooterActions(d, xLabel, yLabel, bLabel, aLabel);
 }
 
+const char* DrawScreen::helpForZone(HitZone z, uint8_t /*extra*/) const {
+    switch (z) {
+        case HitZone::ToolDraw:
+            return "Draw  -  CONFIRM paints, CANCEL erases  -  bottom strip = brush size";
+        case HitZone::ToolStickerAdd:
+            return "Add zigmoji  -  pick from catalog or your saved drawings";
+        case HitZone::ToolTextAdd:
+            return "Add text object  -  type, place, then size/font popup";
+        case HitZone::ToolFieldAdd:
+            return "Insert a Badge Info field as text (name, title, company, ...)";
+        case HitZone::ToolHand:
+            return "Hand  -  CONFIRM grabs the topmost object under cursor";
+        case HitZone::ToolEdit:
+            return "Edit  -  paint into the layer the cursor is hovering";
+        case HitZone::ToolSettings:
+            return "Settings  -  cursor speed / frame ms / tilt / help";
+        case HitZone::ToolDuration:
+            return "Frame duration in ms";
+        case HitZone::ToolDelFrame:
+            return "Delete the current frame";
+        case HitZone::ToolUndo:
+            return "Undo last stroke or placement change";
+        case HitZone::ToolRedo:
+            return "Redo last undone change";
+        case HitZone::ToolPlay:
+            return "Play / stop preview animation";
+        case HitZone::ToolSave:
+            return "Save changes to flash (no exit)";
+        case HitZone::ToolExit:
+            return "Exit  -  prompts to save first if dirty";
+        case HitZone::TimelineFrame:
+            return "Select frame  -  UP on a placed object opens its menu";
+        case HitZone::TimelinePlus:
+            return "Add a new frame (duplicates the current one)";
+        case HitZone::TimelineDel:
+            return "Delete the current frame";
+        case HitZone::BrushSize:
+            return "Brush size  -  CONFIRM picks this size for future strokes";
+        case HitZone::Canvas:
+            return "Canvas  -  hold CONFIRM to paint, CANCEL to erase, UP for object menu";
+        default:
+            return "";
+    }
+}
+
+void DrawScreen::renderHelpMarquee(oled& d) {
+    if (mode_ != Mode::Editing && mode_ != Mode::ToolMenu) return;
+    if (painting_) return;
+    if (doc_.w == draw::kCanvasZigW) return;
+    uint8_t extra = 0;
+    HitZone z = hitZoneAtCursor(&extra);
+    // Only show the marquee for chrome icons; canvas / timeline frames /
+    // brush size already self-describe and the marquee would overwrite the
+    // timeline thumbs the user is trying to read.
+    bool showMarquee = false;
+    switch (z) {
+        case HitZone::ToolDraw:
+        case HitZone::ToolStickerAdd:
+        case HitZone::ToolTextAdd:
+        case HitZone::ToolFieldAdd:
+        case HitZone::ToolHand:
+        case HitZone::ToolEdit:
+        case HitZone::ToolSettings:
+        case HitZone::ToolDuration:
+        case HitZone::ToolDelFrame:
+        case HitZone::ToolUndo:
+        case HitZone::ToolRedo:
+        case HitZone::ToolPlay:
+        case HitZone::ToolSave:
+        case HitZone::ToolExit:
+            showMarquee = true;
+            break;
+        default:
+            break;
+    }
+    // ToolMenu: always show help for the selected tool slot.
+    if (mode_ == Mode::ToolMenu) {
+        if (toolMenuCursor_ < kToolSlotCount) {
+            z = kToolSlots[toolMenuCursor_].zone;
+            showMarquee = true;
+        }
+    }
+    if (!showMarquee) return;
+    const char* msg = helpForZone(z, extra);
+    if (!msg || !msg[0]) return;
+
+    // Replace the bottom 8 px band so the text reads cleanly. The timeline
+    // can still be made visible by moving the cursor off the chrome strip.
+    d.setDrawColor(0);
+    d.drawBox(0, 56, 128, 8);
+    d.setDrawColor(1);
+    d.drawHLine(0, 56, 128);
+
+    // Right-edge button hint chip ("ok" for the active slot, plus "back" to
+    // close the tool menu) so the user always sees what the buttons do.
+    const char* aLabel = (z == HitZone::ToolPlay) ? "play" :
+                         (z == HitZone::ToolSave) ? "save" :
+                         (z == HitZone::ToolExit) ? "exit" :
+                         (z == HitZone::ToolUndo) ? "undo" :
+                         (z == HitZone::ToolRedo) ? "redo" :
+                         (z == HitZone::ToolDelFrame) ? "del" :
+                         "select";
+    const char* bLabel = (mode_ == Mode::ToolMenu) ? "back" : nullptr;
+    d.setFont(UIFonts::kText);
+    const int chipsW = OLEDLayout::drawFooterActions(d, nullptr, nullptr,
+                                                     bLabel, aLabel);
+    const int16_t bandRight = (chipsW > 0) ? (int16_t)(128 - chipsW - 4) : 127;
+
+    constexpr int16_t kBandLeft = 1;
+    const int16_t kBandW = (int16_t)(bandRight - kBandLeft);
+    if (kBandW <= 4) return;
+    constexpr int16_t kBaseY = 63;
+    const int textW = d.getStrWidth(msg);
+    if (textW <= kBandW - 2) {
+        d.drawStr(kBandLeft + (kBandW - textW) / 2, kBaseY, msg);
+        return;
+    }
+    constexpr int kGap = 16;
+    const int loop = textW + kGap;
+    const int offset = (loop > 0) ? (int)((millis() / 35) % loop) : 0;
+    d.setClipWindow(kBandLeft, 57, bandRight, kBaseY + 1);
+    d.drawStr(kBandLeft - offset, kBaseY, msg);
+    d.drawStr(kBandLeft - offset + loop, kBaseY, msg);
+    d.setMaxClipWindow();
+}
+
+void DrawScreen::renderFieldPickerPopup(oled& d) {
+    constexpr uint8_t boxW = 110;
+    constexpr uint8_t rowH = 9;
+    constexpr uint8_t boxH = (uint8_t)(6 + kFieldPickerVisibleRows * rowH);
+    constexpr uint8_t boxX = (128 - boxW) / 2;
+    constexpr uint8_t boxY = 5;
+    d.setDrawColor(0);
+    d.drawBox(boxX, boxY, boxW, boxH);
+    d.setDrawColor(1);
+    d.drawRFrame(boxX, boxY, boxW, boxH, 2);
+    d.setFont(UIFonts::kText);
+    d.drawStr(boxX + 4, boxY + 7, "Insert field");
+
+    BadgeInfo::Fields fields{};
+    BadgeInfo::getCurrent(fields);
+    auto fieldText = [&](uint8_t idx) -> const char* {
+        const FieldDef& fd = kFieldDefs[idx];
+        const char* base = reinterpret_cast<const char*>(&fields) + fd.offset;
+        return base[0] ? base : "(empty)";
+    };
+
+    // Adjust scroll so the cursor is visible.
+    if (fieldPickerCursor_ < fieldPickerScroll_) fieldPickerScroll_ = fieldPickerCursor_;
+    if (fieldPickerCursor_ >= fieldPickerScroll_ + kFieldPickerVisibleRows) {
+        fieldPickerScroll_ = (uint8_t)(fieldPickerCursor_ + 1 - kFieldPickerVisibleRows);
+    }
+
+    for (uint8_t r = 0; r < kFieldPickerVisibleRows; r++) {
+        const uint8_t i = (uint8_t)(fieldPickerScroll_ + r);
+        if (i >= kFieldDefCount) break;
+        const int16_t y = (int16_t)(boxY + 9 + r * rowH);
+        const bool selected = (i == fieldPickerCursor_);
+        if (selected) {
+            d.setDrawColor(1);
+            d.drawBox(boxX + 2, y, boxW - 4, rowH);
+            d.setDrawColor(0);
+        }
+        char line[40];
+        std::snprintf(line, sizeof(line), "%s: %s",
+                      kFieldDefs[i].label, fieldText(i));
+        OLEDLayout::fitText(d, line, sizeof(line), boxW - 8);
+        d.drawStr(boxX + 4, y + rowH - 2, line);
+        d.setDrawColor(1);
+    }
+
+    if (fieldPickerScroll_ > 0) {
+        d.fillTriangle(boxX + boxW - 4, boxY + 10,
+                       boxX + boxW - 7, boxY + 13,
+                       boxX + boxW - 1, boxY + 13);
+    }
+    if (fieldPickerScroll_ + kFieldPickerVisibleRows < kFieldDefCount) {
+        const int16_t ay = (int16_t)(boxY + boxH - 3);
+        d.fillTriangle(boxX + boxW - 4, ay,
+                       boxX + boxW - 7, ay - 3,
+                       boxX + boxW - 1, ay - 3);
+    }
+
+    renderFooterActions(d, nullptr, nullptr, "back", "ok");
+}
+
+void DrawScreen::renderExitNametagPrompt(oled& d) {
+    constexpr uint8_t boxW = 100;
+    constexpr uint8_t boxH = 36;
+    constexpr uint8_t boxX = (128 - boxW) / 2;
+    constexpr uint8_t boxY = (64 - boxH) / 2;
+    d.setDrawColor(0);
+    d.drawBox(boxX, boxY, boxW, boxH);
+    d.setDrawColor(1);
+    d.drawRFrame(boxX, boxY, boxW, boxH, 2);
+    d.setFont(UIFonts::kText);
+    d.drawStr(boxX + 8, boxY + 11, "Set as nametag?");
+
+    static const char* kRows[2] = {"Yes", "No"};
+    for (uint8_t i = 0; i < 2; i++) {
+        const int16_t ry = (int16_t)(boxY + 18 + i * 9);
+        if (exitNametagSel_ == i) {
+            d.setDrawColor(1);
+            d.drawBox(boxX + 6, ry, boxW - 12, 9);
+            d.setDrawColor(0);
+        }
+        d.drawStr(boxX + 12, ry + 7, kRows[i]);
+        d.setDrawColor(1);
+    }
+    renderFooterActions(d, nullptr, nullptr, nullptr, "ok");
+}
+
 // ── Hit zones ──────────────────────────────────────────────────────────────
 
 DrawScreen::HitZone DrawScreen::hitZoneAtCursor(uint8_t* outExtra) const {
@@ -2437,7 +2822,12 @@ DrawScreen::HitZone DrawScreen::hitZoneAtCursor(uint8_t* outExtra) const {
         cx >= kToolStripX && cx < kToolStripX + kToolStripW &&
         cy >= kToolStripY && cy < kToolStripY + kToolStripH) {
         uint8_t row = (uint8_t)((cy - kToolStripY) / kToolRowH);
-        if (row < kToolSlotCount) return kToolSlots[row].zone;
+        const uint8_t maxVisible =
+            kToolSlotCount > kToolStripVisibleRows ? kToolStripVisibleRows : kToolSlotCount;
+        if (row < maxVisible) {
+            uint8_t idx = (uint8_t)(toolStripScroll_ + row);
+            if (idx < kToolSlotCount) return kToolSlots[idx].zone;
+        }
     }
 
     // Bottom timeline + brush size area.
@@ -2497,6 +2887,12 @@ void DrawScreen::onChromeClick(HitZone z, uint8_t extra, GUIManager& gui) {
             sTextInput.configure("Text", textEditBuf_, sizeof(textEditBuf_),
                                  onTextInputCb, this);
             gui.pushScreen(kScreenTextInput);
+            break;
+        case HitZone::ToolFieldAdd:
+            fieldPickerCursor_ = 0;
+            fieldPickerScroll_ = 0;
+            fieldPickerJoyMs_ = 0;
+            mode_ = Mode::FieldPicker;
             break;
         case HitZone::ToolSettings:
             popupDurationMs_ = (currentFrame_ < doc_.frames.size())
@@ -2701,6 +3097,38 @@ void DrawScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     const Inputs::ButtonStates& b = inputs.buttons();
     const uint32_t now = millis();
 
+    // ── Hold-Cancel-4s = Save+Exit ────────────────────────────────────────
+    // Only armed in plain Editing mode (popups eat Cancel as a commit edge,
+    // and Draw tool's Cancel is the eraser stroke). Always reset when not
+    // eligible so re-entering Editing with the button held doesn't fire pop.
+    {
+        const bool cancelHoldEligible =
+            mode_ == Mode::Editing &&
+            currentTool_ != Tool::Draw && !painting_;
+        if (cancelHoldEligible && b.cancel) {
+            if (cancelHoldStartMs_ == 0) cancelHoldStartMs_ = now;
+            if (now - cancelHoldStartMs_ >= kCancelHoldMs) {
+                cancelHoldStartMs_ = 0;
+                if (draw::save(doc_)) {
+                    saveFailed_ = false;
+                    exitNametagSel_ = 1;
+                    exitNametagJoyMs_ = 0;
+                    mode_ = Mode::ExitNametagPrompt;
+                    gui.requestRender();
+                    return;
+                }
+                saveFailed_ = true;
+                savePromptSel_ = 0;
+                mode_ = Mode::SaveExitPrompt;
+                gui.requestRender();
+                return;
+            }
+            gui.requestRender();
+        } else {
+            cancelHoldStartMs_ = 0;
+        }
+    }
+
     // ── Modes that absorb input ────────────────────────────────────────────
     if (mode_ == Mode::Tutorial) {
         auto finishTutorial = [&]() {
@@ -2875,7 +3303,11 @@ void DrawScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
             if (savePromptSel_ == 0) {
                 if (draw::save(doc_)) {
                     saveFailed_ = false;
-                    gui.popScreen();
+                    // Hand off to the Set-as-Nametag prompt before popping.
+                    exitNametagSel_ = 1;
+                    exitNametagJoyMs_ = 0;
+                    mode_ = Mode::ExitNametagPrompt;
+                    gui.requestRender();
                 } else {
                     saveFailed_ = true;
                     gui.requestRender();
@@ -3032,6 +3464,81 @@ void DrawScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
         return;
     }
 
+    if (mode_ == Mode::FieldPicker) {
+        if (e.cancelPressed) {
+            mode_ = Mode::Editing;
+            gui.requestRender();
+            return;
+        }
+        if (e.confirmPressed) {
+            // Snapshot the chosen field's current value into the text-add path.
+            BadgeInfo::Fields fields{};
+            BadgeInfo::getCurrent(fields);
+            if (fieldPickerCursor_ < kFieldDefCount) {
+                const FieldDef& fd = kFieldDefs[fieldPickerCursor_];
+                const char* base = reinterpret_cast<const char*>(&fields) + fd.offset;
+                const char* val = base[0] ? base : kFieldDefs[fieldPickerCursor_].label;
+                textOp_ = TextOp::Add;
+                textEditTargetId_[0] = '\0';
+                std::strncpy(textEditBuf_, val, sizeof(textEditBuf_) - 1);
+                textEditBuf_[sizeof(textEditBuf_) - 1] = '\0';
+                mode_ = Mode::Editing;
+                onTextInputDone(textEditBuf_);
+            } else {
+                mode_ = Mode::Editing;
+            }
+            gui.requestRender();
+            return;
+        }
+        static bool fpNavDefl = false;
+        const int8_t nav = menuOneShotNav(inputs, e, &fpNavDefl);
+        if (nav < 0 && fieldPickerCursor_ > 0) {
+            fieldPickerCursor_--;
+            gui.requestRender();
+        } else if (nav > 0 && fieldPickerCursor_ + 1 < kFieldDefCount) {
+            fieldPickerCursor_++;
+            gui.requestRender();
+        }
+        return;
+    }
+
+    if (mode_ == Mode::ExitNametagPrompt) {
+        auto activate = [&]() {
+            if (exitNametagSel_ == 0) {
+                // Yes — adopt this drawing as the live nametag.
+                if (doc_.animId[0]) {
+                    auto* newDoc = new (std::nothrow) draw::AnimDoc();
+                    if (newDoc && draw::load(doc_.animId, *newDoc) &&
+                        !newDoc->frames.empty()) {
+                        adoptNametagAnimationDoc(doc_.animId, newDoc);
+                        badgeConfig.setNametagSetting(doc_.animId);
+                        badgeConfig.saveToFile();
+                    } else if (newDoc) {
+                        draw::freeAll(*newDoc);
+                        delete newDoc;
+                    }
+                }
+            }
+            gui.popScreen();
+        };
+        if (e.confirmPressed || e.downPressed || e.cancelPressed) {
+            // Cancel = "No" by default (acts as keep-as-is); confirm runs the selection.
+            if (e.cancelPressed) {
+                gui.popScreen();
+                return;
+            }
+            activate();
+            return;
+        }
+        static bool enNavDefl = false;
+        const int8_t nav = menuOneShotNav(inputs, e, &enNavDefl);
+        if (nav != 0) {
+            exitNametagSel_ = (uint8_t)((exitNametagSel_ + 1) & 1);
+            gui.requestRender();
+        }
+        return;
+    }
+
     // ── Cursor + chrome state ──────────────────────────────────────────────
     // ToolMenu / HelpScroll — joystick drives UI, not the cursor.
     if (mode_ != Mode::ToolMenu && mode_ != Mode::HelpScroll) {
@@ -3052,6 +3559,7 @@ void DrawScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
             }
         }
         toolMenuJoyLastMs_ = 0;
+        toolMenuScrollMs_ = millis();
         leftShown_ = true;
         mode_ = Mode::ToolMenu;
         gui.requestRender();
@@ -3122,8 +3630,25 @@ void DrawScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
                 doc_.frames[currentFrame_].placements.push_back(p);
                 doc_.dirty = true;
             }
+            // Stash whether the placed object is text and we should auto-
+            // open the appearance popup; we have to capture before resetting
+            // ghost_ since onTextInputDone for text-add sets autoOpenAppearance_.
+            char placedId[draw::kObjIdLen + 1] = {};
+            std::strncpy(placedId, ghost_.objId, sizeof(placedId) - 1);
+            const bool autoOpen = autoOpenAppearance_;
             ghost_ = GhostState{};
             currentTool_ = Tool::Hand;
+            if (autoOpen) {
+                autoOpenAppearance_ = false;
+                const draw::ObjectDef* placedDef = findObjectDef(placedId);
+                if (placedDef && placedDef->type == draw::ObjectType::Text) {
+                    std::strncpy(ctxMenu_.targetObjId, placedId,
+                                 sizeof(ctxMenu_.targetObjId) - 1);
+                    doCtxTextAppearance(gui);
+                    gui.requestRender();
+                    return;
+                }
+            }
             mode_ = Mode::Editing;
             gui.requestRender();
         }
@@ -3457,6 +3982,9 @@ void DrawScreen::onTextInputDone(const char* text) {
         std::strncpy(ghost_.objId, objId, sizeof(ghost_.objId) - 1);
         ghost_.grabOffsetX = 0;
         ghost_.grabOffsetY = 0;
+        // Auto-open the appearance popup once the user drops the text so they
+        // can immediately pick a font/size that fits without backtracking.
+        autoOpenAppearance_ = true;
         mode_ = Mode::Ghosted;
     }
     textOp_ = TextOp::None;

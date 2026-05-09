@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -236,6 +237,7 @@ void parseAppMain(const char* slug, DynamicApp& app) {
   strncpy(app.slug, slug, kSlugCap - 1);
   app.slug[kSlugCap - 1] = '\0';
   snprintf(app.entryPath, kEntryPathCap, "/apps/%s/main.py", slug);
+  app.orderHint = INT16_MAX;
 
   char buf[2048];
   int32_t bytes = readFileChunk(app.entryPath, buf, sizeof(buf));
@@ -248,6 +250,19 @@ void parseAppMain(const char* slug, DynamicApp& app) {
   }
   findDunder(buf, bytes, "__description__", app.description,
              kDescriptionCap);
+
+  // __order__ is a signed integer literal — the dunder scanner returns it
+  // as a string; convert and clamp to int16 range.
+  char orderValue[16];
+  if (findDunder(buf, bytes, "__order__", orderValue, sizeof(orderValue))) {
+    char* endp = nullptr;
+    long v = strtol(orderValue, &endp, 10);
+    if (endp != orderValue) {
+      if (v < INT16_MIN + 1) v = INT16_MIN + 1;
+      if (v > INT16_MAX - 1) v = INT16_MAX - 1;
+      app.orderHint = static_cast<int16_t>(v);
+    }
+  }
 
   char iconValue[kEntryPathCap];
   if (findDunder(buf, bytes, "__icon__", iconValue, sizeof(iconValue))) {

@@ -13,34 +13,68 @@ extern "C" {
 namespace {
 constexpr const char* kStatePath = "/led_state.json";
 
+// All 8x8 LED-matrix bitmaps below are MSB-first (bit 7 = leftmost
+// pixel) so the binary literal reads as the visible dot pattern.
 constexpr uint8_t kBlank[LEDAppRuntime::kFrameRows] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
 };
 constexpr uint8_t kHeart[LEDAppRuntime::kFrameRows] = {
-    0x66, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00,
+    0b01100110,
+    0b11111111,
+    0b11111111,
+    0b11111111,
+    0b01111110,
+    0b00111100,
+    0b00011000,
+    0b00000000,
 };
 constexpr uint8_t kGlider[LEDAppRuntime::kFrameRows] = {
-    0x00, 0x00, 0x20, 0x10, 0x70, 0x00, 0x00, 0x00,
+    0b00000000,
+    0b00000000,
+    0b00100000,
+    0b00010000,
+    0b01110000,
+    0b00000000,
+    0b00000000,
+    0b00000000,
 };
+// "REPLAY" wordmark unrolled as columns scrolling right-to-left across
+// the matrix. Each byte is one column; bit 7 = top row.
 constexpr uint8_t kReplayColumns[] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xDF, 0xDF, 0xD8, 0xDE, 0xFF, 0xFF, 0x71, 0xFF,
-    0xFF, 0xDB, 0xDB, 0xDB, 0xC3, 0xC3, 0xDF, 0xDF,
-    0xD8, 0xD8, 0xD8, 0xF8, 0xF8, 0xFF, 0xFF, 0x07,
-    0x03, 0x03, 0x03, 0x03, 0xFF, 0xFF, 0xF8, 0xD8,
-    0xD8, 0xFF, 0xFF, 0xF8, 0xF8, 0xFF, 0x1F, 0x1F,
-    0xF8, 0xF8,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b11011111, 0b11011111, 0b11011000, 0b11011110,
+    0b11111111, 0b11111111, 0b01110001, 0b11111111,
+    0b11111111, 0b11011011, 0b11011011, 0b11011011,
+    0b11000011, 0b11000011, 0b11011111, 0b11011111,
+    0b11011000, 0b11011000, 0b11011000, 0b11111000,
+    0b11111000, 0b11111111, 0b11111111, 0b00000111,
+    0b00000011, 0b00000011, 0b00000011, 0b00000011,
+    0b11111111, 0b11111111, 0b11111000, 0b11011000,
+    0b11011000, 0b11111111, 0b11111111, 0b11111000,
+    0b11111000, 0b11111111, 0b00011111, 0b00011111,
+    0b11111000, 0b11111000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    0b00000000, 0b00000000, 0b00000000, 0b00000000,
 };
 constexpr uint8_t kWaveFrames[][LEDAppRuntime::kFrameRows] = {
-    {0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01},
-    {0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x80},
-    {0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x80, 0x40},
-    {0x10, 0x08, 0x04, 0x02, 0x01, 0x80, 0x40, 0x20},
-    {0x08, 0x04, 0x02, 0x01, 0x80, 0x40, 0x20, 0x10},
-    {0x04, 0x02, 0x01, 0x80, 0x40, 0x20, 0x10, 0x08},
-    {0x02, 0x01, 0x80, 0x40, 0x20, 0x10, 0x08, 0x04},
-    {0x01, 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02},
+    {0b10000000, 0b01000000, 0b00100000, 0b00010000,
+     0b00001000, 0b00000100, 0b00000010, 0b00000001},
+    {0b01000000, 0b00100000, 0b00010000, 0b00001000,
+     0b00000100, 0b00000010, 0b00000001, 0b10000000},
+    {0b00100000, 0b00010000, 0b00001000, 0b00000100,
+     0b00000010, 0b00000001, 0b10000000, 0b01000000},
+    {0b00010000, 0b00001000, 0b00000100, 0b00000010,
+     0b00000001, 0b10000000, 0b01000000, 0b00100000},
+    {0b00001000, 0b00000100, 0b00000010, 0b00000001,
+     0b10000000, 0b01000000, 0b00100000, 0b00010000},
+    {0b00000100, 0b00000010, 0b00000001, 0b10000000,
+     0b01000000, 0b00100000, 0b00010000, 0b00001000},
+    {0b00000010, 0b00000001, 0b10000000, 0b01000000,
+     0b00100000, 0b00010000, 0b00001000, 0b00000100},
+    {0b00000001, 0b10000000, 0b01000000, 0b00100000,
+     0b00010000, 0b00001000, 0b00000100, 0b00000010},
 };
 constexpr uint32_t kTemporalLogo32[32] = {
     0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -523,12 +557,18 @@ void LEDAppRuntime::posterFrame(Mode mode, const uint8_t* lifeSeed,
       frameFromColumns(kReplayColumns, sizeof(kReplayColumns), 8, out);
       return;
     case Mode::Sparkle: {
-      const uint8_t f[kFrameRows] = {0x81, 0x24, 0x00, 0x5A, 0x18, 0x00, 0x42, 0x18};
+      const uint8_t f[kFrameRows] = {
+          0b10000001, 0b00100100, 0b00000000, 0b01011010,
+          0b00011000, 0b00000000, 0b01000010, 0b00011000,
+      };
       memcpy(out, f, kFrameRows);
       return;
     }
     case Mode::Rain: {
-      const uint8_t f[kFrameRows] = {0x80, 0x00, 0x24, 0x00, 0x08, 0x40, 0x02, 0x00};
+      const uint8_t f[kFrameRows] = {
+          0b10000000, 0b00000000, 0b00100100, 0b00000000,
+          0b00001000, 0b01000000, 0b00000010, 0b00000000,
+      };
       memcpy(out, f, kFrameRows);
       return;
     }

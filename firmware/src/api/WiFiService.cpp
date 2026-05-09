@@ -34,6 +34,19 @@ bool clockLooksReady() {
 
 }  // namespace
 
+namespace {
+void wifiAutoConnectTask(void* arg) {
+  auto* svc = static_cast<WiFiService*>(arg);
+  // Let setup() and the GUI settle before we monopolise the radio.
+  vTaskDelay(pdMS_TO_TICKS(2500));
+  if (svc != nullptr && badgeConfig.wifiEnabled()) {
+    Serial.println("[WiFi] boot auto-connect attempt");
+    svc->connect();
+  }
+  vTaskDelete(nullptr);
+}
+}  // namespace
+
 void WiFiService::begin() {
   WiFi.mode(WIFI_OFF);
   WiFi.persistent(false);
@@ -41,7 +54,13 @@ void WiFiService::begin() {
   if (!s_wifiPmLock) {
     esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "wifi", &s_wifiPmLock);
   }
-  Serial.println("[WiFi] explicit networking ready; background connect disabled");
+  if (badgeConfig.wifiEnabled()) {
+    Serial.println("[WiFi] credentials present; scheduling boot auto-connect");
+    xTaskCreatePinnedToCore(wifiAutoConnectTask, "wifi_auto", 4096, this,
+                            tskIDLE_PRIORITY + 1, nullptr, 0);
+  } else {
+    Serial.println("[WiFi] explicit networking ready; auto-connect disabled");
+  }
 }
 
 bool WiFiService::connect() {
@@ -49,8 +68,8 @@ bool WiFiService::connect() {
     noteConnectionOk();
     return true;
   }
-  if (!badgeConfig.wifiConfigured()) {
-    Serial.println("[WiFi] not configured; explicit connect skipped");
+  if (!badgeConfig.wifiEnabled()) {
+    Serial.println("[WiFi] disabled in settings or not configured; connect skipped");
     noteConnectionFailed();
     return false;
   }

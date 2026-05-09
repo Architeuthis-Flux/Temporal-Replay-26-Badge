@@ -29,7 +29,7 @@ See `/docs/README.md` for the full badge-visible documentation index.
 )";
 static const uint32_t STARTUP_API_REFERENCE_MD_HASHES[19] = { 0x0BB4F0F5, 0x8BCB16DF, 0xD3C727E3, 0x8147C771, 0xE5094A62, 0x1134D3F0, 0x817AB1A3, 0xE68A1A50, 0x40436BE1, 0x47E9B5D8, 0xC5622F12, 0x8A48E3C3, 0x15F6AC26, 0x71E02B3F, 0x24712D28, 0x2EF4388B, 0x1FAD8385, 0xD80D36D2, 0x14FB4701 };
 
-static const char STARTUP_APPS_README_MD_DATA[] = R"(# Badge Apps
+static const char STARTUP_APPS_README_MD_DATA[] = R"===(# Badge Apps
 
 Python apps for the Temporal Badge. Files under `initial_filesystem/` are
 embedded into the firmware image and provisioned onto the badge's FatFS
@@ -162,17 +162,190 @@ Dev firmware also includes a Crash Log app that reads `/last_mpy_error.txt` on
 the badge. In normal firmware, use the Files screen or serial tooling to inspect
 that file.
 
-## Adding a Production App
+## App Manifest Dunders
 
-Normal firmware should only surface apps that are intended for attendees. To
-ship a MicroPython app in the main menu:
+Folder apps are auto-discovered by `AppRegistry` (see
+`firmware/src/apps/AppRegistry.cpp`). Drop a `main.py` under
+`/apps/<slug>/` and the firmware surfaces it on the main grid menu and in the
+MATRIX APPS picker without any C++ changes — the registry text-scans the first
+~2 KB of `main.py` for top-level dunder assignments and uses them to decorate
+the menu tile:
 
-1. Put the app in `initial_filesystem/apps/<app>/main.py`.
-2. Add an icon in `initial_filesystem/apps/<app>/icon.py` if the app also uses
-   the LED matrix, and add the main-menu bitmap to `firmware/src/ui/AppIcons.h`.
-3. Add a launcher action in `firmware/src/ui/GUI.cpp` that calls
-   `mpy_gui_exec_file("/apps/<app>/main.py")`.
-4. Add a `GridMenuItem` for the app in `kBadgeMenuItems`.
+```python
+"""My Game — Tamagotchi-style desk pet."""
+
+__title__       = "My Game"        # max 19 chars; falls back to slug-as-title
+__description__ = "A tiny pet that lives in your pocket."  # max 63 chars
+__icon__        = "icon.py"        # path to a 12×12 packed XBM tuple
+__matrix_title__ = "Pet"           # only used when matrix.py is present
+__order__       = 50               # signed int; lower = earlier on grid
+
+# ... rest of main.py ...
+```
+
+The slug is the folder name (`/apps/my_game/` → `my_game`). It must be
+alphanumeric plus `_` or `-`; anything else is skipped by the scanner. There
+is a hard cap of 32 dynamic apps per badge — older slots win on ties.
+
+### Home-screen Icon (`icon.py`)
+
+`__icon__ = "icon.py"` (or any filename inside the app folder) points at a
+12×12 monochrome icon for the main grid tile. The file just needs a top-level
+`DATA = (...)` tuple of 24 bytes — packed XBM order, 2 bytes per row × 12
+rows, bit 0 of each byte being the leftmost pixel (matches U8G2's
+`drawXBM`). The upper 4 bits of every odd byte are unused.
+
+```python
+"""My Game app icon — bytes match firmware AppIcons style."""
+
+WIDTH = 12
+HEIGHT = 12
+# Two bytes per row. Binary literals make the dot pattern visible in
+# the source; XBM is LSB-first so the literal reads mirrored relative
+# to the rendered icon — accepted, the bit values are unchanged.
+DATA = (
+    0b01110111, 0b00000111,
+    0b01110111, 0b00000111,
+    0b00000000, 0b00000000,
+    0b01100000, 0b00000000,
+    0b01100000, 0b00000000,
+    0b11111100, 0b00000011,
+    0b00000000, 0b00000000,
+    0b00111110, 0b00000000,
+    0b00100000, 0b00000000,
+    0b11100000, 0b00000011,
+    0b00000000, 0b00000010,
+    0b11000000, 0b00000011,
+)
+```
+
+If `__icon__` is omitted, the registry opportunistically reads
+`/apps/<slug>/icon.py` and uses it if it parses; otherwise the tile falls
+back to the generic apps icon. Inline tuples are also accepted
+(`__icon__ = "(0xFF, 0x..., )"`) but reading from a separate file keeps
+`main.py` readable.
+
+### Tile Order (`__order__`)
+
+The main grid is rendered in stable-sort order by a signed `int16` "order"
+key. Three layers feed the key, each one overriding the layer above it:
+
+1. **Defaults.** Curated tiles (the C++ array in
+   `firmware/src/ui/GUI.cpp::kCuratedMenuItems`) get `10 × array_index`,
+   leaving room (1, 2, …, 9) for inserts. Dynamic apps default to
+   `10000 + AppRegistry_index`. `SETTINGS` is pinned to `30000` so it
+   stays at the back of the grid by default.
+2. **App manifest.** A folder app can declare `__order__ = 50` (or any
+   signed integer) at the top of `main.py` to claim a specific slot.
+3. **User override.** The Reorder Menu screen
+   (Settings → Menu → Reorder) writes per-label overrides to NVS; those
+   override both of the above for the labels they cover.
+
+Ties resolve by insertion order (curated array index first, then
+AppRegistry discovery order). That means duplicate `__order__` values are
+fine — items with the same key just keep the order in which they were
+placed.
+
+A few common patterns:
+
+```python
+__order__ = -10   # before all curated tiles (BOOP, CONTACTS, …)
+__order__ = 25    # between MAP (idx 30 → 30) and SCHEDULE (idx 40 → 40)
+__order__ = 100   # right after the curated block, before other dyn apps
+__order__ = 9999  # nearly last (just before SETTINGS)
+```
+
+Because the keys are signed, you can prepend an app with a negative
+order without having to rewrite the curated table.
+
+After editing icon bytes you can hot-refresh the menu without rebooting:
+
+```python
+import badge
+badge.rescan_apps()
+```
+
+### Persistent Matrix Apps (`matrix.py`)
+
+A sibling `matrix.py` next to `main.py` registers the app as a persistent
+LED-matrix ambient. The MATRIX APPS picker (firmware menu → MATRIX APPS) lists
+every app with a `matrix.py` past the built-in modes; selecting one calls
+`commitMatrixApp(slug)`, which:
+
+1. Persists the slug in `/led_state.json` so the choice survives reboots.
+2. Tears down whatever Python matrix callback was running.
+3. Sources `/apps/<slug>/matrix.py` once (via `mpy_gui_exec_file`) so it can
+   register a callback with `badge.matrix_app_start(...)`.
+
+The script's job is to install the callback and return — *do not* spin a main
+loop. The callback then runs forever from the firmware service pump.
+
+```python
+"""Tardigotchi ambient matrix — slowly drifting ziggy."""
+
+__matrix_title__ = "Ziggy"   # label shown in the MATRIX APPS picker
+
+import badge
+
+_phase = 0
+
+def _tick(now_ms):
+    global _phase
+    _phase = (_phase + 1) & 7
+    frame = [0] * 8
+    frame[7] = 0x80 >> _phase
+    badge.led_set_frame(frame)
+
+# 250 ms cadence, 24/255 brightness; persists across reboots.
+badge.matrix_app_start(_tick, 250, 24)
+```
+
+Constraints:
+
+- The script runs once on commit and once at every boot when this slug is the
+  active matrix app. Module-level state is reinitialised each time.
+- `_tick` is invoked from the matrix service pump — keep it fast (no
+  blocking I/O, no `time.sleep_ms`). Long work means dropped frames.
+- Reading state from `/apps/<slug>/...` or other persisted JSON is fine; just
+  don't write to flash on every tick. Throttle saves to once a minute or less.
+- Selecting any non-Python mode in the MATRIX APPS picker (Sparkle, Off, etc.)
+  clears the slug and stops the callback immediately.
+- `__matrix_title__` is optional; falls back to the foreground app's
+  `__title__`.
+
+See `apps/tardigotchi/matrix.py` for a full Tamagotchi-style ambient
+that reads the foreground game's save file.
+
+## Manual Reorder Screen
+
+Settings → **Menu → Reorder** opens an in-place reorder UI:
+
+| Button | Action |
+|--------|--------|
+| Joystick Y | Move cursor up/down |
+| `X` | Pick up the highlighted row (or drop it) |
+| `A` (confirm) | Save and rebuild the menu |
+| `B` (back) | Cancel without saving |
+
+While picked up, joystick Y drags the row through the list — the swap is
+performed at every cursor step so what you see is what you'll save. On
+save, every row's index becomes its NVS override (spaced × 10 so future
+inserts can land between user picks without bumping every override).
+**Settings → Menu → Reset Order** wipes the NVS namespace and rebuilds,
+returning every tile to its default order.
+
+The screen takes a snapshot of labels at entry, so a concurrent
+`badge.rescan_apps()` can't surprise it. Apps without a `main.py` (i.e.
+removed since the snapshot) simply lose their override on the next
+rebuild — the orphaned NVS keys stay around but are inert.
+
+## Promoting an App to a Curated Native Tile
+
+The auto-discovery path covers almost every case. The native curated tiles
+in `firmware/src/ui/GUI.cpp` (`kCuratedMenuItems`) only exist for apps that
+need a hardcoded display order, a C++ icon entry in `AppIcons.h`, or a
+non-Python target screen. Most attendee-facing apps don't need this — the
+dunder-based registration is enough.
 
 Keep one-off diagnostics and API demos in the dev Apps menu instead of adding
 them to the normal firmware menu.
@@ -414,8 +587,8 @@ handle this in your app.
 | `syntax_error_test.py` | Syntax error handling |
 | `testImports.py` | Module import verification |
 | `http_test.py` | Explicit MicroPython HTTP GET smoke test against a public API |
-)";
-static const uint32_t STARTUP_APPS_README_MD_HASHES[21] = { 0x2E1BA8D3, 0x1FAC7A86, 0x8453402B, 0x7AEED101, 0x5A16814D, 0x9FB79005, 0x89A294CD, 0x787DA1A0, 0x94173EC4, 0xFB9CD101, 0x4B283019, 0x7D385DFD, 0xB9155CB2, 0xA132A84F, 0x8A28CF28, 0x8EFFA540, 0x745612F6, 0x8FD74868, 0xC75F5509, 0xDE9EEE46, 0xB34F0409 };
+)===";
+static const uint32_t STARTUP_APPS_README_MD_HASHES[24] = { 0xD3EC7B77, 0x133996F7, 0x4EE7EA8D, 0x2E1BA8D3, 0x1FAC7A86, 0x8453402B, 0x7AEED101, 0x5A16814D, 0x9FB79005, 0x89A294CD, 0x787DA1A0, 0x94173EC4, 0xFB9CD101, 0x4B283019, 0x7D385DFD, 0xB9155CB2, 0xA132A84F, 0x8A28CF28, 0x8EFFA540, 0x745612F6, 0x8FD74868, 0xC75F5509, 0xDE9EEE46, 0xB34F0409 };
 
 static const char STARTUP_APPS_API_TEST_PY_DATA[] = R"===("""
 api_test.py — Interactive test menu for all badge MicroPython API functions.
@@ -1541,38 +1714,32 @@ static const uint32_t STARTUP_APPS_BREAKSNAKE_BS_SCREENS_PY_HASHES[12] = { 0xFD0
 static const char STARTUP_APPS_BREAKSNAKE_ICON_PY_DATA[] = R"("""BreakSnake app icon.
 
 The bytes match AppIcons::breaksnake in firmware/src/ui/AppIcons.h.
+
+Layout: 12x12 packed XBM. Two bytes per row — the low byte covers cols
+0..7 and the high byte covers cols 8..11 (the top 4 bits of the high
+byte are unused). XBM order is LSB-first within each byte, so the binary
+literal reads mirrored relative to the rendered icon. The pattern is
+still visible by eye; the bytes are right-aligned visually below.
 """
 
 WIDTH = 12
 HEIGHT = 12
 DATA = (
-    0x77,
-    0x07,
-    0x77,
-    0x07,
-    0x00,
-    0x00,
-    0x60,
-    0x00,
-    0x60,
-    0x00,
-    0xFC,
-    0x03,
-    0x00,
-    0x00,
-    0x3E,
-    0x00,
-    0x20,
-    0x00,
-    0xE0,
-    0x03,
-    0x00,
-    0x02,
-    0xC0,
-    0x03,
+    0b01110111, 0b00000111,
+    0b01110111, 0b00000111,
+    0b00000000, 0b00000000,
+    0b01100000, 0b00000000,
+    0b01100000, 0b00000000,
+    0b11111100, 0b00000011,
+    0b00000000, 0b00000000,
+    0b00111110, 0b00000000,
+    0b00100000, 0b00000000,
+    0b11100000, 0b00000011,
+    0b00000000, 0b00000010,
+    0b11000000, 0b00000011,
 )
 )";
-static const uint32_t STARTUP_APPS_BREAKSNAKE_ICON_PY_HASHES[1] = { 0x28389B86 };
+static const uint32_t STARTUP_APPS_BREAKSNAKE_ICON_PY_HASHES[2] = { 0x2FB734C4, 0x28389B86 };
 
 static const char STARTUP_APPS_BREAKSNAKE_MAIN_PY_DATA[] = R"("""BreakSnake app entry point."""
 
@@ -2585,36 +2752,27 @@ static const char STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_DATA[] = R"("""Flappy As
 The bytes match AppIcons::flappyAsteroids in firmware/src/ui/AppIcons.h.
 """
 
+# 12x12 packed XBM, two bytes per row (low = cols 0..7, high = cols
+# 8..11). XBM is LSB-first; the binary literal reads mirrored relative
+# to the rendered icon — that's accepted, the pattern is still visible.
 WIDTH = 12
 HEIGHT = 12
 DATA = (
-    0x00,
-    0x0C,
-    0x08,
-    0x0C,
-    0x1C,
-    0x0C,
-    0x2A,
-    0x00,
-    0x88,
-    0x01,
-    0xC1,
-    0x0D,
-    0xA2,
-    0x0C,
-    0x01,
-    0x0C,
-    0x14,
-    0x0C,
-    0x22,
-    0x0C,
-    0x08,
-    0x0C,
-    0x14,
-    0x00,
+    0b00000000, 0b00001100,
+    0b00001000, 0b00001100,
+    0b00011100, 0b00001100,
+    0b00101010, 0b00000000,
+    0b10001000, 0b00000001,
+    0b11000001, 0b00001101,
+    0b10100010, 0b00001100,
+    0b00000001, 0b00001100,
+    0b00010100, 0b00001100,
+    0b00100010, 0b00001100,
+    0b00001000, 0b00001100,
+    0b00010100, 0b00000000,
 )
 )";
-static const uint32_t STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_HASHES[1] = { 0x4EB40382 };
+static const uint32_t STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_HASHES[2] = { 0x14BC4578, 0x4EB40382 };
 
 static const char STARTUP_APPS_FLAPPY_ASTEROIDS_MAIN_PY_DATA[] = R"("""Flappy Asteroids app entry point."""
 
@@ -4244,36 +4402,26 @@ static const char STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_DATA[] = R"("""IR Block B
 The bytes match AppIcons::irBlockBattle in firmware/src/ui/AppIcons.h.
 """
 
+# 12x12 packed XBM, two bytes per row (low = cols 0..7, high = cols
+# 8..11). XBM is LSB-first; the binary literal reads mirrored.
 WIDTH = 12
 HEIGHT = 12
 DATA = (
-    0x0F,
-    0x01,
-    0x08,
-    0x03,
-    0x08,
-    0x02,
-    0x00,
-    0x04,
-    0x33,
-    0x00,
-    0x33,
-    0x07,
-    0x30,
-    0x04,
-    0x38,
-    0x00,
-    0x00,
-    0x04,
-    0xCE,
-    0x01,
-    0xCE,
-    0x01,
-    0x00,
-    0x00,
+    0b00001111, 0b00000001,
+    0b00001000, 0b00000011,
+    0b00001000, 0b00000010,
+    0b00000000, 0b00000100,
+    0b00110011, 0b00000000,
+    0b00110011, 0b00000111,
+    0b00110000, 0b00000100,
+    0b00111000, 0b00000000,
+    0b00000000, 0b00000100,
+    0b11001110, 0b00000001,
+    0b11001110, 0b00000001,
+    0b00000000, 0b00000000,
 )
 )";
-static const uint32_t STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_HASHES[1] = { 0x72B80AD7 };
+static const uint32_t STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_HASHES[2] = { 0x35239FFA, 0x72B80AD7 };
 
 static const char STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_DATA[] = R"("""IR Block Battle app entry point."""
 
@@ -6406,12 +6554,29 @@ _PET_SHAPES = (
 # XP thresholds — must mirror icon.LEVEL_UNLOCKS.
 _LEVEL_XP = (0, 25, 100, 250, 500, 1000)
 
-# 3-row status icons (8 columns each, MSB = leftmost). Bottom-aligned
-# in rows 0..2 so the bar can sit to the right.
-_HEART = (0x50, 0xF8, 0x70)        # .X.X.   XXXXX   .XXX.
-_DRUMSTICK = (0x70, 0xF0, 0x68)    # .XXX.   XXXX.   .XX.X
-_FACE_SMILE = (0xA8, 0x00, 0x70)   # X.X.X   .....   .XXX.
-_FACE_FROWN = (0xA8, 0x70, 0x00)   # X.X.X   .XXX.   .....
+# 3-row status icons (8 columns each, MSB = leftmost pixel). The dot
+# pattern is visible directly in the binary literals; bottom-aligned in
+# rows 0..2 so the right-edge fill bar lives in cols 6..7.
+_HEART = (
+    0b01010000,
+    0b11111000,
+    0b01110000,
+)
+_DRUMSTICK = (
+    0b01110000,
+    0b11110000,
+    0b01101000,
+)
+_FACE_SMILE = (
+    0b10101000,
+    0b00000000,
+    0b01110000,
+)
+_FACE_FROWN = (
+    0b10101000,
+    0b01110000,
+    0b00000000,
+)
 
 # Hunger/happiness warning threshold (matches the foreground "okay/sad"
 # moodscore breakpoints loosely). Crossing below this triggers a beep.
@@ -6464,8 +6629,16 @@ def _bar_rows(value):
     if cells > 6:
         cells = 6
     rows = [0, 0, 0]
-    # Order: row2 col7, row2 col6, row1 col7, row1 col6, row0 col7, row0 col6
-    pattern = ((2, 0x01), (2, 0x02), (1, 0x01), (1, 0x02), (0, 0x01), (0, 0x02))
+    # Order: row2 col7, row2 col6, row1 col7, row1 col6, row0 col7, row0 col6.
+    # Masks are MSB-first 8-bit so col 7 = bit 0 = 0b00000001, col 6 = bit 1.
+    pattern = (
+        (2, 0b00000001),
+        (2, 0b00000010),
+        (1, 0b00000001),
+        (1, 0b00000010),
+        (0, 0b00000001),
+        (0, 0b00000010),
+    )
     for i in range(cells):
         r, m = pattern[i]
         rows[r] |= m
@@ -6622,7 +6795,7 @@ def _install():
 
 _install()
 )";
-static const uint32_t STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_HASHES[2] = { 0x0EA4F790, 0x17D9CB8D };
+static const uint32_t STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_HASHES[3] = { 0x717E44B3, 0x0EA4F790, 0x17D9CB8D };
 
 static const char STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_DATA[] = R"(# Auto-generated ziggy sprites (128x56, 1bpp)
 ZIGGY_W = 128
@@ -14039,18 +14212,18 @@ static const uint32_t STARTUP_TESTS_TEST_OLED_PY_HASHES[1] = { 0xFCAD8323 };
 
 static const StartupFileInfo kStartupFiles[] = {
     { "/API_REFERENCE.md", STARTUP_API_REFERENCE_MD_DATA, sizeof(STARTUP_API_REFERENCE_MD_DATA) - 1, STARTUP_API_REFERENCE_MD_HASHES, 19, 0 },
-    { "/apps/README.md", STARTUP_APPS_README_MD_DATA, sizeof(STARTUP_APPS_README_MD_DATA) - 1, STARTUP_APPS_README_MD_HASHES, 21, 0 },
+    { "/apps/README.md", STARTUP_APPS_README_MD_DATA, sizeof(STARTUP_APPS_README_MD_DATA) - 1, STARTUP_APPS_README_MD_HASHES, 24, 0 },
     { "/apps/api_test.py", STARTUP_APPS_API_TEST_PY_DATA, sizeof(STARTUP_APPS_API_TEST_PY_DATA) - 1, STARTUP_APPS_API_TEST_PY_HASHES, 3, 0 },
     { "/apps/breaksnake/bs_data.py", STARTUP_APPS_BREAKSNAKE_BS_DATA_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_BS_DATA_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_BS_DATA_PY_HASHES, 4, 0 },
     { "/apps/breaksnake/bs_engine.py", STARTUP_APPS_BREAKSNAKE_BS_ENGINE_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_BS_ENGINE_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_BS_ENGINE_PY_HASHES, 4, 0 },
     { "/apps/breaksnake/bs_screens.py", STARTUP_APPS_BREAKSNAKE_BS_SCREENS_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_BS_SCREENS_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_BS_SCREENS_PY_HASHES, 12, 0 },
-    { "/apps/breaksnake/icon.py", STARTUP_APPS_BREAKSNAKE_ICON_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_ICON_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_ICON_PY_HASHES, 1, 0 },
+    { "/apps/breaksnake/icon.py", STARTUP_APPS_BREAKSNAKE_ICON_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_ICON_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_ICON_PY_HASHES, 2, 0 },
     { "/apps/breaksnake/main.py", STARTUP_APPS_BREAKSNAKE_MAIN_PY_DATA, sizeof(STARTUP_APPS_BREAKSNAKE_MAIN_PY_DATA) - 1, STARTUP_APPS_BREAKSNAKE_MAIN_PY_HASHES, 3, 0 },
     { "/apps/crash_log/main.py", STARTUP_APPS_CRASH_LOG_MAIN_PY_DATA, sizeof(STARTUP_APPS_CRASH_LOG_MAIN_PY_DATA) - 1, STARTUP_APPS_CRASH_LOG_MAIN_PY_HASHES, 1, 0 },
     { "/apps/flappy_asteroids/fa_data.py", STARTUP_APPS_FLAPPY_ASTEROIDS_FA_DATA_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_FA_DATA_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_FA_DATA_PY_HASHES, 4, 0 },
     { "/apps/flappy_asteroids/fa_engine.py", STARTUP_APPS_FLAPPY_ASTEROIDS_FA_ENGINE_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_FA_ENGINE_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_FA_ENGINE_PY_HASHES, 4, 0 },
     { "/apps/flappy_asteroids/fa_screens.py", STARTUP_APPS_FLAPPY_ASTEROIDS_FA_SCREENS_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_FA_SCREENS_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_FA_SCREENS_PY_HASHES, 3, 0 },
-    { "/apps/flappy_asteroids/icon.py", STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_HASHES, 1, 0 },
+    { "/apps/flappy_asteroids/icon.py", STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_ICON_PY_HASHES, 2, 0 },
     { "/apps/flappy_asteroids/main.py", STARTUP_APPS_FLAPPY_ASTEROIDS_MAIN_PY_DATA, sizeof(STARTUP_APPS_FLAPPY_ASTEROIDS_MAIN_PY_DATA) - 1, STARTUP_APPS_FLAPPY_ASTEROIDS_MAIN_PY_HASHES, 2, 0 },
     { "/apps/font_demo.py", STARTUP_APPS_FONT_DEMO_PY_DATA, sizeof(STARTUP_APPS_FONT_DEMO_PY_DATA) - 1, STARTUP_APPS_FONT_DEMO_PY_HASHES, 3, 0 },
     { "/apps/hello.py", STARTUP_APPS_HELLO_PY_DATA, sizeof(STARTUP_APPS_HELLO_PY_DATA) - 1, STARTUP_APPS_HELLO_PY_HASHES, 3, 0 },
@@ -14059,14 +14232,14 @@ static const StartupFileInfo kStartupFiles[] = {
     { "/apps/ir_block_battle/ibb_net.py", STARTUP_APPS_IR_BLOCK_BATTLE_IBB_NET_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_IBB_NET_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_IBB_NET_PY_HASHES, 5, 0 },
     { "/apps/ir_block_battle/ibb_screens.py", STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SCREENS_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SCREENS_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SCREENS_PY_HASHES, 10, 0 },
     { "/apps/ir_block_battle/ibb_serial.py", STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SERIAL_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SERIAL_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_IBB_SERIAL_PY_HASHES, 3, 0 },
-    { "/apps/ir_block_battle/icon.py", STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_HASHES, 1, 0 },
+    { "/apps/ir_block_battle/icon.py", STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_ICON_PY_HASHES, 2, 0 },
     { "/apps/ir_block_battle/main.py", STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_DATA, sizeof(STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_DATA) - 1, STARTUP_APPS_IR_BLOCK_BATTLE_MAIN_PY_HASHES, 2, 0 },
     { "/apps/ir_loopback_test.py", STARTUP_APPS_IR_LOOPBACK_TEST_PY_DATA, sizeof(STARTUP_APPS_IR_LOOPBACK_TEST_PY_DATA) - 1, STARTUP_APPS_IR_LOOPBACK_TEST_PY_HASHES, 3, 0 },
     { "/apps/synth/main.py", STARTUP_APPS_SYNTH_MAIN_PY_DATA, sizeof(STARTUP_APPS_SYNTH_MAIN_PY_DATA) - 1, STARTUP_APPS_SYNTH_MAIN_PY_HASHES, 8, 0 },
     { "/apps/tardigotchi/engine.py", STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_ENGINE_PY_HASHES, 2, 0 },
     { "/apps/tardigotchi/icon.py", STARTUP_APPS_TARDIGOTCHI_ICON_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_ICON_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_ICON_PY_HASHES, 1, 0 },
     { "/apps/tardigotchi/main.py", STARTUP_APPS_TARDIGOTCHI_MAIN_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_MAIN_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_MAIN_PY_HASHES, 1, 0 },
-    { "/apps/tardigotchi/matrix.py", STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_HASHES, 2, 0 },
+    { "/apps/tardigotchi/matrix.py", STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_MATRIX_PY_HASHES, 3, 0 },
     { "/apps/tardigotchi/sprites.py", STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_DATA, sizeof(STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_DATA) - 1, STARTUP_APPS_TARDIGOTCHI_SPRITES_PY_HASHES, 1, 0 },
     { "/apps/tilt_ball.py", STARTUP_APPS_TILT_BALL_PY_DATA, sizeof(STARTUP_APPS_TILT_BALL_PY_DATA) - 1, STARTUP_APPS_TILT_BALL_PY_HASHES, 2, 0 },
     { "/apps/viperide_reinit.py", STARTUP_APPS_VIPERIDE_REINIT_PY_DATA, sizeof(STARTUP_APPS_VIPERIDE_REINIT_PY_DATA) - 1, STARTUP_APPS_VIPERIDE_REINIT_PY_HASHES, 1, 0 },

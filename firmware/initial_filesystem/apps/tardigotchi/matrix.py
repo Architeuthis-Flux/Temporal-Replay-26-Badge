@@ -67,12 +67,29 @@ _PET_SHAPES = (
 # XP thresholds — must mirror icon.LEVEL_UNLOCKS.
 _LEVEL_XP = (0, 25, 100, 250, 500, 1000)
 
-# 3-row status icons (8 columns each, MSB = leftmost). Bottom-aligned
-# in rows 0..2 so the bar can sit to the right.
-_HEART = (0x50, 0xF8, 0x70)        # .X.X.   XXXXX   .XXX.
-_DRUMSTICK = (0x70, 0xF0, 0x68)    # .XXX.   XXXX.   .XX.X
-_FACE_SMILE = (0xA8, 0x00, 0x70)   # X.X.X   .....   .XXX.
-_FACE_FROWN = (0xA8, 0x70, 0x00)   # X.X.X   .XXX.   .....
+# 3-row status icons (8 columns each, MSB = leftmost pixel). The dot
+# pattern is visible directly in the binary literals; bottom-aligned in
+# rows 0..2 so the right-edge fill bar lives in cols 6..7.
+_HEART = (
+    0b01010000,
+    0b11111000,
+    0b01110000,
+)
+_DRUMSTICK = (
+    0b01110000,
+    0b11110000,
+    0b01101000,
+)
+_FACE_SMILE = (
+    0b10101000,
+    0b00000000,
+    0b01110000,
+)
+_FACE_FROWN = (
+    0b10101000,
+    0b01110000,
+    0b00000000,
+)
 
 # Hunger/happiness warning threshold (matches the foreground "okay/sad"
 # moodscore breakpoints loosely). Crossing below this triggers a beep.
@@ -125,8 +142,16 @@ def _bar_rows(value):
     if cells > 6:
         cells = 6
     rows = [0, 0, 0]
-    # Order: row2 col7, row2 col6, row1 col7, row1 col6, row0 col7, row0 col6
-    pattern = ((2, 0x01), (2, 0x02), (1, 0x01), (1, 0x02), (0, 0x01), (0, 0x02))
+    # Order: row2 col7, row2 col6, row1 col7, row1 col6, row0 col7, row0 col6.
+    # Masks are MSB-first 8-bit so col 7 = bit 0 = 0b00000001, col 6 = bit 1.
+    pattern = (
+        (2, 0b00000001),
+        (2, 0b00000010),
+        (1, 0b00000001),
+        (1, 0b00000010),
+        (0, 0b00000001),
+        (0, 0b00000010),
+    )
     for i in range(cells):
         r, m = pattern[i]
         rows[r] |= m
