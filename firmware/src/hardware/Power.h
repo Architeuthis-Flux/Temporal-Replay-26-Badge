@@ -34,6 +34,13 @@ struct Policy {
   static uint16_t loopDelayMs;
   static uint32_t cpuIdleMhz;
   static uint32_t cpuActiveMhz;
+
+  // Number of ADC reads collected per service() tick during the active probe's
+  // sampling phase. Batching multiple samples into one tick minimizes the
+  // CE-high duty cycle (the BQ24079 is disabled while CE is high, so every
+  // tick spent mid-probe is pure charging loss). See the duty-cycle comment
+  // block in BatteryGauge::service() for the full rationale and tuning notes.
+  static uint8_t probeSamplesPerTick;
 };
 
 bool wifiAllowed();
@@ -107,6 +114,7 @@ class SleepService : public IService {
              uint32_t lightSleepAfterNoMotionMs = Power::Policy::kLightSleepAfterNoMotionMs,
              uint32_t deepSleepAfterNoMotionMs = Power::Policy::kDeepSleepAfterNoMotionMs);
   void processDeferredWake();
+  void requestDeepSleep();
   void setLightSleepMs(uint32_t ms) { lightSleepAfterNoMotionMs_ = ms; }
   void setDeepSleepMs(uint32_t ms) { deepSleepAfterNoMotionMs_ = ms; }
   void service() override;
@@ -139,6 +147,7 @@ class SleepService : public IService {
   void begin(IMU*, LEDmatrix*, oled*, uint8_t = 0xFF,
              uint32_t = 0, uint32_t = 0) {}
   void processDeferredWake() {}
+  void requestDeepSleep() {}
   void setLightSleepMs(uint32_t) {}
   void setDeepSleepMs(uint32_t) {}
   void service() override {}
@@ -206,17 +215,19 @@ class BatteryGauge : public IService {
  private:
   // ── Async probe state machine ──────────────────────────────────────
   // Replaces the old blocking runProbe() with a phase machine driven
-  // by micros() deadlines. service() does at most one ADC read per call;
-  // a full probe completes across BAT_PROBE_SAMPLES sample deadlines plus
-  // the charger-resettle deadline.
+  // by micros() deadlines. service() does at most Policy::probeSamplesPerTick
+  // ADC reads per call during kProbeSampling; a full probe completes across
+  // BAT_PROBE_SAMPLES sample deadlines plus the charger-resettle deadline.
   // The probe buffer is delivered to bat_classify_probe() exactly as
   // before — only the sample cadence changes. Net effect on timing:
   //   - BAT_PROBE_WINDOW_US is the configured sample window (50ms today).
   //   - BAT_PROBE_SAMPLES is 4 today, so the nominal inter-sample target is
   //     BAT_PROBE_WINDOW_US / (BAT_PROBE_SAMPLES - 1), about 16.7ms.
-  //   - Because service() is cooperative, each deadline can round up to the
-  //     next service call; CE is released after the fourth sample and the
-  //     classifier runs after the resettle deadline.
+  //   - With probeSamplesPerTick > 1, samples within a batch busy-wait on
+  //     micros() rather than yielding, to keep CE-high time bounded by the
+  //     probe burst itself instead of the scheduler cadence. CE is released
+  //     after the final sample and the classifier runs after the resettle
+  //     deadline.
   enum ProbePhase : uint8_t {
     kProbeIdle = 0,
     kProbeSampling,   // CE high, collecting BAT_PROBE_SAMPLES with inter-sample gap

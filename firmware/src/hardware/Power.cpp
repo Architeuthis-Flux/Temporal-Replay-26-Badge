@@ -1,6 +1,7 @@
 #include "Power.h"
 
 #include "../api/WiFiService.h"
+#include "../infra/DebugLog.h"
 #include <Wire.h>
 
 #ifdef BADGE_HAS_SLEEP_SERVICE
@@ -19,6 +20,7 @@
 #include "oled.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
+#include "esp_log.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Power namespace — radio defaults, loop pacing, CPU governor
@@ -35,6 +37,7 @@ uint8_t  Policy::schedulerLowDivisor = 30;
 uint16_t Policy::loopDelayMs = 8;
 uint32_t Policy::cpuIdleMhz = 80;
 uint32_t Policy::cpuActiveMhz = 160;
+uint8_t  Policy::probeSamplesPerTick = 3;  // batch ADC reads per tick to minimize CE-high duty cycle
 
 namespace {
 bool gPmActive = false;
@@ -56,7 +59,7 @@ bool configurePm(uint32_t minMhz, uint32_t maxMhz, bool lightSleep) {
   pm.light_sleep_enable = lightSleep;
   const esp_err_t err = esp_pm_configure(&pm);
   if (err != ESP_OK) {
-   //Serial.printf("PM: configure failed (0x%x)\n", err);
+    ESP_LOGI("POWER","PM: configure failed (0x%x)\n", err);
     return false;
   }
   return true;
@@ -95,15 +98,15 @@ ChargerTelemetry readChargerTelemetry() {
 
 void logChargerTelemetry(const ChargerTelemetry& telemetry) {
   if (!telemetry.available) {
-    ////Serial.println("Power: charger telemetry unavailable");
+    ESP_LOGI("POWER","Power: charger telemetry unavailable\n");
     return;
   }
-  // Serial.printf("Power: charger pgood=%u stat=%u external=%d charging=%d state=%s\n",
-  //               (unsigned)telemetry.pgoodLevel,
-  //               (unsigned)telemetry.statLevel,
-  //               telemetry.externalPowerPresent ? 1 : 0,
-  //               telemetry.charging ? 1 : 0,
-  //               telemetry.state);
+  ESP_LOGI("POWER","Power: charger pgood=%u stat=%u external=%d charging=%d state=%s\n",
+            (unsigned)telemetry.pgoodLevel,
+            (unsigned)telemetry.statLevel,
+            telemetry.externalPowerPresent ? 1 : 0,
+            telemetry.charging ? 1 : 0,
+            telemetry.state);
 }
 
 void logChargerTelemetryIfDue(uint32_t intervalMs) {
@@ -142,7 +145,7 @@ void enterPerformanceMode() {
   if (gPerformanceDepth != 1) return;
 
   if (configurePm(240, 240, false)) {
-   //Serial.println("PM: performance mode enabled (240 MHz, no light sleep)");
+    ESP_LOGI("POWER","PM: performance mode enabled (240 MHz, no light sleep)\n");
   }
 }
 
@@ -152,9 +155,9 @@ void exitPerformanceMode() {
   if (gPerformanceDepth != 0) return;
 
   if (configurePm(Policy::cpuIdleMhz, Policy::cpuActiveMhz, true)) {
-    //Serial.printf("PM: restored policy (%lu-%lu MHz, light sleep enabled)\n",
-                  // (unsigned long)Policy::cpuIdleMhz,
-                  // (unsigned long)Policy::cpuActiveMhz);
+    ESP_LOGI("POWER","PM: restored policy (%lu-%lu MHz, light sleep enabled)\n",
+              (unsigned long)Policy::cpuIdleMhz,
+              (unsigned long)Policy::cpuActiveMhz);
   }
   noteActivity();
 }
@@ -179,13 +182,13 @@ void initCpuGovernor() {
   esp_err_t err = esp_pm_configure(&pm);
   if (err == ESP_OK) {
     gPmActive = true;
-   //Serial.printf("PM: auto light sleep enabled (%lu–%lu MHz)\n",
-                  // (unsigned long)Policy::cpuIdleMhz,
-                  // (unsigned long)Policy::cpuActiveMhz);
+    ESP_LOGI("POWER","PM: auto light sleep enabled (%lu-%lu MHz)\n",
+              (unsigned long)Policy::cpuIdleMhz,
+              (unsigned long)Policy::cpuActiveMhz);
     return;
   }
- //Serial.printf("PM: unavailable (0x%x) — CPU pinned at %lu MHz\n",
-                // err, (unsigned long)gCurrentCpuMhz);
+  ESP_LOGI("POWER","PM: unavailable (0x%x) - CPU pinned at %lu MHz\n",
+            err, (unsigned long)gCurrentCpuMhz);
 }
 
 void noteActivity() {
@@ -221,7 +224,7 @@ BrownoutSilencer::BrownoutSilencer() {
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_RST_ENA);
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_CLOSE_FLASH_ENA);
   REG_CLR_BIT(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-  ////Serial.printf("[BOD] silenced (was 0x%08x, now 0x%08x)\n",
+  // ESP_LOGI("POWER","[BOD] silenced (was 0x%08x, now 0x%08x)\n",
   //               static_cast<unsigned>(saved_),
   //               static_cast<unsigned>(REG_READ(RTC_CNTL_BROWN_OUT_REG)));
 }
@@ -230,7 +233,7 @@ BrownoutSilencer::~BrownoutSilencer() {
   // Restore the exact prior register state — including any wait /
   // select fields the framework configured at boot.
   REG_WRITE(RTC_CNTL_BROWN_OUT_REG, saved_);
-  ////Serial.println("[BOD] restored");
+  // Serial.println("[BOD] restored");
 }
 
 #if !(defined(BADGE_HAS_BATTERY_GAUGE) && defined(BADGE_ECHO) && defined(BADGE_HAS_SLEEP_SERVICE))
@@ -283,11 +286,11 @@ void SleepService::begin(IMU* imu, LEDmatrix* matrix, oled* display, uint8_t wak
   caffeine = false;
 
   pinMode(wakePin_, INPUT_PULLUP);
- //Serial.printf("Wake cause: %d\n", esp_sleep_get_wakeup_cause());
+  ESP_LOGI("POWER","Wake cause: %d\n", esp_sleep_get_wakeup_cause());
 
   enabled_ = (imu_ != nullptr && imu_->isReady());
   if (!enabled_) {
-   //Serial.println("SleepService disabled (no IMU)");
+    ESP_LOGI("POWER","SleepService disabled (no IMU)\n");
   }
 }
 
@@ -301,7 +304,7 @@ void SleepService::service() {
   // Force deep sleep: hold UP for 5 seconds (skip if USB connected for dev safety)
   if (inputs_ && inputs_->heldMs(0) >= Power::Policy::kForceDeepSleepHoldMs
       && !isUsbConnected()) {
-   //Serial.println("Force deep sleep (UP held 5s)");
+    ESP_LOGI("POWER","Force deep sleep (UP held 5s)\n");
     enterDeepSleep();
     return;
   }
@@ -340,7 +343,7 @@ void SleepService::service() {
   // Dim LED matrix after idle timeout; ESP PM auto-light-sleep handles
   // CPU sleep while WiFi modem sleep keeps the connection alive.
   if (idleMs >= lightSleepAfterNoMotionMs_ && !displayDimmed_) {
-   //Serial.printf("Dimming LED matrix (%lu ms idle)\n", (unsigned long)idleMs);
+    ESP_LOGI("POWER","Dimming LED matrix (%lu ms idle)\n", (unsigned long)idleMs);
     if (matrix_) {
       savedBrightness_ = matrix_->getBrightness();
       matrix_->setBrightness(Power::Policy::kLedMatrixDimBrightness);
@@ -353,6 +356,15 @@ const char* SleepService::name() const { return "SleepService"; }
 
 
 void SleepService::processDeferredWake() {}
+
+void SleepService::requestDeepSleep() {
+  if (!enabled_) {
+    ESP_LOGI("POWER", "Deep sleep requested while motion sleep service is disabled\n");
+    pinMode(wakePin_, INPUT_PULLUP);
+  }
+  ESP_LOGI("POWER","Deep sleep requested from UI\n");
+  enterDeepSleep();
+}
 
 void SleepService::preparePeripheralsForDeepSleep() {
   if (matrix_ != nullptr) {
@@ -367,12 +379,12 @@ void SleepService::preparePeripheralsForDeepSleep() {
 }
 
 void SleepService::enterDeepSleep() {
- //Serial.printf("Deep sleep idle reached (%lu ms)\n", (unsigned long)(millis() - lastMotionMs_));
+   ESP_LOGI("POWER","Deep sleep idle reached (%lu ms)\n", (unsigned long)(millis() - lastMotionMs_));
 
   preparePeripheralsForDeepSleep();
 
   if (!isLineStableHigh(wakePin_)) {
-   //Serial.printf("Deep sleep pre-arm warning; wake line GPIO %u not stably high, continuing\n", wakePin_);
+     ESP_LOGI("POWER","Deep sleep pre-arm warning; wake line GPIO %u not stably high, continuing\n", wakePin_);
   }
 
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -383,12 +395,12 @@ void SleepService::enterDeepSleep() {
 
   const esp_err_t wakeCfg = esp_sleep_enable_ext0_wakeup((gpio_num_t)wakePin_, 0);
   if (wakeCfg != ESP_OK) {
-   //Serial.printf("Wake config failed on GPIO %u, err=%d\n", wakePin_, wakeCfg);
+     ESP_LOGI("POWER","Wake config failed on GPIO %u, err=%d\n", wakePin_, wakeCfg);
     return;
   }
 
   if (!isLineStableHigh(wakePin_, 4, 1)) {
-   //Serial.printf("Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n", wakePin_);
+     ESP_LOGI("POWER","Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n", wakePin_);
   }
 
   if (display_ != nullptr) {
@@ -398,8 +410,8 @@ void SleepService::enterDeepSleep() {
     delay(20);
   }
 
- //Serial.printf("Sleeping; wake on GPIO %u LOW\n", wakePin_);
- //Serial.flush();
+  ESP_LOGI("POWER","Sleeping; wake on GPIO %u LOW\n", wakePin_);
+  Serial.flush();
   esp_deep_sleep_start();
 }
 
@@ -407,7 +419,7 @@ void SleepService::enterDeepSleep() {
 //  BatteryGauge
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// #if defined(BADGE_HAS_BATTERY_GAUGE) && defined(BADGE_ECHO) 
+#if defined(BADGE_HAS_BATTERY_GAUGE) && defined(BADGE_ECHO)
 // ── ADC voltage-divider gauge — main-CPU adapter for BatteryAlgorithm ───────
 //
 // All math (median, IIR, presence debounce, probe classification)
@@ -488,11 +500,43 @@ void BatteryGauge::service() {
 
   // ── Active probe schedule (only meaningful with USB present) ──
   // Phase machine driven by micros() deadlines. service() takes at most
-  // one ADC read per call. A verdict is delivered ONLY on the tick that
-  // drains the resettle phase; every other tick during the probe runs
-  // with verdict=-1, have_probe_sample=false, which is identical to
-  // "no probe scheduled this tick" — the presence/filter pipeline below
-  // already handles that case correctly.
+  // Policy::probeSamplesPerTick ADC reads per call during kProbeSampling.
+  // A verdict is delivered ONLY on the tick that drains the resettle
+  // phase; every other tick during the probe runs with verdict=-1,
+  // have_probe_sample=false, which is identical to "no probe scheduled
+  // this tick" — the presence/filter pipeline below already handles that
+  // case correctly.
+  //
+  // ── Probe duty cycle ──────────────────────────────────────────────
+  // CE is held high for the entire duration from kProbeSampling entry
+  // through the end of kProbeResettle. While CE is high the BQ24079 is
+  // disabled and the cell is not charging, so every wall-clock millisecond
+  // spent in those phases is pure charging loss when USB is present.
+  //
+  // The dominant cost is NOT the probe burst itself (BAT_PROBE_WINDOW_US,
+  // hundreds of µs) — it's the inter-tick gaps. With probeSamplesPerTick=1,
+  // the state machine takes one ADC read per service() call and yields,
+  // stretching the burst across (BAT_PROBE_SAMPLES - 1) scheduler periods.
+  // At a ~25 ms tick cadence and 5 samples, that's ~100 ms of CE-high time
+  // per probe instead of the ~hundreds of µs the burst actually requires.
+  //
+  // Policy::probeSamplesPerTick batches multiple reads into a single tick,
+  // busy-waiting on micros() between samples within the batch. The spin is
+  // intentional: yielding mid-batch defeats the purpose because CE stays
+  // high across the yield. The inter-sample gap is bounded by
+  // kProbeInterSampleUs (tens of µs), so the spin is short relative to the
+  // cost of an additional CE-high tick.
+  //
+  // Default of 3 lands near the knee of the duty-cycle curve for typical
+  // BAT_PROBE_SAMPLES values: most of the win, with worst-case service()
+  // time still well under one scheduler period. Setting it to
+  // BAT_PROBE_SAMPLES collapses the entire probe into one tick — fine if
+  // service() has the budget, but no further duty-cycle benefit beyond
+  // covering the final inter-tick gap.
+  //
+  // DO NOT "optimize" the busy-wait inside kProbeSampling into a yield.
+  // That reverts to the per-tick behavior and quietly multiplies CE-high
+  // time by BAT_PROBE_SAMPLES.
   int8_t   probe_verdict     = -1;
   uint32_t probe_sample      = 0;
   bool     have_probe_sample = false;
@@ -526,22 +570,40 @@ void BatteryGauge::service() {
         probeTickCounter_ = (probeTickCounter_ + 1) % BAT_PROBE_PERIOD_TICKS;
         break;
 
-      case kProbeSampling:
-        // Signed compare against the deadline so micros() wraparound
-        // (~71 minutes) doesn't strand us mid-probe.
-        if ((int32_t)(now_us - probeNextSampleAtUs_) >= 0) {
+      case kProbeSampling: {
+        // Collect up to Policy::probeSamplesPerTick ADC reads this tick. The
+        // whole point of batching is to minimize CE-high time — every yield
+        // back to the scheduler with CE still high is pure charging loss,
+        // since the BQ24079 is disabled until the batch (and resettle)
+        // finishes. Spin on the inter-sample gap rather than yielding; the
+        // gap is bounded by kProbeInterSampleUs.
+        uint8_t budget = Power::Policy::probeSamplesPerTick;
+        if (budget == 0) budget = 1;  // 0 would stall the probe forever with CE high
+
+        while (budget-- > 0) {
+          // Spin until the inter-sample deadline. Bounded by
+          // kProbeInterSampleUs (tens of µs) — small compared to the cost
+          // of an extra CE-high tick. Signed compare against the deadline
+          // so micros() wraparound (~71 minutes) doesn't strand us mid-probe.
+          while ((int32_t)(micros() - probeNextSampleAtUs_) < 0) {
+            // tight spin
+          }
+
           probeSamples_[probeSampleIdx_] = (uint32_t)analogRead(BATT_VOLTAGE_PIN);
           probeSampleIdx_++;
+
           if (probeSampleIdx_ >= BAT_PROBE_SAMPLES) {
-            // Done sampling — release CE and start the resettle window.
+            // Batch finished the whole probe — release CE immediately and
+            // start the resettle window.
             digitalWrite(CE_PIN, LOW);
-            probeReadyAtUs_ = now_us + kProbeResettleUs;
+            probeReadyAtUs_ = micros() + kProbeResettleUs;
             probePhase_     = kProbeResettle;
-          } else {
-            probeNextSampleAtUs_ = now_us + kProbeInterSampleUs;
+            break;
           }
+          probeNextSampleAtUs_ = micros() + kProbeInterSampleUs;
         }
         break;
+      }
 
       case kProbeResettle:
         if ((int32_t)(now_us - probeReadyAtUs_) >= 0) {
@@ -630,10 +692,10 @@ void BatteryGauge::service() {
   bool leaving_sub = (cached_threshold_ == BAT_THRESH_SUB &&
                       (next != BAT_THRESH_SUB || pgood));
   if (entering_sub_no_usb) {
-    ////Serial.println("[Power] battery SUB and no USB — disconnecting WiFi");
+    // Serial.println("[Power] battery SUB and no USB — disconnecting WiFi");
     // wifiService.disconnect();
   } else if (leaving_sub) {
-    ////Serial.println("[Power] battery recovered or USB present — re-arming WiFi");
+    // Serial.println("[Power] battery recovered or USB present — re-arming WiFi");
     // wifiService.armForReconnect();
   }
   cached_threshold_ = next;
@@ -668,18 +730,18 @@ void BatteryGauge::logAdcTelemetryIfDue(uint32_t intervalMs) {
   lastAdcTelemetryLogMs_ = now;
   const uint32_t raw_min = (sampleCount_ == 0) ? 0 : rawAdcMin_;
   const uint32_t raw_max = (sampleCount_ == 0) ? 0 : rawAdcMax_;
-  ////Serial.printf("Power: battery raw=%lu filtered=%lu mv=%lu pct=%lu present=%d pgood=%d stat_raw=%d stat_low=%d raw_min=%lu raw_max=%lu samples=%lu\n",
-  //               (unsigned long)filter_.adc_raw,
-  //               (unsigned long)(filter_.filtered_raw >> BAT_IIR_SHIFT),
-  //               (unsigned long)filter_.bat_mv,
-  //               (unsigned long)filter_.bat_pct,
-  //               batteryPresent() ? 1 : 0,
-  //               (flags_ & MASK_PGOOD) ? 1 : 0,
-  //               (flags_ & MASK_STAT_RAW) ? 1 : 0,
-  //               (flags_ & MASK_STAT_LOW) ? 1 : 0,
-  //               (unsigned long)raw_min,
-  //               (unsigned long)raw_max,
-  //               (unsigned long)sampleCount_);
+  ESP_LOGI("POWER","Power: battery raw=%lu filtered=%lu mv=%lu pct=%lu present=%d pgood=%d stat_raw=%d stat_low=%d raw_min=%lu raw_max=%lu samples=%lu\n",
+            (unsigned long)filter_.adc_raw,
+            (unsigned long)(filter_.filtered_raw >> BAT_IIR_SHIFT),
+            (unsigned long)filter_.bat_mv,
+            (unsigned long)filter_.bat_pct,
+            batteryPresent() ? 1 : 0,
+            (flags_ & MASK_PGOOD) ? 1 : 0,
+            (flags_ & MASK_STAT_RAW) ? 1 : 0,
+            (flags_ & MASK_STAT_LOW) ? 1 : 0,
+            (unsigned long)raw_min,
+            (unsigned long)raw_max,
+            (unsigned long)sampleCount_);
 }
 
 const char* BatteryGauge::name() const { return "BatteryGauge"; }
@@ -741,4 +803,4 @@ void BatteryGauge::service() {
 
 const char* BatteryGauge::name() const { return "BatteryGauge"; }
 #endif  // BADGE_HAS_BATTERY_GAUGE
-// #endif  // BADGE_HAS_SLEEP_SERVICE
+#endif  // BADGE_HAS_SLEEP_SERVICE
