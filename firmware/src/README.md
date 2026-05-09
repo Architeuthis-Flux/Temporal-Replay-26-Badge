@@ -37,6 +37,7 @@ Schedule, map, visual assets, MicroPython apps, and explicit hacker HTTP helpers
 remain available. Native HTTP is limited to MicroPython `badge.http_get()` and
 `badge.http_post()` calls, which connect only when the app asks.
 
+
 ## How do I…
 
 | Task | Files to touch |

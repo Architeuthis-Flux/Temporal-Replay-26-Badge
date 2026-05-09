@@ -43,6 +43,10 @@ enum ScreenId : uint8_t {
   kScreenAboutSponsors,
   kScreenMenuOrder,
   kScreenHelp,
+  kScreenWifi,
+  kScreenUpdateFirmware,
+  kScreenAssetLibrary,
+  kScreenAssetDetail,
 #ifdef BADGE_HAS_DOOM
   kScreenDoom,
 #endif

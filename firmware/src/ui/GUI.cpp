@@ -9,10 +9,12 @@
 #include "screens/ContactDetailScreen.h"
 #include "screens/ContactsScreen.h"
 #include "screens/DiagnosticsScreen.h"
+#include "screens/AssetLibraryScreen.h"
 #include "screens/HelpScreen.h"
 #include "screens/FileViewScreen.h"
 #include "screens/FilesScreen.h"
 #include "screens/GridMenuScreen.h"
+#include "screens/UpdateFirmwareScreen.h"
 #include "screens/HapticsTestScreen.h"
 #include "screens/InputTestScreen.h"
 #include "screens/LEDScreen.h"
@@ -20,6 +22,7 @@
 #include "screens/ScheduleScreen.h"
 #include "screens/SettingsScreen.h"
 #include "screens/TextInputScreen.h"
+#include "screens/WifiScreen.h"
 #include "screens/draw/DrawIcons.h"
 #include "screens/draw/DrawPickerScreen.h"
 #include "screens/draw/DrawScreen.h"
@@ -45,6 +48,8 @@
 #endif
 #include "../infra/BadgeConfig.h"
 #include "../ir/BadgeIR.h"
+#include "../ota/AssetRegistry.h"
+#include "../ota/BadgeOTA.h"
 #include "../hardware/PanicReset.h"
 #include "AppIcons.h"
 #include "BadgeDisplay.h"
@@ -173,6 +178,28 @@ static void launchTardigotchi(GUIManager& gui) {
   launchPythonApp(gui, "/apps/tardigotchi/main.py", "Tardigotchi");
 }
 
+// Firmware-update tile label flips between "Check Updates" and
+// "UPDATE" depending on what BadgeOTA has cached.
+static void firmwareUpdateLabel(char* buf, uint8_t bufSize) {
+  if (ota::updateAvailable()) {
+    std::snprintf(buf, bufSize, "UPDATE");
+  } else {
+    std::snprintf(buf, bufSize, "FW UPDATE");
+  }
+}
+
+// Pulse the badge dot on the Update tile when a newer release is
+// cached. The grid drawCell treats any non-zero count as "show
+// notification badge".
+static uint16_t firmwareUpdateBadge() {
+  return ota::updateAvailable() ? 1 : 0;
+}
+
+// Asset Library tile only appears when an asset_registry_url is set.
+static bool assetLibraryVisible() {
+  return badgeConfig.assetRegistryUrl()[0] != '\0';
+}
+
 // ── Curated C++ menu items ────────────────────────────────────────────────
 // These are the always-on items the firmware ships with. Dynamic Python
 // apps discovered by AppRegistry are appended after this list when the
@@ -228,6 +255,14 @@ static const GridMenuItem kCuratedMenuItems[] = {
      AppIcons::about,     kScreenDiagnostics, nullptr, nullptr, nullptr},
 #endif
 
+    {"WIFI", "Manage saved networks and connect to the internet",
+     AppIcons::wifi,      kScreenWifi,     nullptr, nullptr, nullptr},
+    {"FW UPDATE", "Check for and install firmware updates over WiFi",
+     AppIcons::firmwareUpdate, kScreenUpdateFirmware, nullptr, nullptr,
+     &firmwareUpdateLabel, &firmwareUpdateBadge},
+    {"LIBRARY", "Download games and assets like the DOOM WAD",
+     AppIcons::assetLibrary, kScreenAssetLibrary, nullptr,
+     &assetLibraryVisible, nullptr, nullptr},
     {"SETTINGS", "Adjust display, input, power, and haptics",
      AppIcons::settings,  kScreenSettings, nullptr, nullptr, nullptr},
 };
@@ -372,6 +407,10 @@ static BadgeInfoViewScreen sBadgeInfoView;
 static AboutSponsorsScreen sAboutSponsors;
 static HelpScreen sHelp;
 static MenuOrderScreen sMenuOrder;
+static WifiScreen sWifi;
+static UpdateFirmwareScreen sUpdateFirmware;
+static AssetLibraryScreen sAssetLibrary;
+static AssetDetailScreen sAssetDetail;
 #ifdef BADGE_HAS_DOOM
 static DoomScreen sDoom;
 #endif
@@ -382,15 +421,21 @@ static DoomScreen sDoom;
 //   Dynamic apps:  10000 + appIdx by default. __order__ from the app
 //                  manifest, when present, replaces this. NVS user
 //                  overrides further override either default.
-// Sentinel `kSettingsAlwaysLastOrder` keeps the SETTINGS tile pinned
-// to the end of the menu unless the user explicitly reorders it.
+// "System" tiles (settings, networking, OTA, help) all pin to the
+// tail of the menu in a fixed order so they're predictable to find
+// after scrolling past the rest of the apps. NVS reorder via
+// MenuOrderScreen still overrides any of these if the user wants
+// them somewhere else.
+//   SETTINGS  → 30000
+//   WIFI      → 30100
+//   FW UPDATE → 30200
+//   HELP      → 30300
 static constexpr int16_t kCuratedOrderStride = 10;
 static constexpr int16_t kDynamicDefaultOrderBase = 10000;
 static constexpr int16_t kSettingsAlwaysLastOrder = 30000;
-// HELP pins past SETTINGS so the developer-guide QRs + tips are the
-// last tile the user scrolls past. Same override mechanism: NVS
-// reorder still wins if the user explicitly moves it.
-static constexpr int16_t kHelpAlwaysLastOrder = 30100;
+static constexpr int16_t kWifiAlwaysLastOrder     = 30100;
+static constexpr int16_t kFwUpdateAlwaysLastOrder = 30200;
+static constexpr int16_t kHelpAlwaysLastOrder     = 30300;
 
 // Effective order = NVS override → manifest hint → fallback.
 static int16_t resolveItemOrder(const char* label, int16_t fallback) {
@@ -408,11 +453,16 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
        i++) {
     GridMenuItem& slot = sMenuItems[cursor];
     slot = kCuratedMenuItems[i];
-    // SETTINGS pins to the back, DOCS pins past SETTINGS, unless
-    // explicitly reordered.
+    // System tiles all pin to the tail in a fixed order
+    // (SETTINGS → WIFI → FW UPDATE → HELP), unless the user has
+    // explicitly reordered any of them via MenuOrderScreen.
     int16_t fallback;
     if (slot.label && strcmp(slot.label, "HELP") == 0) {
       fallback = kHelpAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "FW UPDATE") == 0) {
+      fallback = kFwUpdateAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "WIFI") == 0) {
+      fallback = kWifiAlwaysLastOrder;
     } else if (slot.label && strcmp(slot.label, "SETTINGS") == 0) {
       fallback = kSettingsAlwaysLastOrder;
     } else {
@@ -431,6 +481,14 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
   for (size_t i = 0; i < dynCount && cursor < kMaxMenuItems; i++) {
     const AppRegistry::DynamicApp* app = AppRegistry::at(i);
     if (!app) break;
+
+    // Hidden dynamic apps — installed on the VFS so they're still
+    // launchable from JumperIDE / `run:<slug>`, but suppressed from the
+    // home grid. crash_log is a diagnostics tool the average user
+    // never needs to see; it only matters after a Python app has
+    // actually crashed, and the file remains accessible via the FILES
+    // browser when that happens.
+    if (app->slug && strcmp(app->slug, "crash_log") == 0) continue;
 
     // Dedupe against curated tiles. If a curated entry already
     // launches the exact same /apps/<slug>/main.py path (SYNTH,
@@ -567,6 +625,10 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   registerScreen(&sAboutSponsors);
   registerScreen(&sHelp);
   registerScreen(&sMenuOrder);
+  registerScreen(&sWifi);
+  registerScreen(&sUpdateFirmware);
+  registerScreen(&sAssetLibrary);
+  registerScreen(&sAssetDetail);
 #ifdef BADGE_HAS_DOOM
   registerScreen(&sDoom);
 #endif

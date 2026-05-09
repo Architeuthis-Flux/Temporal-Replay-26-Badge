@@ -4,6 +4,28 @@
 
 class oled;
 
+// ════════════════════════════════════════════════════════════════════════
+//  PROJECT RULE — never use bare button letters in user-facing copy.
+// ════════════════════════════════════════════════════════════════════════
+//
+// The badge has Y / B / A / X face buttons but the labels Up/Right/Down/
+// Left rotate with nametag flip, and "A confirms / B cancels" can be
+// swapped via settings (kSwapConfirmCancel). Any literal "A:back" or
+// "press X" in plain text is a confusing lie depending on the user's
+// settings.
+//
+// ALWAYS route hint / status copy through `drawInlineHint(...)` — it
+// substitutes glyphs for the tokens `X`, `A`, `B`, `Y`, `^`, `v`, `<`,
+// `>`, `U/D`, `L/R`, `ALL`, `Confirm`, `Cancel`, `Back`, etc. — and the
+// tokens auto-rotate with the active confirm/cancel mapping where
+// applicable. NEVER call `oled::drawStr` with a button letter in the
+// string.
+//
+// drawActionFooter / drawFooterActions / drawFooterHint do the right
+// thing automatically; the trap is only when you reach for `drawStr`
+// to format a status line by hand.
+// ════════════════════════════════════════════════════════════════════════
+
 namespace ButtonGlyphs {
 
 enum class Button : uint8_t {

@@ -246,6 +246,32 @@ list        # List available apps on VFS
 
 ---
 
+## UI conventions
+
+- **Never use bare button letters in user-facing copy** — neither
+  on-device nor in the Jumperless docs site. The Y/B/A/X face buttons
+  rotate on nametag flip, and confirm/cancel can be swapped via
+  `kSwapConfirmCancel`. A literal "press X" or "A:back" becomes a lie
+  depending on the user's settings.
+  - **On-device**: route hint / status text through
+    `ButtonGlyphs::drawInlineHint(...)` (or the footer helpers, which
+    do this internally) — it substitutes glyphs for
+    `X / A / B / Y / ^ / v / < / >` and the semantic tokens
+    `Confirm / Cancel / Back / Up / Down`. Header banner at
+    `ui/ButtonGlyphs.h` has the full token list.
+  - **In docs (`Jumperless-docs/docs/badge-developer-guide.md`)**: use
+    the SVG glyphs in `Jumperless-docs/docs/img/badge-buttons/`
+    (`y.svg`, `b.svg`, `a.svg`, `x.svg`, `lr.svg`, `ud.svg`,
+    `all.svg`) — pixel-identical to the on-device cluster art, with
+    `<img class="btn" src="img/badge-buttons/y.svg" alt="Y">`. The
+    `img.btn` CSS class in `overrides.css` sizes them inline. SVGs
+    are regenerated from the firmware bitmaps by
+    `firmware/scripts/render_button_glyphs_svg.py` — re-run after
+    any change to `ui/ButtonGlyphs.cpp`. Keep the user-facing docs
+    free of letters; the position in the diamond is the affordance.
+
+---
+
 ## Code Style
 
 - **Bitmap byte arrays use 8-bit binary literals**, never hex. When a

@@ -9,8 +9,11 @@
 #include "hardware/HardwareConfig.h"
 #include "Scheduler.h"
 
-// Optional WiFi credentials. The badge never auto-connects; these are used
-// only by explicit networking calls such as MicroPython badge.http_get/post.
+// Optional WiFi credentials. The badge keeps a small list of saved
+// networks; `wifiSsid()` / `wifiPass()` always reflect slot 0 (the
+// preferred network) for any legacy caller that just wants "the"
+// SSID. Connection attempts iterate every saved slot — see
+// WiFiService::connect.
 #define WIFI_SSID      badgeConfig.wifiSsid()
 #define WIFI_PASS      badgeConfig.wifiPass()
 
@@ -195,17 +198,50 @@ class Config {
      bool checkFileChanged();
      void snapshotFileStat();
 
-     const char* wifiSsid() const { return wifiSsid_; }
-     const char* wifiPass() const { return wifiPass_; }
-     bool wifiConfigured() const;
+     // Maximum number of saved WiFi networks. Stored as
+     // `ui_wifi_ssid_<n>` / `ui_wifi_pwd_<n>` blobs in NVS (slot 0 is
+     // the preferred network and is also exposed via `wifiSsid()` /
+     // `wifiPass()` for any legacy caller that wants "the" SSID).
+     // 4 keeps the NVS footprint small but covers home + work +
+     // hotspot + venue, which is the realistic max we'd ever pre-load.
+     static constexpr uint8_t kMaxWifiNetworks = 4;
+
+     // Slot 0 accessors — kept for backwards compatibility with the
+     // `WIFI_SSID` / `WIFI_PASS` macros. `wifiSsid()` returns the
+     // preferred network, or an empty string when no network is
+     // configured.
+     const char* wifiSsid() const { return wifiSlots_[0].ssid; }
+     const char* wifiPass() const { return wifiSlots_[0].pass; }
+     // Per-slot accessors. `index` must be < kMaxWifiNetworks.
+     // Out-of-range indices return empty strings rather than asserting
+     // — keeps the screen-side code simple.
+     const char* wifiSsidAt(uint8_t index) const;
+     const char* wifiPassAt(uint8_t index) const;
+     uint8_t wifiNetworkCount() const;  // # of slots with non-empty ssid
+     bool wifiSlotConfigured(uint8_t index) const;
+     bool wifiConfigured() const;       // any slot has ssid+pass
      // Master WiFi enable toggle (kWifiEnabled). Returns false when the
      // setting is off OR when no SSID/password are configured.
      bool wifiEnabled() const;
-     // UI-entered WiFi credentials. Stored under separate NVS keys
-     // (`ui_wifi_ssid`/`ui_wifi_pass`) so the legacy-secret cleanup pass
-     // doesn't wipe them. When non-empty they take precedence over the
-     // build-baked values from `BuildWifiConfig`.
+     // UI-entered WiFi credentials, slot 0. Convenience wrapper over
+     // `setWifiCredentialsAt(0, ssid, pass)`. Passing nullptr for
+     // either field leaves that field unchanged.
      void setWifiCredentials(const char* ssid, const char* pass);
+     // Per-slot edit. `index` must be < kMaxWifiNetworks. Passing a
+     // null SSID or password leaves that field alone; passing an empty
+     // SSID clears the slot entirely (and removes the password blob).
+     void setWifiCredentialsAt(uint8_t index, const char* ssid,
+                               const char* pass);
+     // Add a network to the first empty slot (or update the slot whose
+     // SSID already matches). Returns the slot index used, or -1 when
+     // the list is full.
+     int8_t addWifiNetwork(const char* ssid, const char* pass);
+     // Drop a slot and shift later slots up so there are no gaps.
+     void removeWifiNetwork(uint8_t index);
+     // Reorder slot `index` up (toward 0). No-op when at the top.
+     void moveWifiNetworkUp(uint8_t index);
+     // Reorder slot `index` down. No-op when already at the bottom.
+     void moveWifiNetworkDown(uint8_t index);
      // Set the wall clock to today's date (or 2026-01-01 if no date is
      // available yet) at HH:MM:00 local time. Returns true on success.
      bool setManualTime(int hour24, int minute);
@@ -219,14 +255,34 @@ class Config {
      /// Load/clear `gNametagDoc` from `[nametag] nametag =` in settings.txt.
      void applyNametagSetting();
 
+     /// `[ota] manifest_url = ...` — overrides the default GitHub
+     /// release endpoint when set. Leave empty to use the default
+     /// (`https://api.github.com/repos/<OTA_GITHUB_REPO>/releases/latest`).
+     const char* otaManifestUrl() const { return otaManifestUrl_; }
+     void setOtaManifestUrl(const char* value);
+
+     /// `[ota] asset_registry_url = ...` — JSON file enumerating
+     /// downloadable user assets (DOOM WAD, etc.). Empty disables the
+     /// Asset Library screen.
+     const char* assetRegistryUrl() const { return assetRegistryUrl_; }
+     void setAssetRegistryUrl(const char* value);
+
    private:
     int32_t values_[kMaxSettings];
 
      static constexpr uint8_t kStringMaxLen = 128;
-     char wifiSsid_[kStringMaxLen] = "";
-     char wifiPass_[kStringMaxLen] = "";
+     // One saved WiFi network. Empty SSID = unused slot. Password is
+     // the *plaintext* (decoded from the obfuscated NVS blob at load
+     // time); we re-scramble per slot when persisting.
+     struct WifiSlot {
+       char ssid[kStringMaxLen] = "";
+       char pass[kStringMaxLen] = "";
+     };
+     WifiSlot wifiSlots_[kMaxWifiNetworks];
      char timezone_[64] = "PST8PDT,M3.2.0,M11.1.0";
      char nametagSetting_[64] = "default";
+     char otaManifestUrl_[160] = "";
+     char assetRegistryUrl_[160] = "";
 
      uint32_t lastFileSize_ = 0;
      uint16_t lastFileDate_ = 0;
@@ -238,6 +294,8 @@ class Config {
      void loadStringsFromNvs();
      void saveStringsToNvs();
      void clearLegacyNetworkFromNvs();
+     void persistWifiSlot(uint8_t index) const;
+     void clearWifiSlotInNvs(uint8_t index) const;
    };
 
    extern Config badgeConfig;

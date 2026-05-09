@@ -134,9 +134,9 @@ void MenuOrderScreen::render(oled& d, GUIManager& gui) {
 
   OLEDLayout::drawGameFooter(d);
   if (picked_) {
-    OLEDLayout::drawFooterActions(d, nullptr, "drop", "back", "save");
+    OLEDLayout::drawFooterActions(d, "drop",nullptr, "back", "save");
   } else {
-    OLEDLayout::drawFooterActions(d, nullptr, "pick", "back", "save");
+    OLEDLayout::drawFooterActions(d, "pick", nullptr, "back", "save");
   }
 }
 

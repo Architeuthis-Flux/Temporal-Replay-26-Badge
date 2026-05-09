@@ -36,6 +36,9 @@
 #endif
 #include "led/LEDAppRuntime.h"
 #include "micropython/MicroPythonMatrixService.h"
+#include "ota/AssetRegistry.h"
+#include "ota/BadgeOTA.h"
+#include "ota/OTAService.h"
 
 #ifdef BADGE_HAS_DOOM
 #include "doom/doom_app.h"
@@ -170,10 +173,15 @@ void setup( ) {
 //     delay(100);
 // }
 
-    badgeConfig.load();
-    displayInit();
+    // UID must be populated before badgeConfig.load() because
+    // loadStringsFromNvs() unscrambles the WiFi password using a key
+    // derived from `uid[]`. Loading first would XOR the saved blob
+    // against zero-uid garbage, producing an unusable password and
+    // making auto-connect fail silently on every cold boot.
     read_uid();
     Serial.printf( "  UID: %s\n", uid_hex );
+    badgeConfig.load();
+    displayInit();
 #ifdef BADGE_ENABLE_BLE_PROXIMITY
     BleBeaconScanner::reserveMemoryAnchor();
 #endif
@@ -373,6 +381,14 @@ void setup( ) {
 
     wifiService.begin();
     scheduler.registerService( &wifiService, ServicePriority::kLow );
+
+    // OTA + asset registry. begin() loads NVS caches and detects
+    // ESP_OTA_IMG_PENDING_VERIFY (first boot after a fresh install).
+    // OTAService runs at low priority and forwards a daily-cadence
+    // tick to BadgeOTA + AssetRegistry.
+    ota::begin();
+    ota::registry::begin();
+    scheduler.registerService( &ota::otaService, ServicePriority::kLow );
 
     // IR task creation deferred — initDeferredPeripherals() spawns it
     // after the home screen is reached, so the IR transmitter pulses

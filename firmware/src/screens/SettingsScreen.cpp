@@ -78,11 +78,13 @@ static const uint8_t kSettingArrowLeftBits[] PROGMEM = {
 // callback on confirm and renders a static label + optional value on the
 // right. Used for "Set Time", "WiFi SSID", etc. where the row launches a
 // sub-screen rather than cycling a value in place.
+// WiFi-related actions used to live here too (kActionSetSsid /
+// kActionSetPassword / kActionWifiConnect). They moved to the
+// dedicated `WifiScreen` once we got per-network slots — keep the
+// enum tight so the action-row dispatch only carries the actions
+// that still ship in this screen.
 enum ActionId : uint8_t {
   kActionSetTime,
-  kActionSetSsid,
-  kActionSetPassword,
-  kActionWifiConnect,
   kActionReorderMenu,
   kActionResetMenuOrder,
   kActionResyncStartupFiles,
@@ -140,12 +142,6 @@ static const GroupItem kClockItems[] = {
     SI(kHorizonClock),
     ACT(kActionSetTime, "Set Time"),
 };
-static const GroupItem kWifiItems[] = {
-    SI(kWifiEnabled),
-    ACT(kActionSetSsid,     "SSID"),
-    ACT(kActionSetPassword, "Password"),
-    ACT(kActionWifiConnect, "Connect"),
-};
 static const GroupItem kMenuItems[] = {
     ACT(kActionReorderMenu,    "Reorder"),
     ACT(kActionResetMenuOrder, "Reset Order"),
@@ -174,7 +170,6 @@ struct SettingGroup {
   {NAME, ARR, sizeof(ARR) / sizeof(ARR[0])}
 
 static const SettingGroup kGroups[] = {
-  GROUP("WiFi",    kWifiItems),
   GROUP("Menu",    kMenuItems),
   GROUP("Clock",   kClockItems),
   GROUP("Input",   kInputItems),
@@ -351,17 +346,6 @@ void SettingsScreen::onTextSubmit(const char* text) {
       }
       break;
     }
-    case kActionSetSsid: {
-      if (config_) config_->setWifiCredentials(text, nullptr);
-      break;
-    }
-    case kActionSetPassword: {
-      if (config_) config_->setWifiCredentials(nullptr, text);
-      break;
-    }
-    case kActionWifiConnect:
-      // No text input — handled inline at confirm time.
-      break;
     case kActionReorderMenu:
     case kActionResetMenuOrder:
     case kActionResyncStartupFiles:
@@ -518,22 +502,6 @@ void SettingsScreen::drawItem(oled& d, uint8_t index, uint8_t y,
         }
         break;
       }
-      case kActionSetSsid: {
-        const char* s = badgeConfig.wifiSsid();
-        if (s && s[0]) std::snprintf(summary, sizeof(summary), "%.10s", s);
-        else           std::snprintf(summary, sizeof(summary), "(unset)");
-        break;
-      }
-      case kActionSetPassword: {
-        const char* p = badgeConfig.wifiPass();
-        std::snprintf(summary, sizeof(summary), "%s",
-                      (p && p[0]) ? "********" : "(unset)");
-        break;
-      }
-      case kActionWifiConnect:
-        std::snprintf(summary, sizeof(summary), "%s",
-                      wifiService.isConnected() ? "online" : "go");
-        break;
       case kActionReorderMenu:
         std::snprintf(summary, sizeof(summary), "%s", "→");
         break;
@@ -786,9 +754,6 @@ void SettingsScreen::render(oled& d, GUIManager& gui) {
   } else if (row.isAction) {
     switch (static_cast<ActionId>(row.actionId)) {
       case kActionSetTime:     footer = "Set the wall-clock time"; break;
-      case kActionSetSsid:     footer = "Network name to connect to"; break;
-      case kActionSetPassword: footer = "Network password"; break;
-      case kActionWifiConnect: footer = "Connect now (sets time via NTP)"; break;
       case kActionReorderMenu: footer = "Reorder home-screen icons"; break;
       case kActionResetMenuOrder:
         footer = "Forget your saved menu order"; break;
@@ -798,7 +763,7 @@ void SettingsScreen::render(oled& d, GUIManager& gui) {
         footer = "Wipe FFat partition (recovery only)"; break;
     }
     const ActionId aid = static_cast<ActionId>(row.actionId);
-    action = (aid == kActionWifiConnect || aid == kActionReorderMenu ||
+    action = (aid == kActionReorderMenu ||
               aid == kActionResetMenuOrder ||
               aid == kActionResyncStartupFiles ||
               aid == kActionReformatFFat)
@@ -883,27 +848,6 @@ void SettingsScreen::handleInput(const Inputs& inputs,
           gui.pushScreen(kScreenTextInput);
           break;
         }
-        case kActionSetSsid: {
-          std::strncpy(inputBuf_, badgeConfig.wifiSsid(), sizeof(inputBuf_) - 1);
-          inputBuf_[sizeof(inputBuf_) - 1] = '\0';
-          sTextInput.configure("WiFi SSID", inputBuf_, sizeof(inputBuf_),
-                               &settingsTextSubmitTrampoline, this);
-          gui.pushScreen(kScreenTextInput);
-          break;
-        }
-        case kActionSetPassword: {
-          // Don't pre-fill the password field — start empty so the
-          // user types fresh. Avoids exposing the saved value on screen.
-          inputBuf_[0] = '\0';
-          sTextInput.configure("WiFi Password", inputBuf_, sizeof(inputBuf_),
-                               &settingsTextSubmitTrampoline, this);
-          gui.pushScreen(kScreenTextInput);
-          break;
-        }
-        case kActionWifiConnect:
-          wifiService.connect();
-          pendingAction_ = 0;
-          break;
         case kActionReorderMenu:
           pendingAction_ = 0;
           gui.pushScreen(kScreenMenuOrder);

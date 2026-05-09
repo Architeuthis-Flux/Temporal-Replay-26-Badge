@@ -16,7 +16,9 @@
 #include "ButtonGlyphs.h"
 #include "UIFonts.h"
 #include "StarIcon.h"
+#include "UpdateIcon.h"
 #include "WifiIcon.h"
+#include "../ota/BadgeOTA.h"
 
 extern BatteryGauge batteryGauge;
 extern IMU imu;
@@ -374,9 +376,15 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
     }
   }
 
-  // Battery on the right edge, optional network activity icon to its left.
+  // Battery on the right edge, optional network activity icon to its left,
+  // optional firmware-update glyph immediately to the left of WiFi.
   const int batX  = kScreenW - kBatteryIconW;
   const int wifiX = batX - kStatusGap - kWifiIconW;
+  const int updX  = wifiX - kStatusGap - UpdateIcon::kWidth;
+  if (ota::updateAvailable()) {
+    d.drawXBM(updX, 1, UpdateIcon::kWidth, UpdateIcon::kHeight,
+              UpdateIcon::kBits);
+  }
 
   // Time pill is centered horizontally on the screen, bordered by a
   // bottom-only rounded rectangle (no top edge so it reads as a tab

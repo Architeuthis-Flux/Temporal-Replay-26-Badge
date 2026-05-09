@@ -21,6 +21,20 @@ nametag = default
 # POSIX TZ string. Default is Pacific time with daylight saving time.
 timezone = PST8PDT,M3.2.0,M11.1.0
 
+[ota]
+# Firmware OTA. The badge polls the GitHub Releases API once a day for
+# new firmware and exposes a "Check Updates" / "UPDATE" tile on the
+# home grid. Leave manifest_url empty to use the default endpoint baked
+# into the build (Architeuthis-Flux/Temporal-Replay-26-Badge releases).
+manifest_url =
+
+# Asset Library registry. A JSON file enumerating user-installable
+# files (DOOM WAD, sound packs, etc.). The badge fetches this once a
+# day and lets users browse / install entries from the Asset Library
+# screen. See firmware/docs/OTA-MAINTAINER.md for the schema.
+# Default: the registry shipped alongside the firmware repo.
+asset_registry_url = https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/registry.json
+
 [wifi]
 # No badge backend is configured or polled by firmware.
 

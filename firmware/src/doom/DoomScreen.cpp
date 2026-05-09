@@ -14,7 +14,9 @@
 #include "../ui/ButtonGlyphs.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
+#include "../infra/BadgeConfig.h"
 #include "../infra/Filesystem.h"
+#include "../screens/AssetLibraryScreen.h"
 #include <cstdio>
 
 extern oled badgeDisplay;
@@ -141,8 +143,15 @@ void DoomScreen::handleInput(const Inputs& inp, int16_t cursorX,
             launchDoom(gui);
         }
     } else if (phase_ == Phase::kNoWad) {
-        if (e.cancelPressed || e.confirmPressed ||
-            e.xPressed || e.yPressed) {
+        if (e.confirmPressed && badgeConfig.assetRegistryUrl()[0]) {
+            // Hop straight to the registry detail for the WAD entry.
+            // The Asset Library screen consumes the queued id on
+            // onEnter and pre-positions its cursor.
+            AssetLibraryScreen::selectAssetById("doom1-shareware");
+            gui.popScreen();
+            gui.pushScreen(kScreenAssetLibrary);
+        } else if (e.cancelPressed || e.confirmPressed ||
+                   e.xPressed || e.yPressed) {
             gui.popScreen();
         }
     } else if (phase_ == Phase::kSettings) {
@@ -311,13 +320,23 @@ void DoomScreen::renderNoWadScreen(oled& d) {
     d.drawHLine(0, 14, 128);
 
     d.setFontPreset(FONT_TINY);
-    d.drawStr(2, 24, "doom1.wad not found on");
-    d.drawStr(2, 33, "the badge filesystem.");
-    d.drawStr(2, 45, "Upload one by going to");
-    d.drawStr(2, 54, "ide.jumperless.org");
-
-    d.drawHLine(0, 56, 128);
-    ButtonGlyphs::drawInlineHint(d, 2, 63, "Any:Back");
+    if (badgeConfig.assetRegistryUrl()[0]) {
+        d.drawStr(2, 24, "doom1.wad not on badge.");
+        d.drawStr(2, 36, "Press Confirm to open");
+        d.drawStr(2, 45, "the Asset Library and");
+        d.drawStr(2, 54, "download it over WiFi.");
+        d.drawHLine(0, 56, 128);
+        ButtonGlyphs::drawInlineHint(d, 2, 63, "Cancel:Back");
+        ButtonGlyphs::drawInlineHintRight(d, 126, 63,
+                                          "Confirm:Library");
+    } else {
+        d.drawStr(2, 24, "doom1.wad not found on");
+        d.drawStr(2, 33, "the badge filesystem.");
+        d.drawStr(2, 45, "Upload one by going to");
+        d.drawStr(2, 54, "ide.jumperless.org");
+        d.drawHLine(0, 56, 128);
+        ButtonGlyphs::drawInlineHint(d, 2, 63, "Any:Back");
+    }
 }
 
 void DoomScreen::renderSettingsScreen(oled& d) {

@@ -184,6 +184,20 @@ int8_t fontFamilyFromName(const char* name) {
       0xd4, 0x73, 0x2b, 0xee, 0x55, 0x88, 0x1f, 0xca,
   };
 
+  // The scramble key is derived from the eFuse MAC (`uid[]`). If we
+  // ever reach this path before `read_uid()` has populated `uid[]`,
+  // the resulting key is garbage (all-zeros XOR salt) and either
+  // (a) writes an undecodable blob to NVS, or (b) decodes a perfectly
+  // good blob into garbage. Both modes silently break auto-connect.
+  // This guard refuses to scramble with a zero UID and logs loudly so
+  // the boot-order regression is obvious in the serial log.
+  bool wifiPwdKeyReady() {
+    for (uint8_t i = 0; i < UID_SIZE; ++i) {
+      if (uid[i] != 0) return true;
+    }
+    return false;
+  }
+
   void buildWifiPwdKey(uint8_t out[32]) {
     for (uint8_t i = 0; i < 32; ++i) {
       out[i] = static_cast<uint8_t>(uid[i % UID_SIZE] ^
@@ -192,21 +206,36 @@ int8_t fontFamilyFromName(const char* name) {
     }
   }
 
-  void scrambleWifiPwd(const char* in, uint8_t* out, size_t len) {
+  bool scrambleWifiPwd(const char* in, uint8_t* out, size_t len) {
+    if (!wifiPwdKeyReady()) {
+      Serial.println(
+          "[Config] WiFi pwd scramble skipped: read_uid() has not run "
+          "yet — refusing to write an undecodable blob to NVS");
+      return false;
+    }
     uint8_t key[32];
     buildWifiPwdKey(key);
     for (size_t i = 0; i < len; ++i) {
       out[i] = static_cast<uint8_t>(in[i]) ^ key[i % sizeof(key)];
     }
+    return true;
   }
 
-  void unscrambleWifiPwd(const uint8_t* in, char* out, size_t len) {
+  bool unscrambleWifiPwd(const uint8_t* in, char* out, size_t len) {
+    if (!wifiPwdKeyReady()) {
+      Serial.println(
+          "[Config] WiFi pwd unscramble skipped: read_uid() has not run "
+          "yet — saved password would decode to garbage");
+      out[0] = '\0';
+      return false;
+    }
     uint8_t key[32];
     buildWifiPwdKey(key);
     for (size_t i = 0; i < len; ++i) {
       out[i] = static_cast<char>(in[i] ^ key[i % sizeof(key)]);
     }
     out[len] = '\0';
+    return true;
   }
 
   void trimInPlace(char* s) {
@@ -328,6 +357,21 @@ int8_t fontFamilyFromName(const char* name) {
   // ─── NVS (fallback for early boot before FAT is mounted) ─────────────────────
   
   bool Config::loadFromNvs() {
+    // The WiFi password unscramble derives its key from the eFuse MAC
+    // (`uid[]`). Calling load() before `read_uid()` produces a key of
+    // zeros and silently corrupts the in-memory password, so the
+    // first connect attempt fails with an "incorrect password" code
+    // and the user assumes their saved credentials were lost. Refuse
+    // to load early and shout about it.
+    bool uidPopulated = false;
+    for (uint8_t i = 0; i < UID_SIZE; ++i) {
+      if (uid[i] != 0) { uidPopulated = true; break; }
+    }
+    if (!uidPopulated) {
+      Serial.println(
+          "[Config] loadFromNvs() called before read_uid() — WiFi password "
+          "would decode to garbage. Caller must invoke read_uid() first.");
+    }
     if (!gPrefs.begin(kNvsNamespace, true)) {
       Serial.println("Config: NVS open (readonly) failed, using defaults");
       return false;
@@ -358,38 +402,172 @@ int8_t fontFamilyFromName(const char* name) {
     return true;
   }
 
+  namespace {
+  // NVS key helpers. Keys cap at 15 chars, so the templates below
+  // (`ui_wifi_ssid_<n>`, `ui_wifi_pwd_<n>`) work for n=0..9.
+  void formatWifiSlotKey(char* out, size_t cap, const char* prefix,
+                         uint8_t index) {
+    snprintf(out, cap, "%s%u", prefix, static_cast<unsigned>(index));
+  }
+  }  // namespace
+
   void Config::loadNetworkFromBuild() {
-    BuildWifiConfig::decodeSsid(wifiSsid_, kStringMaxLen);
-    BuildWifiConfig::decodePass(wifiPass_, kStringMaxLen);
+    // Build-time credentials always seed slot 0; runtime values from
+    // NVS overwrite them in `loadStringsFromNvs()`.
+    BuildWifiConfig::decodeSsid(wifiSlots_[0].ssid, kStringMaxLen);
+    BuildWifiConfig::decodePass(wifiSlots_[0].pass, kStringMaxLen);
+    for (uint8_t i = 1; i < kMaxWifiNetworks; ++i) {
+      wifiSlots_[i].ssid[0] = '\0';
+      wifiSlots_[i].pass[0] = '\0';
+    }
   }
 
-  void Config::setWifiCredentials(const char* ssid, const char* pass) {
-    if (ssid) {
-      strncpy(wifiSsid_, ssid, kStringMaxLen - 1);
-      wifiSsid_[kStringMaxLen - 1] = '\0';
-    }
-    if (pass) {
-      strncpy(wifiPass_, pass, kStringMaxLen - 1);
-      wifiPass_[kStringMaxLen - 1] = '\0';
-    }
+  void Config::persistWifiSlot(uint8_t index) const {
+    if (index >= kMaxWifiNetworks) return;
     Preferences p;
     if (!p.begin(kNvsNamespace, false)) return;
-    if (ssid) p.putString("ui_wifi_ssid", wifiSsid_);
-    if (pass) {
-      const size_t plen = strlen(wifiPass_);
+    char ssidKey[16];
+    char pwdKey[16];
+    formatWifiSlotKey(ssidKey, sizeof(ssidKey), "ui_wifi_ssid_", index);
+    formatWifiSlotKey(pwdKey, sizeof(pwdKey), "ui_wifi_pwd_", index);
+
+    const WifiSlot& slot = wifiSlots_[index];
+    const size_t slen = strlen(slot.ssid);
+    if (slen == 0) {
+      if (p.isKey(ssidKey)) p.remove(ssidKey);
+      if (p.isKey(pwdKey))  p.remove(pwdKey);
+    } else {
+      p.putString(ssidKey, slot.ssid);
+      const size_t plen = strlen(slot.pass);
       if (plen == 0) {
-        if (p.isKey("ui_wifi_pwd")) p.remove("ui_wifi_pwd");
-        if (p.isKey("ui_wifi_pass")) p.remove("ui_wifi_pass");
+        if (p.isKey(pwdKey)) p.remove(pwdKey);
       } else {
         uint8_t scrambled[kStringMaxLen];
-        scrambleWifiPwd(wifiPass_, scrambled, plen);
-        p.putBytes("ui_wifi_pwd", scrambled, plen);
-        // Drop any legacy plaintext copy now that the scrambled blob
-        // is the source of truth.
-        if (p.isKey("ui_wifi_pass")) p.remove("ui_wifi_pass");
+        if (scrambleWifiPwd(slot.pass, scrambled, plen)) {
+          p.putBytes(pwdKey, scrambled, plen);
+        } else {
+          // UID not ready — leave the existing NVS blob alone rather
+          // than overwrite it with a key that won't round-trip.
+          if (p.isKey(pwdKey)) {
+            Serial.println(
+                "[Config] preserving existing WiFi pwd blob (UID not ready)");
+          }
+        }
       }
     }
     p.end();
+  }
+
+  void Config::clearWifiSlotInNvs(uint8_t index) const {
+    if (index >= kMaxWifiNetworks) return;
+    Preferences p;
+    if (!p.begin(kNvsNamespace, false)) return;
+    char ssidKey[16];
+    char pwdKey[16];
+    formatWifiSlotKey(ssidKey, sizeof(ssidKey), "ui_wifi_ssid_", index);
+    formatWifiSlotKey(pwdKey, sizeof(pwdKey), "ui_wifi_pwd_", index);
+    if (p.isKey(ssidKey)) p.remove(ssidKey);
+    if (p.isKey(pwdKey))  p.remove(pwdKey);
+    p.end();
+  }
+
+  void Config::setWifiCredentials(const char* ssid, const char* pass) {
+    setWifiCredentialsAt(0, ssid, pass);
+  }
+
+  void Config::setWifiCredentialsAt(uint8_t index, const char* ssid,
+                                    const char* pass) {
+    if (index >= kMaxWifiNetworks) return;
+    WifiSlot& slot = wifiSlots_[index];
+    if (ssid) {
+      strncpy(slot.ssid, ssid, kStringMaxLen - 1);
+      slot.ssid[kStringMaxLen - 1] = '\0';
+      // Empty SSID means "clear the slot" — also drop the password so
+      // we don't leak credentials into a "phantom" disabled slot.
+      if (slot.ssid[0] == '\0') slot.pass[0] = '\0';
+    }
+    if (pass) {
+      strncpy(slot.pass, pass, kStringMaxLen - 1);
+      slot.pass[kStringMaxLen - 1] = '\0';
+    }
+    persistWifiSlot(index);
+  }
+
+  int8_t Config::addWifiNetwork(const char* ssid, const char* pass) {
+    if (!ssid || !ssid[0]) return -1;
+    // Reuse the existing slot for the same SSID — keeps the order
+    // stable for users updating just the password.
+    for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+      if (wifiSlots_[i].ssid[0] != '\0' &&
+          strcmp(wifiSlots_[i].ssid, ssid) == 0) {
+        setWifiCredentialsAt(i, ssid, pass);
+        return static_cast<int8_t>(i);
+      }
+    }
+    for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+      if (wifiSlots_[i].ssid[0] == '\0') {
+        setWifiCredentialsAt(i, ssid, pass);
+        return static_cast<int8_t>(i);
+      }
+    }
+    return -1;
+  }
+
+  void Config::removeWifiNetwork(uint8_t index) {
+    if (index >= kMaxWifiNetworks) return;
+    // Shift later slots up so the saved-network list stays gap-free —
+    // the connect path iterates from slot 0 and stops at the first
+    // empty SSID.
+    for (uint8_t i = index; i + 1 < kMaxWifiNetworks; ++i) {
+      wifiSlots_[i] = wifiSlots_[i + 1];
+    }
+    wifiSlots_[kMaxWifiNetworks - 1].ssid[0] = '\0';
+    wifiSlots_[kMaxWifiNetworks - 1].pass[0] = '\0';
+    for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+      persistWifiSlot(i);
+    }
+  }
+
+  void Config::moveWifiNetworkUp(uint8_t index) {
+    if (index == 0 || index >= kMaxWifiNetworks) return;
+    WifiSlot tmp = wifiSlots_[index - 1];
+    wifiSlots_[index - 1] = wifiSlots_[index];
+    wifiSlots_[index] = tmp;
+    persistWifiSlot(index - 1);
+    persistWifiSlot(index);
+  }
+
+  void Config::moveWifiNetworkDown(uint8_t index) {
+    if (index + 1 >= kMaxWifiNetworks) return;
+    WifiSlot tmp = wifiSlots_[index + 1];
+    wifiSlots_[index + 1] = wifiSlots_[index];
+    wifiSlots_[index] = tmp;
+    persistWifiSlot(index);
+    persistWifiSlot(index + 1);
+  }
+
+  const char* Config::wifiSsidAt(uint8_t index) const {
+    if (index >= kMaxWifiNetworks) return "";
+    return wifiSlots_[index].ssid;
+  }
+
+  const char* Config::wifiPassAt(uint8_t index) const {
+    if (index >= kMaxWifiNetworks) return "";
+    return wifiSlots_[index].pass;
+  }
+
+  bool Config::wifiSlotConfigured(uint8_t index) const {
+    if (index >= kMaxWifiNetworks) return false;
+    return wifiSlots_[index].ssid[0] != '\0' &&
+           wifiSlots_[index].pass[0] != '\0';
+  }
+
+  uint8_t Config::wifiNetworkCount() const {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+      if (wifiSlots_[i].ssid[0] != '\0') ++n;
+    }
+    return n;
   }
 
   bool Config::wifiEnabled() const {
@@ -450,6 +628,26 @@ int8_t fontFamilyFromName(const char* name) {
     Serial.printf("Config: timezone set to %s\n", tz);
   }
 
+  void Config::setOtaManifestUrl(const char* value) {
+    if (!value) value = "";
+    char tmp[sizeof(otaManifestUrl_)];
+    strncpy(tmp, value, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    trimInPlace(tmp);
+    strncpy(otaManifestUrl_, tmp, sizeof(otaManifestUrl_) - 1);
+    otaManifestUrl_[sizeof(otaManifestUrl_) - 1] = '\0';
+  }
+
+  void Config::setAssetRegistryUrl(const char* value) {
+    if (!value) value = "";
+    char tmp[sizeof(assetRegistryUrl_)];
+    strncpy(tmp, value, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    trimInPlace(tmp);
+    strncpy(assetRegistryUrl_, tmp, sizeof(assetRegistryUrl_) - 1);
+    assetRegistryUrl_[sizeof(assetRegistryUrl_) - 1] = '\0';
+  }
+
   void Config::setNametagSetting(const char* value) {
     if (!value || !value[0]) {
       strncpy(nametagSetting_, "default", sizeof(nametagSetting_));
@@ -497,42 +695,75 @@ int8_t fontFamilyFromName(const char* name) {
   void Config::loadStringsFromNvs() {
     loadNetworkFromBuild();
     // UI-entered credentials take precedence over build-baked values
-    // when present. Keys live under `kNvsNamespace` but are distinct
-    // from the legacy `wifi_ssid`/`wifi_pass` keys so they survive the
-    // cleanup pass run on boot.
-    //
-    // The password is stored as a scrambled byte blob under
-    // `ui_wifi_pwd`. If we still see the legacy plaintext
-    // `ui_wifi_pass` key, migrate it forward and remove the original.
-    bool needMigrate = false;
-    char migratedPass[kStringMaxLen] = "";
+    // when present. Modern layout: per-slot keys
+    // `ui_wifi_ssid_<n>` (string) + `ui_wifi_pwd_<n>` (scrambled
+    // bytes), one pair per slot 0..kMaxWifiNetworks-1. Legacy single-
+    // network layout (`ui_wifi_ssid` + `ui_wifi_pwd`/`ui_wifi_pass`)
+    // is migrated forward into slot 0 and the old keys removed.
+    bool migratedFromLegacy = false;
+    char legacySsid[kStringMaxLen] = "";
+    char legacyPass[kStringMaxLen] = "";
+    bool sawAnySlot = false;
     {
       Preferences p;
       if (!p.begin(kNvsNamespace, true)) return;
-      if (p.isKey("ui_wifi_ssid")) {
-        p.getString("ui_wifi_ssid", wifiSsid_, kStringMaxLen);
-      }
-      if (p.isKey("ui_wifi_pwd")) {
-        size_t blen = p.getBytesLength("ui_wifi_pwd");
-        if (blen > 0 && blen < kStringMaxLen) {
-          uint8_t buf[kStringMaxLen];
-          if (p.getBytes("ui_wifi_pwd", buf, blen) == blen) {
-            unscrambleWifiPwd(buf, wifiPass_, blen);
+      for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+        char ssidKey[16];
+        char pwdKey[16];
+        formatWifiSlotKey(ssidKey, sizeof(ssidKey), "ui_wifi_ssid_", i);
+        formatWifiSlotKey(pwdKey, sizeof(pwdKey), "ui_wifi_pwd_", i);
+        if (p.isKey(ssidKey)) {
+          // The slot was explicitly configured (even if empty), so wipe
+          // out the build-baked seed for this slot before loading.
+          wifiSlots_[i].ssid[0] = '\0';
+          wifiSlots_[i].pass[0] = '\0';
+          p.getString(ssidKey, wifiSlots_[i].ssid, kStringMaxLen);
+          if (p.isKey(pwdKey)) {
+            const size_t blen = p.getBytesLength(pwdKey);
+            if (blen > 0 && blen < kStringMaxLen) {
+              uint8_t buf[kStringMaxLen];
+              if (p.getBytes(pwdKey, buf, blen) == blen) {
+                unscrambleWifiPwd(buf, wifiSlots_[i].pass, blen);
+              }
+            }
           }
+          sawAnySlot = true;
         }
-      } else if (p.isKey("ui_wifi_pass")) {
-        p.getString("ui_wifi_pass", wifiPass_, kStringMaxLen);
-        strncpy(migratedPass, wifiPass_, kStringMaxLen - 1);
-        migratedPass[kStringMaxLen - 1] = '\0';
-        needMigrate = (migratedPass[0] != '\0');
+      }
+      // Legacy single-network layout. Migrate into slot 0 if no
+      // modern slot is set yet.
+      if (!sawAnySlot && p.isKey("ui_wifi_ssid")) {
+        p.getString("ui_wifi_ssid", legacySsid, kStringMaxLen);
+        if (p.isKey("ui_wifi_pwd")) {
+          const size_t blen = p.getBytesLength("ui_wifi_pwd");
+          if (blen > 0 && blen < kStringMaxLen) {
+            uint8_t buf[kStringMaxLen];
+            if (p.getBytes("ui_wifi_pwd", buf, blen) == blen) {
+              unscrambleWifiPwd(buf, legacyPass, blen);
+            }
+          }
+        } else if (p.isKey("ui_wifi_pass")) {
+          p.getString("ui_wifi_pass", legacyPass, kStringMaxLen);
+        }
+        migratedFromLegacy = true;
       }
       p.end();
     }
-    if (needMigrate) {
-      Serial.println("Config: migrating WiFi password to scrambled blob");
-      // setWifiCredentials writes the scrambled blob and removes the
-      // plaintext key.
-      setWifiCredentials(nullptr, migratedPass);
+
+    if (migratedFromLegacy) {
+      Serial.println(
+          "Config: migrating legacy WiFi credentials into slot 0");
+      // setWifiCredentialsAt persists the new slot and the next clean
+      // boot will see the modern keys. We then drop the legacy keys
+      // explicitly so they don't reappear on subsequent migrations.
+      setWifiCredentialsAt(0, legacySsid, legacyPass);
+      Preferences p;
+      if (p.begin(kNvsNamespace, false)) {
+        if (p.isKey("ui_wifi_ssid")) p.remove("ui_wifi_ssid");
+        if (p.isKey("ui_wifi_pwd"))  p.remove("ui_wifi_pwd");
+        if (p.isKey("ui_wifi_pass")) p.remove("ui_wifi_pass");
+        p.end();
+      }
     }
   }
   
@@ -631,6 +862,17 @@ int8_t fontFamilyFromName(const char* name) {
       if (strcmp(section, "time") == 0) {
         if (strcmp(key, "timezone") == 0) {
           setTimezone(val);
+          matched++;
+        }
+        continue;
+      }
+
+      if (strcmp(section, "ota") == 0) {
+        if (strcmp(key, "manifest_url") == 0) {
+          setOtaManifestUrl(val);
+          matched++;
+        } else if (strcmp(key, "asset_registry_url") == 0) {
+          setAssetRegistryUrl(val);
           matched++;
         }
         continue;
@@ -807,6 +1049,19 @@ int8_t fontFamilyFromName(const char* name) {
     pos += snprintf(buf + pos, room(), "# POSIX TZ string. Default is Pacific time with DST.\n");
     pos += snprintf(buf + pos, room(), "timezone = %s\n\n", timezone_[0] ? timezone_ : kDefaultTimezone);
 
+    pos += snprintf(buf + pos, room(), "[ota]\n");
+    pos += snprintf(buf + pos, room(),
+        "# Firmware OTA: leave empty to use the default GitHub Releases\n");
+    pos += snprintf(buf + pos, room(),
+        "# endpoint baked into the build. Set to override (advanced).\n");
+    pos += snprintf(buf + pos, room(), "manifest_url = %s\n", otaManifestUrl_);
+    pos += snprintf(buf + pos, room(),
+        "# Asset Library: URL of a registry.json describing downloadable\n");
+    pos += snprintf(buf + pos, room(),
+        "# files (DOOM WAD, etc.). Empty disables the Library screen.\n");
+    pos += snprintf(buf + pos, room(),
+        "asset_registry_url = %s\n\n", assetRegistryUrl_);
+
     pos += snprintf(buf + pos, room(), "[wifi]\n");
     pos += snprintf(buf + pos, room(), "# Master WiFi enable. When 0, the badge never connects on boot and\n");
     pos += snprintf(buf + pos, room(), "# explicit connect attempts (incl. badge.http_get/post) bail out.\n");
@@ -978,7 +1233,12 @@ int8_t fontFamilyFromName(const char* name) {
   // ─── Accessors & hardware apply ──────────────────────────────────────────────
 
   bool Config::wifiConfigured() const {
-    return wifiSsid_[0] != '\0' && wifiPass_[0] != '\0';
+    for (uint8_t i = 0; i < kMaxWifiNetworks; ++i) {
+      if (wifiSlots_[i].ssid[0] != '\0' && wifiSlots_[i].pass[0] != '\0') {
+        return true;
+      }
+    }
+    return false;
   }
 
   int32_t Config::get(uint8_t index) const {
@@ -1080,10 +1340,10 @@ int8_t fontFamilyFromName(const char* name) {
             static_cast<uint32_t>(values_[kFlipDelayMs]));
         break;
       case kFlipButtons:
-        inputs.setFlipButtons(false);
+        inputs.setFlipButtons(values_[kFlipButtons] != 0);
         break;
       case kFlipJoystick:
-        inputs.setFlipJoystick(false);
+        inputs.setFlipJoystick(values_[kFlipJoystick] != 0);
         break;
       case kOledOsc:
       case kOledDiv:
@@ -1183,6 +1443,17 @@ int8_t fontFamilyFromName(const char* name) {
     for (uint8_t i = 0; i < kCount; ++i) {
       apply(i);
     }
+    // Re-apply the flip thresholds after the loop. The IMU shares one
+    // INT1 threshold register between motion-event detection
+    // (kImuInt1Threshold) and 6D orientation flip detection
+    // (kFlipUp/DownThreshold). Because kImuInt1Threshold is later in
+    // the SettingIndex enum than the flip indices, the bare-loop pass
+    // above ends with INT1 stuck at the dev-tuning motion threshold
+    // (default 10) — too low for a clean flip and the symptom users
+    // hit as "flip thresholds don't kick in until I open Settings and
+    // touch them". Re-applying flip last guarantees INT1 reflects the
+    // user's flip-up/down magnitudes after every load.
+    apply(kFlipUpThreshold);
     applyTimezone();
     applyNametagSetting();
     Serial.println("Config: applied all settings");

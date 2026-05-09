@@ -63,6 +63,49 @@ void WiFiService::begin() {
   }
 }
 
+namespace {
+// Per-attempt timeout. When several networks are saved we don't want
+// the boot path to block 15 s × N — keep individual attempts short
+// enough that the worst-case full sweep still finishes within the
+// historic single-attempt budget. WPA3 SAE on a known-good network
+// usually completes well under 8 s; un-attended boots can wait the
+// full WIFI_TIMEOUT_MS only for the *last* candidate.
+constexpr uint32_t kPerAttemptTimeoutMs = 8000;
+
+bool tryConnectOnce(const char* ssid, const char* pass, uint32_t timeoutMs) {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
+  WiFi.setAutoReconnect(false);
+  WiFi.persistent(false);
+
+  Serial.printf("[WiFi] try ssid='%s' (len=%u, pwd_len=%u)\n",
+                ssid,
+                static_cast<unsigned>(strlen(ssid)),
+                static_cast<unsigned>(strlen(pass)));
+  WiFi.begin(ssid, pass);
+
+  const uint32_t startMs = millis();
+  while (millis() - startMs < timeoutMs) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    const IPAddress ip = WiFi.localIP();
+    if (static_cast<uint32_t>(ip) != 0) return true;
+    // Hard-fail status codes — bail out early so the next saved
+    // network gets a real chance instead of waiting the full timeout.
+    const wl_status_t st = WiFi.status();
+    if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
+      Serial.printf("[WiFi] short-circuit fail status=%d\n", st);
+      return false;
+    }
+    delay(100);
+  }
+  Serial.printf("[WiFi] attempt timed out status=%d\n", WiFi.status());
+  return false;
+}
+}  // namespace
+
 bool WiFiService::connect() {
   if (isConnected()) {
     noteConnectionOk();
@@ -92,30 +135,39 @@ bool WiFiService::connect() {
 
   char hostname[32];
   snprintf(hostname, sizeof(hostname), "badge-%s", uid_hex);
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  delay(100);
-  WiFi.mode(WIFI_STA);
-  WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
-  WiFi.setAutoReconnect(false);
-  WiFi.persistent(false);
   WiFi.setHostname(hostname);
 
-  Serial.printf("[WiFi] explicit connect to ssid_len=%u\n",
-                static_cast<unsigned>(strlen(WIFI_SSID)));
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  const uint32_t startMs = millis();
-  while (millis() - startMs < WIFI_TIMEOUT_MS) {
-    if (WiFi.status() == WL_CONNECTED) break;
-    const IPAddress ip = WiFi.localIP();
-    if (static_cast<uint32_t>(ip) != 0) break;
-    delay(100);
+  // Walk saved networks in slot order. Slot 0 is "preferred" so a
+  // user who only ever fills in one network gets the same single-
+  // attempt behaviour as before; multiple slots fall through on
+  // per-attempt timeout / hard-fail until one works or every slot
+  // has been tried.
+  const uint8_t total = badgeConfig.wifiNetworkCount();
+  if (total == 0) {
+    Serial.println("[WiFi] no saved networks configured");
+    noteConnectionFailed();
+    restoreCpu();
+    return false;
   }
 
-  const bool ok = WiFi.status() == WL_CONNECTED ||
-                  static_cast<uint32_t>(WiFi.localIP()) != 0;
+  bool ok = false;
+  uint8_t attempted = 0;
+  for (uint8_t i = 0; i < Config::kMaxWifiNetworks && !ok; ++i) {
+    const char* ssid = badgeConfig.wifiSsidAt(i);
+    const char* pass = badgeConfig.wifiPassAt(i);
+    if (!ssid || !ssid[0]) continue;
+    ++attempted;
+    // Last candidate gets the full timeout so a slow but valid AP
+    // still has a chance even when earlier saved networks were
+    // tried first.
+    const uint32_t timeoutMs =
+        (attempted >= total) ? WIFI_TIMEOUT_MS : kPerAttemptTimeoutMs;
+    Serial.printf("[WiFi] explicit connect to slot %u (timeout=%u ms)\n",
+                  static_cast<unsigned>(i),
+                  static_cast<unsigned>(timeoutMs));
+    ok = tryConnectOnce(ssid, pass ? pass : "", timeoutMs);
+  }
+
   if (ok) {
     WiFi.setSleep(true);
     configureClockOnce();
@@ -126,7 +178,9 @@ bool WiFiService::connect() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     noteConnectionFailed();
-    Serial.printf("[WiFi] connect failed status=%d\n", WiFi.status());
+    Serial.printf("[WiFi] connect failed after %u attempt%s\n",
+                  static_cast<unsigned>(attempted),
+                  attempted == 1 ? "" : "s");
   }
 
   restoreCpu();

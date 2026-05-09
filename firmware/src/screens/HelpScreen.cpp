@@ -98,14 +98,18 @@ constexpr Item kItems[] = {
     {ItemKind::kText,    "Y is fwd/back.",                0},
     {ItemKind::kGap,     nullptr,                         0},
 
-    // ── WiFi (build-time only) ───────────────────────────────────────
+    // ── WiFi ─────────────────────────────────────────────────────────
     {ItemKind::kHeading, "WIFI",                          0},
-    {ItemKind::kText,    "Set credentials in",            0},
-    {ItemKind::kText,    "firmware/wifi",                 0},
-    {ItemKind::kText,    ".local.env, then",              0},
-    {ItemKind::kText,    "rebuild + flash.",              0},
-    {ItemKind::kText,    "Used only by",                  0},
-    {ItemKind::kText,    "Python net calls.",             0},
+    {ItemKind::kText,    "Open WIFI tile to",             0},
+    {ItemKind::kText,    "add networks. Up",              0},
+    {ItemKind::kText,    "to four are saved",             0},
+    {ItemKind::kText,    "and tried in order",            0},
+    {ItemKind::kText,    "on boot until one",             0},
+    {ItemKind::kText,    "connects.",                     0},
+    // {ItemKind::kText,    "(Optional: bake",               0},
+    // {ItemKind::kText,    "creds via wifi",                0},
+    // {ItemKind::kText,    ".local.env at",                 0},
+    // {ItemKind::kText,    "build time.)",                  0},
     {ItemKind::kGap,     nullptr,                         0},
 
     // ── Docs URLs ────────────────────────────────────────────────────
@@ -320,7 +324,12 @@ void HelpScreen::render(oled& d, GUIManager& /*gui*/) {
   }
   d.drawHLine(0, kHeaderRuleY, OLEDLayout::kScreenW);
 
-  // Body — clipped to leave the header strip alone.
+  // Body — text/glyph/heading items stay clipped to the body so they
+  // don't bleed onto the sticky header. QR items deliberately escape
+  // that clip and overdraw the header strip while they're scrolling
+  // past, so the full QR plate (including its quiet zone) is always
+  // scannable instead of getting visually chopped under the "HELP"
+  // chrome on its way through the viewport.
   d.setClipWindow(0, kBodyTopY, OLEDLayout::kScreenW, kBodyBotY);
 
   int16_t y = kBodyTopY - scrollPx_;
@@ -328,9 +337,12 @@ void HelpScreen::render(oled& d, GUIManager& /*gui*/) {
     const Item& it = kItems[i];
     const uint8_t h = itemHeight(it);
 
-    // Cull items entirely off-screen — drawXBM/etc. are happy to clip
-    // but the QR plate path scans bits regardless, so skip explicitly.
-    if (y + h > kBodyTopY && y < kBodyBotY) {
+    // Cull items entirely off-screen. QR culling uses the full screen
+    // (not just the body) since QRs are allowed to overdraw the header.
+    const int16_t topBound =
+        it.kind == ItemKind::kQr ? 0 : static_cast<int16_t>(kBodyTopY);
+    const int16_t botBound = kBodyBotY;
+    if (y + h > topBound && y < botBound) {
       switch (it.kind) {
         case ItemKind::kHeading:
           drawHeading(d, y, it.text);
@@ -345,8 +357,13 @@ void HelpScreen::render(oled& d, GUIManager& /*gui*/) {
           const Qr& q = qrs_[it.qrIndex];
           const int plateX =
               (OLEDLayout::kScreenW - kQrPlateSize) / 2;
+          // Widen the clip just for this draw so the plate's white
+          // backing wipes out the header chrome underneath, then
+          // restore the body clip for the next item.
+          d.setClipWindow(0, 0, OLEDLayout::kScreenW, kBodyBotY);
           QRCodePlate::draw(d, q.bits, q.pixels, q.pixels, plateX, y + 1,
                             kQrPlateSize, /*divider=*/false);
+          d.setClipWindow(0, kBodyTopY, OLEDLayout::kScreenW, kBodyBotY);
           break;
         }
         case ItemKind::kGap:

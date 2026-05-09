@@ -262,12 +262,30 @@ int drawOrMeasureInline(oled& d, int x, int baseline, const char* text,
   if (!text) return 0;
   int cursor = x;
   const size_t len = std::strlen(text);
+
+  // Scratch buffer for batching consecutive non-token characters into
+  // a single drawStr call. Drawing chars one-at-a-time was visually
+  // broken — u8g2's single-character `getStrWidth` returns the glyph
+  // bbox without the inter-character advance for proportional fonts,
+  // so adjacent letters mash together into an unreadable blob.
+  // Sized to comfortably hold any realistic OLED status line.
+  char buf[64];
+  size_t bufLen = 0;
+  auto flushBuf = [&]() {
+    if (bufLen == 0) return;
+    buf[bufLen] = '\0';
+    if (draw) d.drawStr(cursor, baseline, buf);
+    cursor += d.getStrWidth(buf);
+    bufLen = 0;
+  };
+
   for (size_t i = 0; i < len;) {
     // Composite cluster glyphs (ALL / L-R / U-D) take precedence over
     // the per-button parser since they share single-letter prefixes.
     ClusterGlyph cluster = ClusterGlyph::kNone;
     size_t consumed = 0;
     if (clusterToken(text, i, &cluster, &consumed)) {
+      flushBuf();
       if (draw) {
         d.drawXBM(cursor, baseline - kGlyphH + 1, kGlyphW, kGlyphH,
                   clusterBits(cluster));
@@ -281,6 +299,7 @@ int drawOrMeasureInline(oled& d, int x, int baseline, const char* text,
     bool hasPair = false;        // unused now — kept for API stability
     Button pairButton = Button::B;
     if (buttonToken(text, i, &button, &consumed, &hasPair, &pairButton)) {
+      flushBuf();
       if (draw) {
         ButtonGlyphs::draw(d, button, cursor, baseline - kGlyphH + 1);
       }
@@ -289,11 +308,11 @@ int drawOrMeasureInline(oled& d, int x, int baseline, const char* text,
       continue;
     }
 
-    char one[2] = {text[i], '\0'};
-    if (draw) d.drawStr(cursor, baseline, one);
-    cursor += d.getStrWidth(one);
+    if (bufLen + 1 >= sizeof(buf)) flushBuf();
+    buf[bufLen++] = text[i];
     i++;
   }
+  flushBuf();
   return cursor - x;
 }
 

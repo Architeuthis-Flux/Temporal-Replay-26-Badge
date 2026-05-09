@@ -5,6 +5,7 @@
 // NO_QSTR is defined during the MicroPython QSTR generation step (gcc -E)
 #ifndef NO_QSTR
 #include <esp_partition.h>
+#include <esp_system.h>
 #include <wear_levelling.h>
 #else
 // Dummy types for QSTR generator
@@ -274,5 +275,104 @@ int replay_vfs_mount_fat( void ) {
     return 0;
 #else
     return 0;
+#endif
+}
+
+// ── Storage layout queries (used by the Firmware Update screen) ─────────────
+//
+// The badge can detect when the on-flash FAT volume is smaller than the
+// partition that backs it (e.g. after we grew the ffat partition in a
+// firmware update but the existing FAT header still describes the old
+// 6 MB volume) and offer the user a one-tap "reformat to use all space"
+// option. These helpers expose just enough state to make that comparison
+// from C++ without dragging in the full ff.h.
+
+size_t replay_bdev_partition_size( void ) {
+#ifndef NO_QSTR
+    const esp_partition_t* part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, "ffat" );
+    return part ? part->size : 0;
+#else
+    return 0;
+#endif
+}
+
+size_t replay_bdev_wl_size( void ) {
+#ifndef NO_QSTR
+    if ( s_wl_handle == WL_INVALID_HANDLE ) return 0;
+    return (size_t)wl_size( s_wl_handle );
+#else
+    return 0;
+#endif
+}
+
+size_t replay_bdev_fatfs_volume_bytes( void ) {
+#ifndef NO_QSTR
+    if ( !s_mounted_fatfs ) return 0;
+    // Total cluster-addressable bytes (excludes reserved + FAT regions).
+    // n_fatent is total FAT entries; clusters = n_fatent - 2 (entries 0,1
+    // are reserved). csize is sectors per cluster.
+    if ( s_mounted_fatfs->n_fatent <= 2 ) return 0;
+    return (size_t)( s_mounted_fatfs->n_fatent - 2 )
+         * (size_t)s_mounted_fatfs->csize
+         * 512u;
+#else
+    return 0;
+#endif
+}
+
+// True iff the currently mounted FAT volume is materially smaller than
+// the wear-levelled partition area (>= 1 MB unused). Used to gate the
+// "Reformat storage" option in the Firmware Update screen.
+int replay_bdev_fatfs_is_undersized( void ) {
+#ifndef NO_QSTR
+    size_t wl = replay_bdev_wl_size( );
+    size_t vol = replay_bdev_fatfs_volume_bytes( );
+    if ( wl == 0 || vol == 0 ) return 0;
+    if ( vol >= wl ) return 0;
+    return ( wl - vol ) >= ( 1u * 1024u * 1024u );
+#else
+    return 0;
+#endif
+}
+
+// Unmount, reformat the FAT volume across the full wear-levelled area,
+// then reboot. Wipes everything on /. Returns 0 on success (in which
+// case it doesn't return — esp_restart was called); negative on error.
+//
+// Caller is responsible for warning the user before invoking this; it's
+// destructive and synchronous (a few seconds at minimum).
+int replay_bdev_reformat_and_reboot( void ) {
+#ifndef NO_QSTR
+    if ( !s_mounted_fatfs ) {
+        mp_printf( &mp_plat_print, "[mpy] reformat: no mounted fs\n" );
+        return -MP_EIO;
+    }
+    mp_printf( &mp_plat_print, "[mpy] reformat: starting (this wipes /)...\n" );
+
+    // Snapshot the FATFS pointer; f_mount(NULL) clears the global mount
+    // slot but f_mkfs needs a valid fatfs struct to drive the bdev.
+    FATFS* fs = s_mounted_fatfs;
+    f_mount( NULL );
+
+    const size_t kWorkBufSize = 4096;
+    uint8_t* working_buf = (uint8_t*)malloc( kWorkBufSize );
+    if ( !working_buf ) {
+        mp_printf( &mp_plat_print, "[mpy] reformat: OOM\n" );
+        return -MP_ENOMEM;
+    }
+    FRESULT res = f_mkfs( fs, FM_ANY | FM_SFD, 0, working_buf, kWorkBufSize );
+    free( working_buf );
+    if ( res != FR_OK ) {
+        mp_printf( &mp_plat_print, "[mpy] reformat: f_mkfs failed %d\n", res );
+        return -MP_EIO;
+    }
+    mp_printf( &mp_plat_print, "[mpy] reformat: done; rebooting\n" );
+    // Give the serial line a moment to flush.
+    mp_hal_delay_ms( 300 );
+    esp_restart( );
+    return 0;  // unreachable
+#else
+    return -MP_EIO;
 #endif
 }
