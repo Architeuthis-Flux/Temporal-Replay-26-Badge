@@ -48,3 +48,4 @@
 settingsKevin.txt
 src/StartupFilesData.h
 /firmware/managed_components
+.vscode
