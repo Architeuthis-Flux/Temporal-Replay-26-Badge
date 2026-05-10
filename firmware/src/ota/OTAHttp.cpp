@@ -10,9 +10,25 @@
 #include <cstring>
 #include <cstdlib>
 
+#include "esp32-hal-cpu.h"
+
 #include "../api/WiFiService.h"
 
 namespace ota {
+
+ThroughputBoost::ThroughputBoost() {
+  prevSleep_ = WiFi.getSleep();
+  prevCpuMhz_ = getCpuFrequencyMhz();
+  WiFi.setSleep(false);
+  if (prevCpuMhz_ < 240) setCpuFrequencyMhz(240);
+}
+
+ThroughputBoost::~ThroughputBoost() {
+  if (getCpuFrequencyMhz() != prevCpuMhz_ && prevCpuMhz_ != 0) {
+    setCpuFrequencyMhz(prevCpuMhz_);
+  }
+  WiFi.setSleep(prevSleep_);
+}
 
 namespace {
 
@@ -156,7 +172,7 @@ Stream::Stream() = default;
 
 Stream::~Stream() { close(); }
 
-bool Stream::open(const char* url, uint32_t timeoutMs) {
+bool Stream::open(const char* url, uint32_t timeoutMs, size_t rangeStart) {
   close();
   lastError_[0] = '\0';
   contentLength_ = 0;
@@ -178,6 +194,11 @@ bool Stream::open(const char* url, uint32_t timeoutMs) {
   if (isHttps(url)) {
     auto* sec = new WiFiClientSecure();
     sec->setInsecure();
+    // Cap the TLS handshake at the per-request timeout (in seconds).
+    // The arduino-esp32 default is 30s which is fine, but tying it to
+    // the caller's timeoutMs keeps a stuck handshake from outliving
+    // the rest of the budget.
+    sec->setHandshakeTimeout(timeoutMs / 1000);
     secure_ = sec;
     began = http_->begin(*sec, urlStr);
   } else {
@@ -192,6 +213,12 @@ bool Stream::open(const char* url, uint32_t timeoutMs) {
     return false;
   }
   applyCommonOptions(*http_, timeoutMs);
+  if (rangeStart > 0) {
+    char rangeHdr[40];
+    std::snprintf(rangeHdr, sizeof(rangeHdr), "bytes=%u-",
+                  static_cast<unsigned>(rangeStart));
+    http_->addHeader("Range", rangeHdr);
+  }
 
   const int code = http_->GET();
   httpCode_ = code;
@@ -203,7 +230,10 @@ bool Stream::open(const char* url, uint32_t timeoutMs) {
     wifiService.noteRequestFailed();
     return false;
   }
-  if (code != 200) {
+  // 200 OK and 206 Partial Content are both acceptable. Anything else
+  // (including 416 Range Not Satisfiable) is a hard fail — the caller
+  // should restart from offset 0 by reopening with rangeStart=0.
+  if (code != 200 && code != 206) {
     std::snprintf(lastError_, sizeof(lastError_), "http status %d", code);
     close();
     wifiService.noteRequestFailed();
@@ -223,8 +253,15 @@ bool Stream::connected() const {
 
 int Stream::read(uint8_t* buf, size_t len) {
   if (!body_ || !buf || len == 0) return 0;
-  // Avoid blocking forever — caller manages overall deadlines.
-  const uint32_t kReadWindow = 5000;
+  // Per-read patience window. 10 s is generous enough that a brief
+  // mid-frame WiFi glitch (e.g. AP roaming, neighbouring badge
+  // hammering 2.4 GHz with IR/USB harmonics) doesn't immediately
+  // collapse the chunk; short enough that a truly dead socket gets
+  // surfaced to the caller's outer retry loop within a sensible
+  // bound. The caller (AssetRegistry installer) wraps reads in a
+  // resume-with-Range retry, so a surfaced timeout here is recoverable
+  // rather than fatal.
+  const uint32_t kReadWindow = 10000;
   uint32_t deadline = millis() + kReadWindow;
   size_t total = 0;
   while (total < len) {

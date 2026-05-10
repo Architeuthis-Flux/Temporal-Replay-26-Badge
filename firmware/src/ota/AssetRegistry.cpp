@@ -350,6 +350,11 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
 
   Serial.printf("[registry] install GET %s -> %s\n",
                 entry.url, entry.dest_path);
+  // Hold the radio awake + CPU at 240 MHz for the whole download.
+  // Without this, WiFi modem sleep + dynamic CPU scaling between
+  // chunks easily collapses throughput from ~250 KB/s to ~30 KB/s
+  // on a TLS stream.
+  ThroughputBoost boost;
   Stream s;
   if (!s.open(entry.url, 30000)) {
     Serial.printf("[registry] install open failed: %s\n", s.lastError());
@@ -360,8 +365,14 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     }
     return false;
   }
-  size_t total = s.contentLength();
-  if (total == 0 && entry.size > 0) total = entry.size;
+  // Canonical total: prefer the registry-declared size (we can trust it
+  // across resumes), fall back to the server's Content-Length on the
+  // initial 200. After a Range-resumed 206 the server only knows the
+  // *remaining* slice size, so caching `total` from the first response
+  // here matters — we use it for progress + short-stream detection
+  // throughout the retry loop.
+  size_t total = entry.size;
+  if (total == 0) total = s.contentLength();
 
   // Open the .tmp file under the FATFS lock for the whole download.
   // We hold the lock the whole time so other writers can't race
@@ -389,24 +400,98 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     mbedtls_sha256_starts(&shaCtx, 0);
   }
 
-  uint8_t chunk[1024];
+  // Retry budget: a 4 MB asset over conference WiFi typically completes
+  // on the first attempt, but a single transient stall (5-10 s of dead
+  // air, AP roaming, neighbour interference) used to abort the whole
+  // download. Resume-with-Range lets each retry pick up at `written`
+  // bytes instead of restarting the multi-megabyte stream from scratch.
+  // Four retries on top of the initial attempt cover the typical
+  // single-stall case without dragging out a genuinely dead network.
+  constexpr int kMaxRetries = 4;
+  int retries = 0;
+
+  // 8 KB chunks ≈ 8x fewer iterations than the historic 1 KB buffer.
+  // Each iteration pays for an HTTPClient::available poll, an
+  // f_write call (FATFS sector bookkeeping), an mbedtls_sha256_update
+  // (HW-accelerated on S3 but per-call overhead still matters), and a
+  // progress-callback check. At 4 MB this is the difference between
+  // ~33 KB/s and ~250 KB/s on a healthy WiFi link. Heap-allocated so
+  // we don't eat the main-loop's 24 KB stack on the AssetLibraryScreen
+  // call path; PSRAM is preferred but internal heap is fine too.
+  constexpr size_t kChunkBytes = 8192;
+  uint8_t* chunk = static_cast<uint8_t*>(std::malloc(kChunkBytes));
+  if (!chunk) {
+    setError("chunk alloc failed");
+    f_close(&fil);
+    f_unlink(fs, tmpPath);
+    if (wantSha) mbedtls_sha256_free(&shaCtx);
+    if (cb) {
+      AssetProgress p{0, 0, true, AssetInstallResult::kFsWriteError};
+      cb(p, user);
+    }
+    return false;
+  }
   size_t written = 0;
   uint32_t lastReport = 0;
   bool ok = true;
   while (true) {
-    int got = s.read(chunk, sizeof(chunk));
-    if (got < 0) { setError("stream read failed"); ok = false; break; }
-    if (got == 0) {
-      if (total > 0 && written < total) {
+    int got = s.read(chunk, kChunkBytes);
+    const bool isShortEof =
+        (got == 0 && total > 0 && written < total);
+    if (got < 0 || isShortEof) {
+      // Transient: stream dropped or the per-read window expired
+      // before the server delivered the rest. Reopen with a Range
+      // header at the current write offset and continue. Servers that
+      // honour the header reply 206 Partial Content (Stream::open
+      // accepts both 200 and 206); servers that ignore it reply 200
+      // and we restart the file from scratch as a fallback.
+      if (retries++ >= kMaxRetries) {
         char buf[80];
         std::snprintf(buf, sizeof(buf),
-                      "stream short %u/%u",
-                      (unsigned)written, (unsigned)total);
+                      "stream short %u/%u after %d retries",
+                      (unsigned)written, (unsigned)total,
+                      retries - 1);
         setError(buf);
         ok = false;
+        break;
       }
-      break;
+      Serial.printf(
+          "[registry] stream stall at %u/%u, retry %d (resume)\n",
+          (unsigned)written, (unsigned)total, retries);
+      s.close();
+      // Linear backoff: 500 ms, 1 s, 1.5 s, 2 s. Long enough that a
+      // briefly overwhelmed AP can recover, short enough that an
+      // attentive user doesn't think the install is stuck.
+      delay(500U * static_cast<uint32_t>(retries));
+      if (!s.open(entry.url, 30000, written)) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "resume open failed: %s",
+                      s.lastError());
+        setError(buf);
+        ok = false;
+        break;
+      }
+      if (s.httpCode() == 200 && written > 0) {
+        // Server ignored Range and is sending the whole file from
+        // byte 0. Easiest recovery: rewind the .tmp file, reset the
+        // SHA context, and consume the stream as a fresh start. This
+        // wastes the bytes we already wrote, but jsDelivr / GitHub
+        // CDN / ibiblio all honour Range so the path is rare in
+        // practice.
+        Serial.printf(
+            "[registry] server ignored Range; restarting from 0\n");
+        f_lseek(&fil, 0);
+        f_truncate(&fil);
+        written = 0;
+        if (wantSha) {
+          mbedtls_sha256_free(&shaCtx);
+          mbedtls_sha256_init(&shaCtx);
+          mbedtls_sha256_starts(&shaCtx, 0);
+        }
+      }
+      continue;
     }
+    if (got == 0) break;  // genuine EOF
     UINT wrote = 0;
     FRESULT wres = f_write(&fil, chunk, (UINT)got, &wrote);
     if (wres != FR_OK || wrote != (UINT)got) {
@@ -429,6 +514,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   }
   f_sync(&fil);
   f_close(&fil);
+  std::free(chunk);
 
   if (!ok) {
     if (wantSha) mbedtls_sha256_free(&shaCtx);

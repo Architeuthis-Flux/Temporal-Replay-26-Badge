@@ -275,6 +275,11 @@ InstallResult installCached(InstallProgressCb cb, void* user) {
     return InstallResult::kWifiUnavailable;
   }
 
+  // Hold WiFi awake + CPU at 240 MHz across the multi-MB firmware
+  // pull. Same rationale as the AssetRegistry installer — modem sleep
+  // and CPU scaling between chunks cap throughput at single-digit
+  // percentages of the link rate.
+  ThroughputBoost boost;
   Stream s;
   if (!s.open(sAssetUrl, 30000)) {
     setError(s.lastError());
@@ -292,7 +297,12 @@ InstallResult installCached(InstallProgressCb cb, void* user) {
     return InstallResult::kUpdateBeginFailed;
   }
 
-  uint8_t chunk[2048];
+  // 4 KB chunks — bigger than the historic 2 KB without bloating the
+  // worker's stack budget. Update.write batches into the flash sector
+  // size internally so larger reads here mostly buy us fewer
+  // HTTPClient::available polls and fewer SHA/CRC update calls inside
+  // arduino-esp32's Update layer.
+  uint8_t chunk[4096];
   size_t written = 0;
   uint32_t lastReport = 0;
   while (true) {

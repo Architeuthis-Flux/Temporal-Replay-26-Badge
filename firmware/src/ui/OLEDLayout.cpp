@@ -73,8 +73,18 @@ void drawWifiIcon(oled& d, int x, int y, bool connected, bool busy) {
   if (!connected && !busy) return;
 
   d.setDrawColor(1);
-  const unsigned char* bits = connected ? WifiIcon::kBits
-                                        : WifiIcon::kBitsNoWifi;
+  const unsigned char* bits;
+  if (!connected) {
+    bits = WifiIcon::kBitsNoWifi;
+  } else {
+    // Map signal level to the matching arc count. Level 0 here means
+    // "associated but no RSSI yet" — render as 1 bar so the icon is
+    // never blank while we believe the radio is up.
+    const uint8_t level = wifiService.signalLevel();
+    if (level >= 3)      bits = WifiIcon::kBits;
+    else if (level == 2) bits = WifiIcon::kBitsLevel2;
+    else                 bits = WifiIcon::kBitsLevel1;
+  }
   d.drawXBM(x, y, WifiIcon::kWidth, WifiIcon::kHeight, bits);
 
   if (connected && busy && ((millis() / 250) & 1)) {

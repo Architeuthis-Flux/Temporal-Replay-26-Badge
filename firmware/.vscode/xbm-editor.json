@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "bitmaps": {
+    "src/ui/WifiIcon.h#kBitsLevel2": {
+      "w": 11,
+      "h": 6,
+      "packing": "lsb"
+    },
+    "src/ui/WifiIcon.h#kBitsLevel1": {
+      "w": 11,
+      "h": 6,
+      "packing": "lsb"
+    }
+  }
+}

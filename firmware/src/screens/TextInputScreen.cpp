@@ -725,6 +725,17 @@ void TextInputScreen::handleInputQwerty(const Inputs& inputs, GUIManager& gui) {
         return;
     }
 
+    // LEFT (= X) is a one-button shortcut to backspace. The help
+    // text already documents this — wires it up in either Grid or
+    // Mouse mode without disturbing selector/cell state. Auto-repeat
+    // from `applyKeyRepeat` lets a held LEFT chew through a buffer
+    // without forcing the user to dance over to the `del` action key.
+    if (e.leftPressed && !onHelpLayer) {
+        backspace();
+        Haptics::shortPulse();
+        return;
+    }
+
     const bool onEmoji = isEmojiLayer();
     // Keyboard top Y — shared with `renderQwerty`. Duplicated here
     // rather than hoisted to a class constant so the render keeps
@@ -887,19 +898,47 @@ void TextInputScreen::handleInputQwerty(const Inputs& inputs, GUIManager& gui) {
                     step = 1;  // text row 10 cols
                     colCount = kGridCols;
                 }
-                gridCol_ = static_cast<uint8_t>(
-                    (gridCol_ + (joyX > 0 ? step : colCount - step))
-                    % colCount);
+                if (joyX > 0) {
+                    const uint8_t next =
+                        static_cast<uint8_t>(gridCol_ + step);
+                    if (next >= colCount) {
+                        // Don't wrap right off Send (action row pair
+                        // 4 = cols 8/9). Send is the most-used action
+                        // so the selector is sticky there rather than
+                        // rolling around to Shift on the left edge.
+                        // Other rows still wrap normally so users can
+                        // cycle through letters without backing up.
+                        if (gridRow_ != 3) {
+                            gridCol_ = 0;
+                        }
+                    } else {
+                        gridCol_ = next;
+                    }
+                } else {
+                    // Leftward wrap is preserved on every row,
+                    // including from Shift → Send: wrapping *into*
+                    // Send is desirable, only wrapping *out of* Send
+                    // is suppressed.
+                    gridCol_ = static_cast<uint8_t>(
+                        (gridCol_ + colCount - step) % colCount);
+                }
             } else {
                 // Vertical step. Emoji pages skip row 2 (dead zone
                 // between the 2-row emoji grid and the action row).
                 // Text layers at row 0 pushed UP lift into the
                 // composer text-cursor instead of wrapping to row 3.
+                // The bottom row (row 3, action row) is sticky on the
+                // way down — no wrap back to row 0 — so users can't
+                // accidentally fall off Send / Backspace into a
+                // letter row. Top → bottom wrap is still allowed on
+                // emoji layers because the dead-row geometry already
+                // makes "up at row 0 → row 3" the natural step.
                 const bool down = (joyY > 0);
                 if (onEmoji) {
                     if (down) {
+                        // 0 → 1 → 3 → 3 (sticky at row 3).
                         gridRow_ = (gridRow_ == 0) ? 1
-                                 : (gridRow_ == 1) ? 3 : 0;
+                                 : (gridRow_ == 1) ? 3 : 3;
                     } else {
                         gridRow_ = (gridRow_ == 0) ? 3
                                  : (gridRow_ == 1) ? 0 : 1;
@@ -907,6 +946,8 @@ void TextInputScreen::handleInputQwerty(const Inputs& inputs, GUIManager& gui) {
                 } else if (!down && gridRow_ == 0) {
                     // Text layer row 0, joystick up → text-cursor.
                     gridInTextCursor_ = true;
+                } else if (down && gridRow_ == 3) {
+                    // Action row + down: stay put. (no-op)
                 } else {
                     gridRow_ = static_cast<uint8_t>(
                         (gridRow_ + (down ? 1 : kGridRows - 1))

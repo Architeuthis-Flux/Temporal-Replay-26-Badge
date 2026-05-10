@@ -69,9 +69,20 @@ class WifiScreen : public Screen {
 
   void rebuildRows();
   bool tryConnect(GUIManager& gui);
+  bool tryConnectToSlot(GUIManager& gui, uint8_t slot);
   void pushSsidEditor(GUIManager& gui);
   void pushPasswordEditor(GUIManager& gui, const char* title);
   void clampCursor();
+
+  // Overlay painted on top of the WiFi list while a connect is in
+  // flight (or within a few seconds of completion/failure). Drawn by
+  // render() after the normal screen content.
+  void drawConnectOverlay(oled& d);
+  // True when the overlay is currently driving the screen — used to
+  // gate input so confirm/back during a connect doesn't fight with
+  // the worker. Back still pops the screen, but we treat it as "ack
+  // and dismiss" first.
+  bool overlayActive() const;
 
   // Static helpers that need access to the private `Action` enum.
   static const char* labelForAction(Action a);

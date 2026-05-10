@@ -1,5 +1,7 @@
 #include "WifiScreen.h"
 
+#include <WiFi.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -270,6 +272,114 @@ bool WifiScreen::tryConnect(GUIManager& gui) {
   return wifiService.connect();
 }
 
+bool WifiScreen::tryConnectToSlot(GUIManager& gui, uint8_t slot) {
+  (void)gui;
+  lastConnectAttemptMs_ = millis();
+  // Async path drives the popup overlay in render(); refusal to start
+  // (e.g. attempt already in flight) just leaves the existing popup
+  // up — that's the right UX, not a separate error.
+  return wifiService.connectToSlotAsync(slot);
+}
+
+namespace {
+const char* phaseLabel(WiFiService::Phase p) {
+  switch (p) {
+    case WiFiService::Phase::kIdle:           return "";
+    case WiFiService::Phase::kStarting:       return "Starting";
+    case WiFiService::Phase::kAttempting:     return "Connecting";
+    case WiFiService::Phase::kAuthenticating: return "Authenticating";
+    case WiFiService::Phase::kConnected:      return "Connected";
+    case WiFiService::Phase::kFailed:         return "Failed";
+  }
+  return "";
+}
+
+constexpr uint32_t kOverlayLingerMs = 2500;
+}  // namespace
+
+bool WifiScreen::overlayActive() const {
+  const auto p = wifiService.phase();
+  if (p == WiFiService::Phase::kIdle) return false;
+  if (p == WiFiService::Phase::kConnected ||
+      p == WiFiService::Phase::kFailed) {
+    // Auto-dismiss the overlay a couple of seconds after we land in a
+    // terminal phase so the screen returns to its normal list. The
+    // service keeps `phase_` set; we just stop drawing.
+    return (millis() - wifiService.phaseChangedMs()) < kOverlayLingerMs;
+  }
+  return true;
+}
+
+void WifiScreen::drawConnectOverlay(oled& d) {
+  // Centered modal, ~118 × 38, leaves the header pill visible above
+  // and the footer rule below.
+  constexpr int kBoxW = 118;
+  constexpr int kBoxH = 38;
+  constexpr int kBoxX = (OLEDLayout::kScreenW - kBoxW) / 2;
+  constexpr int kBoxY = 14;
+
+  // Knockout fill so the underlying list rows don't bleed through.
+  d.setDrawColor(0);
+  d.drawBox(kBoxX, kBoxY, kBoxW, kBoxH);
+  d.setDrawColor(1);
+  d.drawRFrame(kBoxX, kBoxY, kBoxW, kBoxH, 2);
+
+  const auto phase = wifiService.phase();
+  const char* ssid = wifiService.phaseSsid();
+  const char* status = wifiService.phaseStatusText();
+
+  // Title bar: inverted strip with "WiFi · <SSID>".
+  constexpr int kStripH = 9;
+  d.drawBox(kBoxX, kBoxY, kBoxW, kStripH);
+  d.setDrawColor(0);
+  d.setFont(u8g2_font_5x7_tf);
+  char title[40];
+  if (ssid && ssid[0]) {
+    std::snprintf(title, sizeof(title), "WiFi  %.18s", ssid);
+  } else {
+    std::snprintf(title, sizeof(title), "WiFi");
+  }
+  d.drawStr(kBoxX + 4, kBoxY + 7, title);
+  d.setDrawColor(1);
+
+  // Phase line: bold-ish (5x8 default font) heading.
+  d.setFont(u8g2_font_6x10_tf);
+  const char* label = phaseLabel(phase);
+  d.drawStr(kBoxX + 4, kBoxY + kStripH + 10, label);
+
+  // Spinner glyph at the right edge of the phase line while the
+  // attempt is still in flight; replaced by a check / x mark on
+  // terminal phases.
+  if (phase == WiFiService::Phase::kStarting ||
+      phase == WiFiService::Phase::kAttempting ||
+      phase == WiFiService::Phase::kAuthenticating) {
+    OLEDLayout::drawBusySpinner(d, kBoxX + kBoxW - 9,
+                                kBoxY + kStripH + 6, millis() / 125);
+  } else if (phase == WiFiService::Phase::kConnected) {
+    // Tiny check: two diagonal strokes.
+    const int cx = kBoxX + kBoxW - 12;
+    const int cy = kBoxY + kStripH + 6;
+    d.drawLine(cx, cy + 2, cx + 2, cy + 4);
+    d.drawLine(cx + 2, cy + 4, cx + 6, cy);
+  } else if (phase == WiFiService::Phase::kFailed) {
+    const int cx = kBoxX + kBoxW - 11;
+    const int cy = kBoxY + kStripH + 2;
+    d.drawLine(cx, cy, cx + 5, cy + 5);
+    d.drawLine(cx + 5, cy, cx, cy + 5);
+  }
+
+  // Status text — single line, fit-to-width so long IPs don't bleed
+  // past the frame.
+  d.setFont(u8g2_font_5x7_tf);
+  char detail[64] = {};
+  std::snprintf(detail, sizeof(detail), "%s",
+                status && status[0] ? status : "");
+  if (detail[0]) {
+    OLEDLayout::fitText(d, detail, sizeof(detail), kBoxW - 8);
+    d.drawStr(kBoxX + 4, kBoxY + kBoxH - 5, detail);
+  }
+}
+
 void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
   d.setTextWrap(false);
   d.setDrawColor(1);
@@ -323,11 +433,17 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
         const char* ssid = badgeConfig.wifiSsidAt(r.slot);
         if (ssid && ssid[0]) {
           snprintf(left, sizeof(left), "%.20s", ssid);
-          // Show online + active marker on slot 0 when we're
-          // currently connected. WiFi.SSID() would be more accurate
-          // but we don't track which slot won the iteration.
-          if (online && r.slot == 0) {
-            snprintf(right, sizeof(right), "*");
+          // Show the "active network" marker on whichever slot we're
+          // actually associated with. Compares the radio's live SSID
+          // against the slot's saved SSID — robust to per-slot
+          // Connect picks (the user can land on any slot, not just 0)
+          // and to the iterating boot path falling through to a
+          // later slot.
+          if (online) {
+            String live = WiFi.SSID();
+            if (live.length() > 0 && live == ssid) {
+              snprintf(right, sizeof(right), "*");
+            }
           }
         } else {
           snprintf(left, sizeof(left), "(empty slot %u)",
@@ -405,11 +521,29 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
       break;
   }
   OLEDLayout::drawActionFooter(d, footer ? footer : "WiFi", action);
+
+  // Connect-progress overlay paints last so it sits above the list +
+  // footer. Self-dismisses a couple of seconds after a terminal phase.
+  if (overlayActive()) drawConnectOverlay(d);
 }
 
 void WifiScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
                              int16_t /*cy*/, GUIManager& gui) {
   const Inputs::ButtonEdges& e = inputs.edges();
+
+  // While the connect-progress overlay is up, intercept input so a
+  // stray confirm/back press doesn't queue a second connect or
+  // navigate away mid-handshake. Cancel still has an out: it
+  // dismisses the overlay early instead of popping the screen, which
+  // matches what most users expect when a modal is in their face.
+  if (overlayActive()) {
+    // Cancel acks a finished attempt early; mid-handshake it's a
+    // no-op so the user can't accidentally hide a connect in flight.
+    // Confirm is swallowed entirely — re-pressing Connect during a
+    // running attempt would just refuse anyway and is a UX dead end.
+    if (e.cancelPressed) wifiService.dismissPhase();
+    return;
+  }
 
   if (e.cancelPressed) {
     if (expandedSlot_ >= 0) {
@@ -448,9 +582,15 @@ void WifiScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
       case RowKind::kSlotAction: {
         switch (r.action) {
           case Action::kConnect:
-            tryConnect(gui);
-            // No screen pop — the user can read the resulting status
-            // in the header.
+            // Per-slot Connect targets exactly the network the user
+            // picked. Never fall back to the iterating
+            // `wifiService.connect()` here — that walks slot 0 first
+            // and would silently land the user on a different AP than
+            // the one they highlighted. If the worker refuses to
+            // start (already in flight / power blocked), the service
+            // already exposes the reason via phase + status text and
+            // the popup overlay will surface it.
+            tryConnectToSlot(gui, r.slot);
             return;
           case Action::kForget:
             badgeConfig.removeWifiNetwork(r.slot);
