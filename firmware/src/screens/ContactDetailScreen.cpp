@@ -21,17 +21,17 @@ struct DetailRow {
 };
 
 constexpr DetailRow kRows[] = {
-    {"Name",    DetailRow::kName},
-    {"Title",   DetailRow::kTitle},
-    {"Company", DetailRow::kCompany},
-    {"Type",    DetailRow::kType},
-    {"Email",   DetailRow::kEmail},
-    {"Web",     DetailRow::kWeb},
-    {"Phone",   DetailRow::kPhone},
-    {"Bio",     DetailRow::kBio},
-    {"UID",     DetailRow::kUid},
-    {"Seen",    DetailRow::kLast},
-    {"Boops",   DetailRow::kCount},
+    {"Name    ",    DetailRow::kName},
+    {"Title   ",   DetailRow::kTitle},
+    {"Company ", DetailRow::kCompany},
+    {"Type    ",    DetailRow::kType},
+    {"Email   ",   DetailRow::kEmail},
+    {"Web     ",     DetailRow::kWeb},
+    {"Phone   ",   DetailRow::kPhone},
+    {"Bio     ",     DetailRow::kBio},
+    {"UID     ",     DetailRow::kUid},
+    {"Seen    ",    DetailRow::kLast},
+    {"Boops  ",   DetailRow::kCount},
 };
 
 constexpr uint8_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

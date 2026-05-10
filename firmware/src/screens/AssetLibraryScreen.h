@@ -21,6 +21,8 @@ class AssetLibraryScreen : public ListMenuScreen {
   bool navigableItems() const override { return true; }
   void onItemSelect(uint8_t index, GUIManager& gui) override;
   void onEnter(GUIManager& gui) override;
+  void handleInput(const Inputs& inputs, int16_t cursorX, int16_t cursorY,
+                   GUIManager& gui) override;
   const char* hintText() const override { return "Confirm:Open  X:Refresh"; }
 
   // Public so the main menu's launcher can pre-set a target id when
@@ -29,7 +31,18 @@ class AssetLibraryScreen : public ListMenuScreen {
 
  private:
   uint8_t cachedCount_ = 0;
-  bool didInitialRefresh_ = false;
+  // Triggers a synchronous fetch from onEnter / X-press. When refreshing
+  // we toggle this so render() can surface "Refreshing..." in the empty
+  // state instead of staring at a blank list.
+  bool refreshing_ = false;
+  // Per-row status cache. statusOf() hits NVS + the FATFS lock on every
+  // call; without this cache, formatItem() (called every frame per row)
+  // pushes the GUI service over its 33ms frame budget. Rebuilt by
+  // refreshStatusCache() on enter and after each install/remove.
+  static constexpr uint8_t kStatusCacheCap = 16;
+  mutable ota::AssetStatus statusCache_[kStatusCacheCap] = {};
+  void doRefresh(bool ignoreCooldown);
+  void refreshStatusCache();
 };
 
 class AssetDetailScreen : public Screen {

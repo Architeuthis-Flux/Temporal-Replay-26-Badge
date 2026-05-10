@@ -79,3 +79,11 @@ hardware/design-log.md
 /firmware/build/sketch/.mp_src_tmp
 /firmware/build/sketch/Firmware-0308-modular
 /firmware/build/sketch/.venv
+
+# Release-bundled assets — too big for git, fetched in CI from
+# fallback_url (see release-assets/manifest.json) and attached to
+# every GitHub release. Used by the badge's Asset Library.
+/firmware/initial_filesystem/doom1.wad
+/firmware/initial_filesystem/*.wad
+/.asset-cache/
+/artifacts/

@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
-  "comment": "Asset registry for Temporal Replay 2026 Badge. The badge fetches this file once a day (when Settings -> asset_registry_url is set) and surfaces each entry in the Asset Library screen. Add new entries by PR — no firmware change required.",
+  "comment": "Asset registry for Temporal Replay 2026 Badge. The badge fetches this file once a day (when Settings -> asset_registry_url is set) and surfaces each entry in the Asset Library screen. Add new entries by PR — no firmware change required. Big-file assets (≳ 100 KB) ship as GitHub Release attachments via release-assets/manifest.json + .github/workflows/release-firmware.yml; their URL stays stable across firmware releases via the /releases/latest/download/<name> pattern.",
   "assets": [
     {
       "id": "doom1-shareware",
       "name": "DOOM 1 Shareware",
       "version": "1.9",
-      "url": "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad",
+      "url": "https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/releases/latest/download/doom1.wad",
+      "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
       "size": 4196020,
       "dest_path": "/doom1.wad",
       "min_free_bytes": 4500000,

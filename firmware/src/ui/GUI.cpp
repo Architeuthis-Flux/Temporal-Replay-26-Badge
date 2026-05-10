@@ -11,8 +11,9 @@
 #include "screens/DiagnosticsScreen.h"
 #include "screens/AssetLibraryScreen.h"
 #include "screens/HelpScreen.h"
-#include "screens/FileViewScreen.h"
+#include "screens/EditorScreen.h"
 #include "screens/FilesScreen.h"
+#include "screens/HexViewScreen.h"
 #include "screens/GridMenuScreen.h"
 #include "screens/UpdateFirmwareScreen.h"
 #include "screens/HapticsTestScreen.h"
@@ -195,9 +196,11 @@ static uint16_t firmwareUpdateBadge() {
   return ota::updateAvailable() ? 1 : 0;
 }
 
-// Asset Library tile only appears when an asset_registry_url is set.
+// LIBRARY tile is always visible on the home grid. The screen itself
+// surfaces "no asset_registry_url configured" / "needs WiFi" inline,
+// which is more discoverable than hiding the tile entirely.
 static bool assetLibraryVisible() {
-  return badgeConfig.assetRegistryUrl()[0] != '\0';
+  return true;
 }
 
 // ── Curated C++ menu items ────────────────────────────────────────────────
@@ -260,7 +263,7 @@ static const GridMenuItem kCuratedMenuItems[] = {
     {"FW UPDATE", "Check for and install firmware updates over WiFi",
      AppIcons::firmwareUpdate, kScreenUpdateFirmware, nullptr, nullptr,
      &firmwareUpdateLabel, &firmwareUpdateBadge},
-    {"LIBRARY", "Download games and assets like the DOOM WAD",
+    {"REGISTRY", "Download games and assets like the DOOM WAD",
      AppIcons::assetLibrary, kScreenAssetLibrary, nullptr,
      &assetLibraryVisible, nullptr, nullptr},
     {"SETTINGS", "Adjust display, input, power, and haptics",
@@ -375,7 +378,9 @@ extern "C" const GridMenuItem* mainMenuSnapshot(uint8_t* outCount);
 
 #ifdef BADGE_DEV_MENU
 static DiagnosticsScreen sDiagnostics;
-static AnimTestScreen sAnimTest;
+// Non-static so FileOpener (different TU) can `extern` it as the
+// shared image-viewer surface for `.xbm` / `.fb` files.
+AnimTestScreen sAnimTest;
 #endif
 static BootScreen sBoot;
 // Built initially from kCuratedMenuItems; rebuildMainMenuFromRegistry()
@@ -397,7 +402,10 @@ static AppsScreen sApps(kScreenApps, "/apps", "APPS",
 static AppsScreen sTests(kScreenTests, "/tests", "TESTS");
 #endif
 static LEDScreen sMatrixApps;
-FileViewScreen sFileView;
+#ifdef BADGE_DEV_MENU
+EditorScreen sEditor;
+HexViewScreen sHexView;
+#endif
 static BoopScreen sBoop;
 #ifdef BADGE_DEV_MENU
 static InputTestScreen sInputTest;
@@ -430,12 +438,15 @@ static DoomScreen sDoom;
 //   WIFI      → 30100
 //   FW UPDATE → 30200
 //   HELP      → 30300
+//   REGISTRY  → 30400  (very last — user-installable assets, browsed
+//                       infrequently, naturally lives at the bottom)
 static constexpr int16_t kCuratedOrderStride = 10;
 static constexpr int16_t kDynamicDefaultOrderBase = 10000;
 static constexpr int16_t kSettingsAlwaysLastOrder = 30000;
 static constexpr int16_t kWifiAlwaysLastOrder     = 30100;
 static constexpr int16_t kFwUpdateAlwaysLastOrder = 30200;
 static constexpr int16_t kHelpAlwaysLastOrder     = 30300;
+static constexpr int16_t kRegistryAlwaysLastOrder = 30400;
 
 // Effective order = NVS override → manifest hint → fallback.
 static int16_t resolveItemOrder(const char* label, int16_t fallback) {
@@ -457,7 +468,9 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     // (SETTINGS → WIFI → FW UPDATE → HELP), unless the user has
     // explicitly reordered any of them via MenuOrderScreen.
     int16_t fallback;
-    if (slot.label && strcmp(slot.label, "HELP") == 0) {
+    if (slot.label && strcmp(slot.label, "REGISTRY") == 0) {
+      fallback = kRegistryAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "HELP") == 0) {
       fallback = kHelpAlwaysLastOrder;
     } else if (slot.label && strcmp(slot.label, "FW UPDATE") == 0) {
       fallback = kFwUpdateAlwaysLastOrder;
@@ -605,7 +618,8 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   registerScreen(&sHaptics);
   registerScreen(&sFiles);
   registerScreen(&sTests);
-  registerScreen(&sFileView);
+  registerScreen(&sEditor);
+  registerScreen(&sHexView);
   registerScreen(&sApps);
 #endif
   registerScreen(&sMatrixApps);

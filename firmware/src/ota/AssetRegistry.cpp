@@ -61,12 +61,19 @@ bool nvsKey(char* out, size_t cap, const char* prefix, const char* id) {
 
 // Loads the persisted "installed version" string for an id. Empty
 // string if never installed.
+//
+// We `isKey()`-guard the read because Preferences::getString prints a
+// loud `nvs_get_str len fail: ... NOT_FOUND` to Serial on every miss,
+// and AssetLibraryScreen::formatItem() calls into here once per row
+// per frame. For the common "asset not installed yet" case that turns
+// into a flood of logs and pushes the GUI service over its frame
+// budget. isKey is silent when the key is absent.
 void loadInstalledVersion(const char* id, char* out, size_t cap) {
   out[0] = '\0';
   Preferences p;
   if (!p.begin(kNvsNamespace, true)) return;
   char key[16];
-  if (nvsKey(key, sizeof(key), "v_", id)) {
+  if (nvsKey(key, sizeof(key), "v_", id) && p.isKey(key)) {
     p.getString(key, out, cap);
   }
   p.end();
@@ -125,15 +132,27 @@ bool hexEqualsCaseInsensitive(const char* a, const char* b) {
   return *a == '\0' && *b == '\0';
 }
 
-bool ensureFreeSpace(size_t needed) {
-  if (needed == 0) return true;
+// Returns the FATFS volume's free byte count, or 0 if it cannot be
+// queried. Uses fs->ssize (actual sector size) — the ESP32
+// wear-levelling layer presents 4096-byte sectors, not the 512-byte
+// default that oofatfs supports. Hardcoding 512 underreports free
+// space by 8x and made every install fail the min_free_bytes gate
+// even on a near-empty partition.
+uint64_t getFreeBytes() {
   FATFS* fs = replay_get_fatfs();
-  if (!fs) return true;  // FS not mounted yet — defer to write failure
+  if (!fs) return 0;
   DWORD freeClusters = 0;
-  if (f_getfree(fs, &freeClusters) != FR_OK) return true;
-  // Cluster size = sectors-per-cluster * 512 (oofatfs uses 512B sectors).
-  uint32_t clusterBytes = static_cast<uint32_t>(fs->csize) * 512u;
-  uint64_t freeBytes = static_cast<uint64_t>(freeClusters) * clusterBytes;
+  if (f_getfree(fs, &freeClusters) != FR_OK) return 0;
+  uint32_t clusterBytes =
+      static_cast<uint32_t>(fs->csize) * static_cast<uint32_t>(fs->ssize);
+  return static_cast<uint64_t>(freeClusters) * clusterBytes;
+}
+
+bool ensureFreeSpace(size_t needed, uint64_t* outFreeBytes = nullptr) {
+  uint64_t freeBytes = getFreeBytes();
+  if (outFreeBytes) *outFreeBytes = freeBytes;
+  if (needed == 0) return true;
+  if (freeBytes == 0) return true;  // unknown — defer to write failure
   return freeBytes >= needed;
 }
 
@@ -180,14 +199,35 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     }
   }
 
+  Serial.printf("[registry] GET %s\n", url);
   char* body = nullptr;
   size_t bodyLen = 0;
   HttpResult httpRes =
       getJson(url, &body, &bodyLen, kRegistryJsonMax, 20000);
   if (!httpRes.ok) {
+    Serial.printf("[registry] refresh failed: code=%d %s\n",
+                  httpRes.httpCode, httpRes.error);
     setError(httpRes.error);
     if (body) std::free(body);
     return RegistryRefresh::kNetworkError;
+  }
+
+  Serial.printf("[registry] body len=%u\n", (unsigned)bodyLen);
+  auto dumpEscaped = [](const char* p, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+      char c = p[i];
+      if (c >= 0x20 && c < 0x7f) Serial.write(c);
+      else Serial.printf("\\x%02x", (uint8_t)c);
+    }
+  };
+  Serial.print("[registry] first64=");
+  dumpEscaped(body, bodyLen < 64 ? bodyLen : 64);
+  Serial.println();
+  if (bodyLen > 64) {
+    Serial.print("[registry] last64=");
+    const size_t off = bodyLen > 64 ? bodyLen - 64 : 0;
+    dumpEscaped(body + off, bodyLen - off);
+    Serial.println();
   }
 
   DynamicJsonDocument doc(kRegistryJsonMax);
@@ -276,10 +316,15 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   }
   size_t needed = entry.min_free_bytes;
   if (needed == 0) needed = entry.size + 1024;  // small slack
-  if (!ensureFreeSpace(needed)) {
+  uint64_t freeBytes = 0;
+  if (!ensureFreeSpace(needed, &freeBytes)) {
+    Serial.printf("[registry] insufficient space: need=%u have=%llu\n",
+                  (unsigned)needed, (unsigned long long)freeBytes);
     char buf[80];
     std::snprintf(buf, sizeof(buf),
-                  "need %u bytes free", (unsigned)needed);
+                  "need %u, have %u KB",
+                  (unsigned)(needed / 1024),
+                  (unsigned)(freeBytes / 1024));
     setError(buf);
     if (cb) {
       AssetProgress p{0, 0, true, AssetInstallResult::kInsufficientSpace};
@@ -287,6 +332,8 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     }
     return false;
   }
+  Serial.printf("[registry] space ok: need=%u have=%llu\n",
+                (unsigned)needed, (unsigned long long)freeBytes);
 
   char tmpPath[kAssetPathMax + 8];
   std::snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", entry.dest_path);
@@ -301,8 +348,11 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     return false;
   }
 
+  Serial.printf("[registry] install GET %s -> %s\n",
+                entry.url, entry.dest_path);
   Stream s;
   if (!s.open(entry.url, 30000)) {
+    Serial.printf("[registry] install open failed: %s\n", s.lastError());
     setError(s.lastError());
     if (cb) {
       AssetProgress p{0, 0, true, AssetInstallResult::kHttpError};

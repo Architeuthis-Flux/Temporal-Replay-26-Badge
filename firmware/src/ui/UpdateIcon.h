@@ -18,10 +18,21 @@
 
 namespace UpdateIcon {
 
-constexpr int kWidth  = 7;
+constexpr int kWidth  = 10;
 constexpr int kHeight = 6;
 static const unsigned char kBits[] = {
-    0x7e, 0x3c, 0x18, 0x08, 0x00, 0x7e,
+    0x57,
+    0x03,
+    0x71,
+    0x03,
+    0x03,
+    0x01,
+    0x45,
+    0x00,
+    0x55,
+    0x00,
+    0x29,
+    0x00,
 };
 
 }  // namespace UpdateIcon

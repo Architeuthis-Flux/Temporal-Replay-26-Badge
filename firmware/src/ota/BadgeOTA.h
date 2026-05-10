@@ -10,7 +10,7 @@
 //                      OTA slot via `Update.write` and reboot.
 //
 // The asset name the badge looks for is supplied at compile time via
-// `OTA_ASSET_NAME` (default `firmware-echo.bin`) so different
+// `OTA_ASSET_NAME` (default `firmware.bin`) so different
 // environments / forks pick the right `.bin` from a multi-asset
 // release. The repo to query is `OTA_GITHUB_REPO`
 // (default `Architeuthis-Flux/Temporal-Replay-26-Badge`).
@@ -31,7 +31,7 @@
 #endif
 
 #ifndef OTA_ASSET_NAME
-#define OTA_ASSET_NAME "firmware-echo.bin"
+#define OTA_ASSET_NAME "firmware.bin"
 #endif
 
 namespace ota {

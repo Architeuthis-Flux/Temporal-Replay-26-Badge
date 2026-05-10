@@ -264,7 +264,7 @@ class Config {
      /// `[ota] asset_registry_url = ...` — JSON file enumerating
      /// downloadable user assets (DOOM WAD, etc.). Empty disables the
      /// Asset Library screen.
-     const char* assetRegistryUrl() const { return assetRegistryUrl_; }
+     const char* assetRegistryUrl() const;
      void setAssetRegistryUrl(const char* value);
 
    private:
@@ -282,7 +282,8 @@ class Config {
      char timezone_[64] = "PST8PDT,M3.2.0,M11.1.0";
      char nametagSetting_[64] = "default";
      char otaManifestUrl_[160] = "";
-     char assetRegistryUrl_[160] = "";
+     char assetRegistryUrl_[160] =
+         "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/registry.json";
 
      uint32_t lastFileSize_ = 0;
      uint16_t lastFileDate_ = 0;

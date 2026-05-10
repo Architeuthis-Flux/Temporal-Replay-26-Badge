@@ -1,9 +1,14 @@
 name: release-firmware
 
 # Builds the production firmware.bin and attaches it to a GitHub
-# release as `firmware-echo.bin`. The badge's BadgeOTA module looks
-# for exactly that asset name on the latest release of this repo (see
-# OTA_GITHUB_REPO + OTA_ASSET_NAME in firmware/platformio.ini).
+# release as `firmware.bin` (matching the OTA_ASSET_NAME compiled
+# into the badge and the path JumperIDE points at). Also stages and
+# uploads any release-bundled assets declared in
+# `release-assets/manifest.json` (the DOOM WAD, etc.) so the badge's
+# Asset Library can fetch them from
+# `https://github.com/<owner>/<repo>/releases/latest/download/<name>`.
+#
+# See firmware/docs/OTA-MAINTAINER.md § 2 for the full workflow.
 #
 # Triggers:
 #   - Automatically when a release is published.
@@ -23,7 +28,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & attach firmware-echo.bin
+    name: Build firmware + stage release assets
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -63,11 +68,21 @@ jobs:
           [ -f settings.txt ] || cp settings.txt.example settings.txt
           pio run -e echo
 
-      - name: Stage release asset
+      - name: Stage release-bundled assets
+        # Reads release-assets/manifest.json. For each entry: copies
+        # the local file (or curls fallback_url if missing), computes
+        # SHA-256, and verifies it matches registry/registry.json.
+        # Drift fails the build with an actionable message.
         run: |
-          mkdir -p artifacts
-          cp firmware/.pio/build/echo/firmware.bin artifacts/firmware-echo.bin
-          ls -lh artifacts/
+          python3 scripts/stage_release_assets.py
+
+      - name: Stage firmware binary
+        run: |
+          mkdir -p artifacts/release
+          cp firmware/.pio/build/echo/firmware.bin artifacts/release/firmware.bin
+
+      - name: List release artifacts
+        run: ls -lh artifacts/release/
 
       - name: Determine release tag
         id: tag
@@ -78,9 +93,11 @@ jobs:
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload firmware-echo.bin to release
+      - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: artifacts/firmware-echo.bin
+          # Glob — picks up firmware.bin plus every file the
+          # release-asset staging step produced (doom1.wad, etc.).
+          files: artifacts/release/*
           fail_on_unmatched_files: true

@@ -4,6 +4,7 @@
 
 #include "../infra/BadgeConfig.h"
 #include "../hardware/oled.h"
+#include "OLEDLayout.h"
 
 namespace ButtonGlyphs {
 namespace {
@@ -322,43 +323,37 @@ void draw(oled& d, Button button, int x, int y) {
   d.drawXBM(x, y, kGlyphW, kGlyphH, bitsFor(button));
 }
 
-// Footer chip labels are always painted uppercase regardless of how
-// callers spell them — keeps the badge's nav chrome visually
-// uniform across screens (no need to update every drawFooterActions
-// callsite by hand). Stack buffer is local to each call so threading
-// is fine.
-namespace {
-constexpr size_t kHintLabelCap = 24;
-void toUpperBuf(const char* in, char* out) {
-  size_t i = 0;
-  if (in) {
-    while (in[i] && i + 1 < kHintLabelCap) {
-      const char c = in[i];
-      out[i] = (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
-      i++;
-    }
-  }
-  out[i] = '\0';
-}
-}  // namespace
+// Footer chip labels render verbatim — callers control case. The
+// previous version force-uppercased all hint labels, which made
+// lower-case labels (used by the editor / files screens) inconsistent
+// with the in-line glyph hints rendered elsewhere.
 
 int measureHint(oled& d, Button button, const char* label) {
   (void)button;
   if (!label || !label[0]) return kGlyphW;
-  char up[kHintLabelCap];
-  toUpperBuf(label, up);
-  return kGlyphW + kGap + d.getStrWidth(up);
+  return kGlyphW + kGap + d.getStrWidth(label);
 }
 
 int drawHint(oled& d, int x, int baseline, Button button, const char* label) {
-  draw(d, button, x, baseline - kGlyphH + 1);
+  // The action-row rule (kFooterRuleY) sits on the glyph's top pixel
+  // row by design — we knock out a 1-px gap on each side of the glyph
+  // so the rule cleanly breaks at the chip rather than smearing into
+  // the glyph outline. Only fires when this hint is being painted at
+  // the action-row baseline; in-line hints elsewhere on the screen
+  // shouldn't accidentally erase neighbouring pixels.
+  const int glyphTop = baseline - kGlyphH + 1;
+  if (glyphTop == OLEDLayout::kFooterRuleY) {
+    d.setDrawColor(0);
+    d.drawPixel(x - 1, glyphTop);
+    d.drawPixel(x + kGlyphW, glyphTop);
+    d.setDrawColor(1);
+  }
+  draw(d, button, x, glyphTop);
   int cursor = x + kGlyphW;
   if (label && label[0]) {
-    char up[kHintLabelCap];
-    toUpperBuf(label, up);
     cursor += kGap;
-    d.drawStr(cursor, baseline, up);
-    cursor += d.getStrWidth(up);
+    d.drawStr(cursor, baseline, label);
+    cursor += d.getStrWidth(label);
   }
   return cursor - x;
 }

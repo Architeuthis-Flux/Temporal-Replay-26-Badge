@@ -33,6 +33,11 @@ void applyCommonOptions(HTTPClient& http, uint32_t timeoutMs) {
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.addHeader("User-Agent", kUserAgent);
   http.addHeader("Accept", "*/*");
+  // The ESP32 HTTPClient does not transparently decompress responses,
+  // so explicitly ask for raw bytes. Cloudflare-fronted hosts (incl.
+  // jsDelivr) otherwise return gzip/brotli to clients that don't pin
+  // identity, which then fails JSON parsing with "InvalidInput".
+  http.addHeader("Accept-Encoding", "identity");
 }
 
 }  // namespace
@@ -83,6 +88,15 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     return result;
   }
   if (code != 200) {
+    // Drain a bit of the response body so the caller can see what the
+    // server actually said (e.g. raw.githubusercontent.com 400s
+    // sometimes include "Header Or Cookie Too Large" or similar — the
+    // bare status code alone tells us nothing useful).
+    String body = http.getString();
+    Serial.printf("[ota-http] %d body[%u]: %.*s\n", code,
+                  (unsigned)body.length(),
+                  body.length() > 200 ? 200 : (int)body.length(),
+                  body.c_str());
     std::snprintf(sError, sizeof(sError), "http status %d", code);
     http.end();
     wifiService.noteRequestFailed();
@@ -99,66 +113,30 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     return result;
   }
 
-  // Stream into a growable buffer so we don't pre-allocate maxBytes
-  // when the actual response is small (most manifests are < 4 KB).
-  size_t cap = (contentLen > 0)
-                   ? static_cast<size_t>(contentLen) + 1
-                   : 2048;
-  if (cap > maxBytes + 1) cap = maxBytes + 1;
-  char* buf = static_cast<char*>(std::malloc(cap));
+  // Use HTTPClient::getString() so the library handles chunked
+  // transfer-encoding, content-length=-1, and connection-close edges
+  // for us. Reading raw from getStreamPtr() bypassed the chunked
+  // decoder, which on Cloudflare-fronted hosts (jsDelivr) interleaved
+  // chunk-size markers (`28d\r\n`...`\r\n0\r\n`) into the buffer and
+  // tripped ArduinoJson with InvalidInput.
+  String s = http.getString();
+  if (s.length() > maxBytes) {
+    std::snprintf(sError, sizeof(sError),
+                  "response too large (%u > %u)",
+                  (unsigned)s.length(), (unsigned)maxBytes);
+    http.end();
+    wifiService.noteRequestFailed();
+    return result;
+  }
+  size_t pos = s.length();
+  char* buf = static_cast<char*>(std::malloc(pos + 1));
   if (!buf) {
     std::snprintf(sError, sizeof(sError), "out of memory");
     http.end();
     wifiService.noteRequestFailed();
     return result;
   }
-
-  size_t pos = 0;
-  NetworkClient* stream = http.getStreamPtr();
-  const uint32_t deadline = millis() + timeoutMs;
-  while (http.connected() && (contentLen <= 0 || pos < (size_t)contentLen)) {
-    if ((int32_t)(millis() - deadline) > 0) {
-      std::snprintf(sError, sizeof(sError), "read timeout");
-      std::free(buf);
-      http.end();
-      wifiService.noteRequestFailed();
-      return result;
-    }
-    const int avail = stream ? stream->available() : 0;
-    if (avail <= 0) {
-      delay(5);
-      continue;
-    }
-    if (pos + avail >= cap) {
-      size_t newCap = cap * 2;
-      if (newCap > maxBytes + 1) newCap = maxBytes + 1;
-      if (pos + avail >= newCap) {
-        std::snprintf(sError, sizeof(sError),
-                      "response exceeded cap (%u)", (unsigned)maxBytes);
-        std::free(buf);
-        http.end();
-        wifiService.noteRequestFailed();
-        return result;
-      }
-      char* grown = static_cast<char*>(std::realloc(buf, newCap));
-      if (!grown) {
-        std::snprintf(sError, sizeof(sError), "out of memory");
-        std::free(buf);
-        http.end();
-        wifiService.noteRequestFailed();
-        return result;
-      }
-      buf = grown;
-      cap = newCap;
-    }
-    int got = stream->readBytes(buf + pos, avail);
-    if (got <= 0) {
-      delay(5);
-      continue;
-    }
-    pos += got;
-  }
-
+  std::memcpy(buf, s.c_str(), pos);
   buf[pos] = '\0';
   http.end();
   wifiService.noteRequestOk();

@@ -30,7 +30,7 @@ SHA-256), but they're independent — neither depends on the other.
 │ release-firmware.yml runs:                           │
 │   pip install platformio                             │
 │   pio run -e echo                                    │
-│   upload firmware.bin -> firmware-echo.bin asset     │
+│   upload firmware.bin -> firmware.bin release asset  │
 └──────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -58,9 +58,11 @@ SHA-256), but they're independent — neither depends on the other.
 
 The badge looks for an asset whose `name` field exactly matches the
 `OTA_ASSET_NAME` define in `firmware/platformio.ini`. The default is
-`firmware-echo.bin`. If the release has no asset with that exact
-name, the badge silently reports `NoMatchingAsset` and the indicator
-stays dark — that's the safe failure mode.
+`firmware.bin` — same as the local PlatformIO build product, so
+JumperIDE and other external tooling can point at the release URL
+directly without renaming. If the release has no asset with that
+exact name, the badge silently reports `NoMatchingAsset` and the
+indicator stays dark — that's the safe failure mode.
 
 ### What the version comparison does
 
@@ -81,7 +83,7 @@ need stricter pre-release ordering, edit `parseSemver` in
 3. Create a GitHub release tagged `0.2.0` (the leading `v` is
    optional — both work).
 4. The `release-firmware.yml` Action runs automatically; within a
-   few minutes the release will have a `firmware-echo.bin` asset.
+   few minutes the release will have a `firmware.bin` asset.
 5. Badges in the field will pick it up the next time they hit their
    24h check, or immediately if a user opens **FW UPDATE → Check now**.
 
@@ -94,8 +96,8 @@ If something goes wrong with the Action:
   the release manually:
   ```
   cd firmware && pio run -e echo
-  cp .pio/build/echo/firmware.bin firmware-echo.bin
-  # then upload firmware-echo.bin via the GitHub release UI
+  # then upload .pio/build/echo/firmware.bin via the GitHub release
+  # UI (must be uploaded with the literal name "firmware.bin").
   ```
 
 ### Forking the firmware (different repo / different asset name)
@@ -128,35 +130,86 @@ asset_registry_url = https://raw.githubusercontent.com/Architeuthis-Flux/Tempora
 Anyone with PR access can add an entry. Badges pick up changes within
 24 hours of their next refresh.
 
-### Adding a new asset
+### Where the actual asset bytes live
 
-1. Upload the asset somewhere with a stable HTTPS URL (see
-   [Hosting on Cloudflare](#3-hosting-on-cloudflare) below).
-2. Compute SHA-256 (optional but recommended):
+There are two normal hosting paths, in order of preference:
+
+1. **GitHub Release attachments via the release-assets pipeline**
+   (recommended for files ≳ 100 KB — DOOM WAD lives here). The repo's
+   [`release-assets/manifest.json`](../../release-assets/manifest.json)
+   declares which files the release Action attaches to every GitHub
+   release; the registry's `url` field then points at the stable
+   `https://github.com/<owner>/<repo>/releases/latest/download/<name>`
+   pattern, which automatically resolves to whatever was attached to
+   the most recent release. See
+   [`release-assets/README.md`](../../release-assets/README.md) for
+   the manifest schema and add-a-new-asset workflow.
+2. **External HTTPS host** (Cloudflare R2, your own server, etc.) for
+   things you don't want in the GitHub repo at all. See
+   [Hosting on Cloudflare](#3-hosting-on-cloudflare) below.
+
+### Adding a new asset (release-bundled path)
+
+1. Drop the file at a sensible local path (or note a `fallback_url`
+   that CI can curl). For files committed to the repo, anywhere works
+   — for things like the DOOM WAD that we don't want in git history,
+   just add a `.gitignore` line pointing at the local copy.
+2. Compute the SHA-256:
    ```
-   sha256sum doom1.wad
+   sha256sum path/to/file.bin
    ```
-3. Append an entry to `registry/registry.json`:
+3. Append an entry to
+   [`release-assets/manifest.json`](../../release-assets/manifest.json):
+   ```json
+   {
+     "name": "file.bin",
+     "local_path": "firmware/data/file.bin",
+     "fallback_url": "",
+     "registry_id": "my-asset"
+   }
+   ```
+4. Append the matching entry to `registry/registry.json` with
+   `url` set to the stable release URL pattern:
    ```json
    {
      "id": "my-asset",
      "name": "My Asset",
      "version": "1.0",
-     "url": "https://...",
-     "sha256": "<hex>",
+     "url": "https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/releases/latest/download/file.bin",
+     "sha256": "<hex from step 2>",
      "size": 1234567,
      "dest_path": "/my_asset.bin",
      "min_free_bytes": 1500000,
      "description": "What this is and why I'd want it"
    }
    ```
-4. PR + merge.
+5. Verify locally before pushing:
+   ```
+   python3 scripts/stage_release_assets.py --check
+   ```
+   The script confirms the manifest's files match the registry's
+   `sha256` / `size` / `url` fields. Drift = build failure with a
+   clear "you forgot to update X" message.
+6. PR + merge + cut a release. The release Action attaches the file
+   to the release alongside `firmware.bin`. Badges in the field see
+   the new entry within 24 h of the next refresh.
+
+### Adding a new asset (external-host path)
+
+Same as the release-bundled path, except step 3 is omitted, the
+`url` in step 4 points at your external host, and the release Action
+doesn't have to do anything. Use this for files you don't want in the
+GitHub repo or that change on a different cadence than firmware
+releases.
 
 ### Pushing an updated version of an existing asset
 
-Bump the `version` field on the existing entry. Badges that already
-have it installed will see the entry flip to "Update" and the user
-can re-install over the top.
+Bump the `version` field on the existing registry entry. If the
+file's bytes changed, also bump the `sha256` and `size`. The release
+Action's `--check` step will catch drift between the file and the
+registry on the next release. Badges that already have the asset
+installed see the entry flip to "Update" and the user can re-install
+over the top.
 
 ---
 
@@ -249,11 +302,11 @@ parse result.
 ## 4. Bootstrapping the very first release
 
 The current 0.1.4 release predates this OTA work and won't have a
-`firmware-echo.bin` asset. To get badges actually upgrading:
+`firmware.bin` asset. To get badges actually upgrading:
 
 1. **Either** cut a 0.1.5+ tag — the new Action will publish the
    `.bin` automatically.
-2. **Or** manually attach `firmware-echo.bin` to the existing 0.1.4
+2. **Or** manually attach `firmware.bin` to the existing 0.1.4
    release via the GitHub web UI.
 
 Until one of those happens, badges on 0.1.4 will silently report
@@ -264,42 +317,108 @@ Until one of those happens, badges on 0.1.4 will silently report
 
 ## 5. Partition layout (16 MB flash)
 
-The 2026 production layout uses every byte of the 16 MB chip:
+There are **two partition layouts** in the tree. Which one a badge
+uses is determined entirely at flash time — neither layout is OTA-
+upgradable to the other (the partition table itself lives at flash
+offset 0x8000 and is never rewritten by an OTA app-slot install).
+
+### Default — `partitions_replay_16MB_doom.csv` (production, OTA path)
 
 | Region    | Offset    | Size       | Purpose                              |
 |-----------|-----------|------------|--------------------------------------|
 | boot+ptab | 0x000000  | 36 KB      | bootloader + partition table         |
 | nvs       | 0x009000  | 20 KB      | preferences (incl. `badge_ota`)      |
 | otadata   | 0x00E000  | 8 KB       | bootloader's slot pointer            |
-| **app0**  | 0x010000  | **4.5 MB** | OTA slot A (currently ~64 % full)    |
-| **app1**  | 0x490000  | **4.5 MB** | OTA slot B                           |
-| **ffat**  | 0x910000  | **~6.9 MB** | user filesystem                     |
-| coredump  | 0xFF0000  | 64 KB      | panic dumps                          |
+| **app0**  | 0x010000  | **3.84 MB** | OTA slot A (currently ~74 % full)   |
+| **app1**  | 0x3F0000  | **3.84 MB** | OTA slot B                          |
+| **ffat**  | 0x7D0000  | **6 MB**   | user filesystem                      |
+| (gap)     | 0xDD0000  | 2 MB       | unused — reserved for future bumps   |
+| coredump  | 0xFD0000  | 64 KB      | panic dumps                          |
 
-This was bumped from a layout that left ~2 MB unused (and grew the OTA
-slots to a clean 4.5 MB each, leaving comfortable room for future
-firmware bloat). **The OTA path itself doesn't care about ffat**, so
-OTA-ing this firmware to existing badges is safe — but their FAT
-volume header is still sized for the old 6 MB partition, so they only
-see 6 MB of the ~6.9 MB available.
+**This is what every shipped badge runs and what `firmware.bin` on
+the GitHub release is built against.** Keep it that way unless you
+also want to manage a parallel asset stream — `[env:echo]` in
+[firmware/platformio.ini](../platformio.ini) points at this file and
+the release Action builds for this layout exclusively.
 
-**Initial-filesystem footnote**: the contents of `firmware/initial_filesystem/`
-get baked into the firmware binary as `StartupFilesData.h` (so they
-take app-slot space) AND copied to ffat by `provisionStartupFiles()` on
-first boot (so they take ffat space too). It's accepted overhead —
-trades flash space for a guaranteed-good first-boot filesystem even if
-ffat is wiped.
+### Opt-in — `partitions_replay_16MB_ver2.csv` (expanded, USB only)
 
-The Firmware Update screen surfaces an "Expand storage" affordance
-(press X) whenever it detects this gap. It double-confirms, then
-reformats `ffat` (wipes contacts, nametags, downloaded assets,
-settings.txt) and reboots. New badges flashed via USB never see the
-prompt — they get the full 7.9 MB on first boot.
+| Region    | Offset    | Size        | Purpose                            |
+|-----------|-----------|-------------|------------------------------------|
+| boot+ptab | 0x000000  | 36 KB       | bootloader + partition table       |
+| nvs       | 0x009000  | 20 KB       |                                    |
+| otadata   | 0x00E000  | 8 KB        |                                    |
+| **app0**  | 0x010000  | **4.5 MB**  | OTA slot A (currently ~64 % full)  |
+| **app1**  | 0x490000  | **4.5 MB**  | OTA slot B                         |
+| **ffat**  | 0x910000  | **6.875 MB** | user filesystem                   |
+| coredump  | 0xFF0000  | 64 KB       |                                    |
 
-If you change partition sizes again later, the same flow handles it
-automatically — the helper compares `esp_partition_find_first(...)`
-size against the live FATFS volume size and only shows the option
-when there's a meaningful gap.
+Bigger OTA slots (more headroom for future firmware bloat) and a
+larger ffat (more room for assets / contacts). Reclaims the 2 MB gap.
+
+### How a user opts in
+
+The partition table is at flash offset 0x8000 and `pio run -t upload`
+only writes the OTA app slot — it doesn't rewrite the partition
+table. So the only safe way to switch a badge from `_doom` to `_ver2`
+is a full chip erase + reflash over USB:
+
+```
+cd firmware && ./scripts/erase_and_flash_expanded.sh
+```
+
+The script triple-confirms because it wipes everything (contacts,
+nametag, settings, WAD, WiFi credentials). After the reflash, the
+user re-enters WiFi via Settings → WiFi Setup, and downloaded assets
+re-fetch from the Asset Library tile.
+
+### What about OTA after opting in?
+
+**For now, opting in means leaving the OTA path.** The release Action
+publishes one asset (`firmware.bin`) built for the `_doom` layout. An
+expanded badge that pulls that asset would mis-align ffat and possibly
+overflow into the wrong region — definitely a bricking risk.
+
+**Detection:** the badge's `BADGE_PARTITIONS_EXPANDED` build symbol
+identifies expanded firmware at compile time, and at runtime
+`ffatPartitionBytes()` returns the actual partition size. The OTA
+module currently doesn't consume this — `installCached()` just
+streams whatever URL is cached. Future work, in priority order:
+
+1. **Fail-safe gate (cheapest)**: in `BadgeOTA::installCached()`,
+   compare the running build's partition size against a constant
+   baked into the asset (or a value embedded in a sidecar
+   `manifest.json`) and refuse to install when they disagree. Today
+   an expanded badge would silently flash a `_doom`-built asset.
+2. **Dual-asset OTA (full fix)**: the release Action builds both
+   `pio run -e echo` and `pio run -e echo-expanded`, uploads
+   `firmware.bin` and `firmware-expanded.bin`. The badge picks based
+   on `#ifdef BADGE_PARTITIONS_EXPANDED` (which would override
+   `OTA_ASSET_NAME`). Cost: ~2× the Action time and a manifest
+   update.
+
+Until either of those ships, a badge that runs the expanded build
+should stay on the build it was flashed with — communicate this to
+opt-in users.
+
+### "Expand storage" affordance
+
+The FW UPDATE screen has a latent "Expand storage" prompt (press X)
+that triggers when the FATFS volume is meaningfully smaller than the
+partition. With the current setup it doesn't fire on either layout
+(both ffat volumes match their partitions on a fresh flash). It's
+kept for future scenarios where a partition bump *is* OTA-deliverable
+(see "Dual-asset OTA" above) or where a different partition table
+ships with a wider ffat than the existing FAT volume header.
+
+### Initial-filesystem footnote
+
+The contents of `firmware/initial_filesystem/` get baked into the
+firmware binary as `StartupFilesData.h` (so they take app-slot space)
+AND copied to ffat by `provisionStartupFiles()` on first boot (so
+they take ffat space too). It's accepted overhead — trades flash
+space for a guaranteed-good first-boot filesystem even if ffat is
+wiped.
 
 ## 6. Things that go wrong (and what to do)
 

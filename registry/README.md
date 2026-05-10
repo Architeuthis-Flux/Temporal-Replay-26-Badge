@@ -63,6 +63,22 @@ without baking them into the firmware image.
 3. After merge, badges in the field will pick the new entry up the
    next time they refresh (within ~24 hours of WiFi connect).
 
+### Where should the actual asset bytes live?
+
+For files that are too big to bake into the firmware image
+(≳ 100 KB — DOOM WAD, sound packs, alternate fonts), the canonical
+home is **a GitHub Release attachment** managed by
+[`release-assets/manifest.json`](../release-assets/manifest.json).
+The `url` field then uses the stable
+`https://github.com/<owner>/<repo>/releases/latest/download/<name>`
+pattern — it never changes when we cut a new firmware release, so
+badges' cached registry stays valid indefinitely. Full walkthrough in
+[`firmware/docs/OTA-MAINTAINER.md`](../firmware/docs/OTA-MAINTAINER.md)
+§ 2.
+
+For everything else, point `url` at any HTTPS host you control
+(see "Hosting your own registry" below).
+
 ## Hosting your own registry
 
 Any HTTPS URL serving valid JSON works. A non-exhaustive list of free

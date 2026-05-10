@@ -102,142 +102,6 @@ static void ensureDir(FATFS* fs, const char* path) {
     }
 }
 
-// ── Upstream-changed marker for user-modified text files ───────────────────
-//
-// When a file in the startup set has been edited on-badge AND its upstream
-// (firmware-bundled) version has new contents, we don't overwrite the user's
-// edits.  Instead we prepend a one-line comment so the user knows newer
-// upstream content exists.  Idempotent: if the marker substring is already
-// at the top, we leave the file alone.
-
-static const char kUpstreamMarkerNeedle[] =
-    "wasn't reloaded to preserve your edits";
-
-static const char kUpstreamMarkerPy[] =
-    "#This file has upstream changes but wasn't reloaded to preserve your "
-    "edits. If you want the newest version, delete this file and reboot "
-    "and it will be loaded at startup\n";
-
-static const char kUpstreamMarkerMd[] =
-    "<!-- This file has upstream changes but wasn't reloaded to preserve "
-    "your edits. If you want the newest version, delete this file and "
-    "reboot and it will be loaded at startup -->\n";
-
-static bool pathHasExt(const char* path, const char* ext) {
-    size_t pl = strlen(path);
-    size_t el = strlen(ext);
-    if (el > pl) return false;
-    return strcasecmp(path + pl - el, ext) == 0;
-}
-
-// True for text formats we feel safe prepending a comment to.  We
-// deliberately exclude .json (no comment syntax), all binary blobs, and
-// files marked PROTECTED (caller already short-circuits those, but the
-// guard here is a belt-and-braces check).
-static bool isUpstreamMarkerEligible(const StartupFileInfo& f) {
-    if (f.flags & STARTUP_FILE_PROTECTED) return false;
-    static const char* kBinaryExts[] = {
-        ".json", ".bin", ".bmp", ".png", ".jpg", ".jpeg", ".gif",
-        ".ico", ".raw", ".pbm", ".xbm", ".fb", ".wad",
-    };
-    for (const char* ext : kBinaryExts) {
-        if (pathHasExt(f.path, ext)) return false;
-    }
-    return true;
-}
-
-static const char* upstreamMarkerForPath(const char* path) {
-    if (pathHasExt(path, ".md")) return kUpstreamMarkerMd;
-    return kUpstreamMarkerPy;
-}
-
-// True iff the first ~512 bytes of <path> already contain the marker
-// substring.  Avoids re-stamping a file every boot.
-static bool hasUpstreamMarker(FATFS* fs, const char* path) {
-    FIL fil;
-    if (f_open(fs, &fil, path, FA_READ) != FR_OK) return false;
-    char head[512];
-    UINT n = 0;
-    FRESULT res = f_read(&fil, head, sizeof(head) - 1, &n);
-    f_close(&fil);
-    if (res != FR_OK || n == 0) return false;
-    head[n] = '\0';
-    return strstr(head, kUpstreamMarkerNeedle) != nullptr;
-}
-
-// Read existing file, prepend the marker comment, rewrite atomically
-// (write to .tmp, then unlink + rename).  Returns true on success.
-static bool stampUpstreamMarker(FATFS* fs, const char* path) {
-    if (hasUpstreamMarker(fs, path)) return false;
-
-    FIL fil;
-    if (f_open(fs, &fil, path, FA_READ) != FR_OK) return false;
-    UINT existingLen = f_size(&fil);
-
-    const char* marker = upstreamMarkerForPath(path);
-    size_t markerLen = strlen(marker);
-    size_t totalLen = markerLen + existingLen;
-
-    char* buf = (char*)malloc(totalLen);
-    if (!buf) {
-        f_close(&fil);
-        Serial.printf("[startup] mark %s: alloc %u failed\n",
-                      path, (unsigned)totalLen);
-        return false;
-    }
-
-    memcpy(buf, marker, markerLen);
-    UINT bytesRead = 0;
-    FRESULT rres = (existingLen > 0)
-        ? f_read(&fil, buf + markerLen, existingLen, &bytesRead)
-        : FR_OK;
-    f_close(&fil);
-
-    if (rres != FR_OK || bytesRead != existingLen) {
-        free(buf);
-        Serial.printf("[startup] mark %s: read fr=%d got=%u/%u\n",
-                      path, (int)rres, (unsigned)bytesRead,
-                      (unsigned)existingLen);
-        return false;
-    }
-
-    char tmpPath[160];
-    int n = snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
-    if (n <= 0 || (size_t)n >= sizeof(tmpPath)) {
-        free(buf);
-        return false;
-    }
-
-    f_unlink(fs, tmpPath);
-    FIL out;
-    if (f_open(fs, &out, tmpPath, FA_WRITE | FA_CREATE_NEW) != FR_OK) {
-        free(buf);
-        Serial.printf("[startup] mark %s: open tmp failed\n", path);
-        return false;
-    }
-    UINT written = 0;
-    FRESULT wres = f_write(&out, buf, totalLen, &written);
-    f_sync(&out);
-    f_close(&out);
-    free(buf);
-
-    if (wres != FR_OK || written != totalLen) {
-        f_unlink(fs, tmpPath);
-        Serial.printf("[startup] mark %s: write fr=%d %u/%u\n",
-                      path, (int)wres, (unsigned)written,
-                      (unsigned)totalLen);
-        return false;
-    }
-
-    f_unlink(fs, path);
-    if (f_rename(fs, tmpPath, path) != FR_OK) {
-        f_unlink(fs, tmpPath);
-        Serial.printf("[startup] mark %s: rename failed\n", path);
-        return false;
-    }
-    return true;
-}
-
 // ── Force-sync: remove files not in the startup set ─────────────────────────
 
 static bool isInStartupSet(const char* fullPath) {
@@ -411,17 +275,10 @@ void provisionStartupFiles(bool forceSync) {
                 updated++;
             }
         } else {
-            // User-modified file with upstream changes.  Preserve the
-            // user's edits but stamp a one-line comment at the top so
-            // they know a newer upstream version exists.  Skipped for
-            // protected, JSON, and binary files (no safe comment
-            // syntax / no point editing blobs).
-            if (isUpstreamMarkerEligible(f)) {
-                if (stampUpstreamMarker(fs, f.path)) {
-                    Serial.printf("[startup] Marked %s (upstream changed; user edits preserved)\n",
-                                  f.path);
-                }
-            }
+            // User-modified file with upstream changes. Preserve the
+            // user's edits silently — no marker stamping (the previous
+            // marker scheme corrupted any binary file whose extension
+            // wasn't on the eligibility allow-list).
             skipped++;
         }
     }

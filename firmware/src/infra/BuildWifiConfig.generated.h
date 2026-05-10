@@ -6,14 +6,14 @@
 #include <stdint.h>
 
 namespace BuildWifiConfig {
-static constexpr size_t kSsidLen = 15u;
-static constexpr size_t kPassLen = 8u;
-static constexpr uint32_t kSeed = 0x5784587Au;
+static constexpr size_t kSsidLen = 0u;
+static constexpr size_t kPassLen = 0u;
+static constexpr uint32_t kSeed = 0x8CA09FD6u;
 static constexpr uint32_t kSsidSalt = 0xA71C3D5Bu;
 static constexpr uint32_t kPassSalt = 0xC8E52F91u;
 
-static const uint8_t kSsidData[15] = { 0x04, 0x00, 0xED, 0xB2, 0xCC, 0xA7, 0xDD, 0xDA, 0xB3, 0xA0, 0xED, 0x2C, 0x08, 0xAA, 0x25 };
-static const uint8_t kPassData[8] = { 0xC3, 0xD3, 0xFA, 0xBD, 0x65, 0xE6, 0x6A, 0xF8 };
+static const uint8_t kSsidData[1] = { 0x00 };
+static const uint8_t kPassData[1] = { 0x00 };
 
 #if defined(__GNUC__)
 #define BADGE_WIFI_NOINLINE __attribute__((noinline))

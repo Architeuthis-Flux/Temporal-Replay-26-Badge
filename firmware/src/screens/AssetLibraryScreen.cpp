@@ -8,6 +8,7 @@
 #include "../hardware/Haptics.h"
 #include "../hardware/Inputs.h"
 #include "../hardware/oled.h"
+#include "../ota/AssetRegistry.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
 
@@ -39,19 +40,45 @@ void AssetLibraryScreen::selectAssetById(const char* id) {
   sQueuedSelectId[sizeof(sQueuedSelectId) - 1] = '\0';
 }
 
+void AssetLibraryScreen::refreshStatusCache() {
+  const uint8_t n = cachedCount_ < kStatusCacheCap ? cachedCount_
+                                                   : kStatusCacheCap;
+  for (uint8_t i = 0; i < n; ++i) {
+    const ota::AssetEntry* e = ota::registry::at(i);
+    statusCache_[i] = e ? ota::registry::statusOf(*e)
+                        : ota::AssetStatus::kNotInstalled;
+  }
+}
+
+void AssetLibraryScreen::doRefresh(bool ignoreCooldown) {
+  if (!wifiService.isConnected()) return;
+  refreshing_ = true;
+  // Force a redraw so the placeholder row flips to "Refreshing..." while
+  // the synchronous HTTPS fetch holds the loop. The real refresh below
+  // can take a few seconds on first connect.
+  extern GUIManager guiManager;
+  oled& d = guiManager.oledDisplay();
+  d.clearBuffer();
+  ListMenuScreen::render(d, guiManager);
+  d.sendBuffer();
+
+  ota::registry::refresh(ignoreCooldown);
+  cachedCount_ = static_cast<uint8_t>(ota::registry::count());
+  refreshStatusCache();
+  refreshing_ = false;
+}
+
 void AssetLibraryScreen::onEnter(GUIManager& gui) {
   ListMenuScreen::onEnter(gui);
   cachedCount_ = static_cast<uint8_t>(ota::registry::count());
+  refreshStatusCache();
 
-  // First time we open the screen since boot, kick a refresh if WiFi
-  // is up. Cooldown still applies — if we refreshed today this is a
-  // no-op.
-  if (!didInitialRefresh_) {
-    didInitialRefresh_ = true;
-    if (cachedCount_ == 0 && wifiService.isConnected()) {
-      ota::registry::refresh(false);
-      cachedCount_ = static_cast<uint8_t>(ota::registry::count());
-    }
+  // If the registry is empty whenever we land here, force-fetch (ignore
+  // cooldown). Without ignoreCooldown a stale `last_epoch` from a prior
+  // failed parse would leave the list permanently empty for 24h. Once
+  // we have any assets cached, normal cooldown resumes via tick().
+  if (cachedCount_ == 0 && wifiService.isConnected()) {
+    doRefresh(/*ignoreCooldown=*/true);
   }
 
   // Honor a pending selectAssetById() from the DOOM no-WAD redirect.
@@ -67,22 +94,64 @@ void AssetLibraryScreen::onEnter(GUIManager& gui) {
   }
 }
 
+void AssetLibraryScreen::handleInput(const Inputs& inputs, int16_t cx,
+                                     int16_t cy, GUIManager& gui) {
+  // X = manual refresh. Has to be handled here because ListMenuScreen's
+  // base handleInput doesn't dispatch X. Eat the press before delegating
+  // so the underlying joystick navigation still works.
+  if (inputs.edges().xPressed) {
+    Haptics::shortPulse();
+    doRefresh(/*ignoreCooldown=*/true);
+    return;
+  }
+  ListMenuScreen::handleInput(inputs, cx, cy, gui);
+}
+
 uint8_t AssetLibraryScreen::itemCount() const {
-  return cachedCount_;
+  // When the registry is empty we still expose one synthetic row so the
+  // user gets actionable feedback ("No WiFi", "Refreshing...", etc.)
+  // instead of a blank list.
+  return cachedCount_ == 0 ? 1 : cachedCount_;
 }
 
 void AssetLibraryScreen::formatItem(uint8_t index, char* buf,
                                     uint8_t bufSize) const {
+  if (cachedCount_ == 0) {
+    if (refreshing_) {
+      std::snprintf(buf, bufSize, "Refreshing...");
+    } else if (!wifiService.isConnected()) {
+      std::snprintf(buf, bufSize, "No WiFi - press X");
+    } else {
+      const char* err = ota::registry::lastErrorMessage();
+      if (err && err[0]) {
+        std::snprintf(buf, bufSize, "Empty: %s", err);
+      } else {
+        std::snprintf(buf, bufSize, "Empty - press X");
+      }
+    }
+    return;
+  }
   const ota::AssetEntry* e = ota::registry::at(index);
   if (!e) {
     std::snprintf(buf, bufSize, "(missing)");
     return;
   }
-  ota::AssetStatus s = ota::registry::statusOf(*e);
+  // Use the per-row cache populated at refresh / enter / install time
+  // instead of recomputing on every render frame.
+  ota::AssetStatus s = (index < kStatusCacheCap)
+                           ? statusCache_[index]
+                           : ota::registry::statusOf(*e);
   std::snprintf(buf, bufSize, "%-3s %s", statusLabel(s), e->name);
 }
 
 void AssetLibraryScreen::onItemSelect(uint8_t index, GUIManager& gui) {
+  if (cachedCount_ == 0) {
+    // Confirm on the placeholder row also forces a refresh — most users
+    // tap A before reading the footer hint.
+    Haptics::shortPulse();
+    doRefresh(/*ignoreCooldown=*/true);
+    return;
+  }
   const ota::AssetEntry* e = ota::registry::at(index);
   if (!e) return;
   AssetDetailScreen::setActiveAsset(e);

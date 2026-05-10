@@ -638,13 +638,37 @@ int8_t fontFamilyFromName(const char* name) {
     otaManifestUrl_[sizeof(otaManifestUrl_) - 1] = '\0';
   }
 
+  // Belt-and-suspenders: if for any reason the legacy raw.gh URL is
+  // sitting in assetRegistryUrl_ at fetch time (e.g. a path that wrote
+  // the field directly, or a settings.txt parse race), patch it on
+  // every read. The cost is one strstr per access; AssetRegistry only
+  // reads at refresh time so this is not hot.
+  const char* Config::assetRegistryUrl() const {
+    static constexpr const char kJsdelivr[] =
+        "https://cdn.jsdelivr.net/gh/Architeuthis-Flux/"
+        "Temporal-Replay-26-Badge@main/registry/registry.json";
+    if (strstr(assetRegistryUrl_, "raw.githubusercontent.com") &&
+        strstr(assetRegistryUrl_, "Temporal-Replay-26-Badge") &&
+        strstr(assetRegistryUrl_, "registry.json")) {
+      return kJsdelivr;
+    }
+    return assetRegistryUrl_;
+  }
+
+  // TEMPORARY: ignore whatever is in settings.txt and always use the
+  // baked-in default. The settings.txt parser was silently truncating
+  // long URLs (line buffer was 80 chars), and we don't want stale
+  // values in NVS/disk fighting us while the LIBRARY screen is still
+  // being stabilised. Pinning to the firmware-baked URL means every
+  // boot starts from a known-good state. Restore the file-driven
+  // override later by removing the `(void)value;` short-circuit.
   void Config::setAssetRegistryUrl(const char* value) {
-    if (!value) value = "";
-    char tmp[sizeof(assetRegistryUrl_)];
-    strncpy(tmp, value, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
-    trimInPlace(tmp);
-    strncpy(assetRegistryUrl_, tmp, sizeof(assetRegistryUrl_) - 1);
+    static constexpr const char kDefaultAssetRegistryUrl[] =
+        "https://cdn.jsdelivr.net/gh/Architeuthis-Flux/"
+        "Temporal-Replay-26-Badge@main/registry/registry.json";
+    (void)value;
+    strncpy(assetRegistryUrl_, kDefaultAssetRegistryUrl,
+            sizeof(assetRegistryUrl_) - 1);
     assetRegistryUrl_[sizeof(assetRegistryUrl_) - 1] = '\0';
   }
 
@@ -811,7 +835,12 @@ int8_t fontFamilyFromName(const char* name) {
   // ─── File-based INI parsing ──────────────────────────────────────────────────
   
   bool Config::parseSettingsFile(const char* buf, uint16_t len) {
-    char line[80];
+    // 80 was too small — URL-valued keys (asset_registry_url,
+    // ota.manifest_url) routinely exceed 80 chars and were getting
+    // silently truncated mid-host, which made the legacy-URL migration
+    // and the URL itself useless. Sized to fit the longest URL field
+    // (assetRegistryUrl_[160]) plus key, equals, and slack.
+    char line[256];
     const char* p = buf;
     const char* end = buf + len;
     char section[24] = "";
@@ -1155,6 +1184,10 @@ int8_t fontFamilyFromName(const char* name) {
       migrateFlipDelayDefault(values_);
       applyTimezone();
       Serial.println("Config: loaded from settings.txt");
+      Serial.printf(
+          "Config: asset_registry_url = %s (firmware default; "
+          "settings.txt value ignored for now)\n",
+          assetRegistryUrl_);
       if (hadLegacyNetworkSecrets) {
         Serial.println("Config: removing legacy network secrets from settings.txt");
         saveToFile();

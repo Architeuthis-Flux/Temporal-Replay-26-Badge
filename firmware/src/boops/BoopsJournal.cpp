@@ -406,8 +406,11 @@ void begin() {
 
             DWORD free_clusters = 0;
             if (f_getfree(fs, &free_clusters) == FR_OK) {
+                // ssize is the actual sector size in bytes (4096 on
+                // ESP32 wear-levelled FATFS, not 512); the old "* 512"
+                // form underreported free space by 8x.
                 const unsigned long free_bytes =
-                    (unsigned long)free_clusters * fs->csize * 512UL;
+                    (unsigned long)free_clusters * fs->csize * fs->ssize;
                 Serial.printf("[%s] ffat free: %lu B\n", TAG, free_bytes);
 
                 // If the partition is critically low, the journal can't

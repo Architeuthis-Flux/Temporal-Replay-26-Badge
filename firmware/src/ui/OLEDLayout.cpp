@@ -906,7 +906,7 @@ int drawActionsFitting(oled& d, ActionScrollState& state, int x, int baseline,
                        const char* xLabel, const char* yLabel,
                        const char* bLabel, const char* aLabel) {
   const int w = measureActions(d, xLabel, yLabel, bLabel, aLabel);
-  const int availW = kScreenW - x;
+  const int availW = kScreenW - x + 1;
   if (w <= 0 || availW <= 0) return w;
 
   if (w <= availW) {

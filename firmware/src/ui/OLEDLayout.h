@@ -10,7 +10,12 @@ constexpr uint8_t kScreenW = 128;
 constexpr uint8_t kScreenH = 64;
 constexpr uint8_t kFooterTopY = 54;
 constexpr uint8_t kFooterTextTopY = kFooterTopY + 1;
-constexpr uint8_t kFooterRuleY = 52;
+// Sits on the same row as the glyph top so the rule reads as a
+// continuous baseline that the chip glyphs poke up through. The
+// per-glyph pixel knockout in `ButtonGlyphs::drawHint` adds a 1-px
+// break on either side of every glyph so the rule cleanly breaks
+// rather than visually merging into the chip outline.
+constexpr uint8_t kFooterRuleY = 54;
 constexpr uint8_t kFooterBaseY = 63;  // baseline flush with screen bottom (kScreenH-1)
 // Text-only footer baseline. One pixel above kFooterBaseY so footer
 // labels read with breathing room above the screen edge — button-glyph

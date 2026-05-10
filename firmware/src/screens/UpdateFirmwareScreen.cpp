@@ -185,7 +185,7 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
   } else if (tag[0] && std::strcmp(tag, FIRMWARE_VERSION) == 0) {
     action = "Recheck";
   }
-  OLEDLayout::drawActionFooter(d, action, "Confirm");
+  OLEDLayout::drawActionFooter(d, action, "Check");
 }
 
 void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
@@ -210,7 +210,7 @@ void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
   d.drawStr(2, 30, "This cannot be undone.");
   d.drawStr(2, 42, "The badge will reboot");
   d.drawStr(2, 51, "after formatting.");
-  OLEDLayout::drawActionFooter(d, "WIPE & EXPAND", "Confirm");
+  OLEDLayout::drawActionFooter(d, "WIPE & EXPAND", "Wipe");
 }
 
 void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
@@ -249,6 +249,8 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
       d.setFontPreset(FONT_SMALL);
       d.drawStr(8, 30, "Formatting...");
       d.sendBuffer();
+      Haptics::off();
+      delay(100);
       ota::reformatFfatAndReboot();
     }
     return;
@@ -270,6 +272,8 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
 
   if (e.confirmPressed) {
     Haptics::shortPulse();
+    Haptics::off();
+    delay(100);
     if (ota::updateAvailable()) {
       runInstall();
     } else {
@@ -330,6 +334,8 @@ void UpdateFirmwareScreen::runInstall() {
   render(d, guiManager);
   d.sendBuffer();
 
+  Haptics::off();
+  // delay(100);
   installResult_ = ota::installCached(&UpdateFirmwareScreen::installProgressCb,
                                       this);
 

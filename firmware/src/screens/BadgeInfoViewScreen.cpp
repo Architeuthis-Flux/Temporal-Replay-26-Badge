@@ -3,8 +3,12 @@
 #include <cstdio>
 #include <cstring>
 
+#include <U8g2lib.h>
+
+#include "../hardware/oled.h"
 #include "../identity/BadgeInfo.h"
 #include "../ui/GUI.h"
+#include "../ui/UIFonts.h"
 #include "TextInputScreen.h"
 
 extern TextInputScreen sTextInput;
@@ -34,11 +38,21 @@ constexpr FieldSpec kRows[] = {
     FS_ROW("Phone",   phone,        true),
     FS_ROW("Bio",     bio,          true),
     FS_ROW("UUID",    ticketUuid,   false),
-    FS_ROW("Help",    note,         false),
+    FS_ROW("",        note,         false),
 };
 #undef FS_ROW
 
 constexpr uint8_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
+
+// Column geometry. Tiny 4x6 font puts the longest label ("Company", 7 chars)
+// at 28 px wide, so a value column starting at x=32 leaves a 1-px gutter and
+// keeps every editable field's value aligned to the same left edge.
+// kValueRightX matches the row-content right edge from Screen.cpp's render
+// (scrollbar at x=124, with a 1-px gap = 122 usable, less 2 px of breathing
+// room so descenders never crowd the highlight box).
+constexpr uint8_t kLabelX      = 3;
+constexpr uint8_t kValueX      = 32;
+constexpr uint8_t kValueRightX = 120;
 
 const char* readField(const BadgeInfo::Fields& f, uint8_t index) {
     if (index >= kRowCount) return "";
@@ -70,6 +84,38 @@ void BadgeInfoViewScreen::formatItem(uint8_t index, char* buf,
     const char* label = (index < kRowCount) ? kRows[index].label : "";
     if (val[0] == '\0') val = "\xAD";
     std::snprintf(buf, bufSize, "%-7s%s", label, val);
+}
+
+void BadgeInfoViewScreen::drawItem(oled& d, uint8_t index, uint8_t y,
+                                   uint8_t /*rowHeight*/,
+                                   bool /*selected*/) const {
+    if (index >= kRowCount) return;
+
+    BadgeInfo::Fields f;
+    BadgeInfo::getCurrent(f);
+    const char* val = readField(f, index);
+    if (val[0] == '\0') val = "\xAD";
+    const char* label = kRows[index].label;
+
+    // Establish the shared baseline using the regular text font (the
+    // base render pre-set this font, but read it explicitly so the
+    // baseline math works regardless of caller state).
+    d.setFont(UIFonts::kText);
+    const int baseline = y + d.getAscent() + 1;
+
+    char tmp[64];
+    std::strncpy(tmp, val, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    while (tmp[0] && d.getStrWidth(tmp) > (kValueRightX - kValueX)) {
+        tmp[std::strlen(tmp) - 1] = '\0';
+    }
+    d.drawStr(kValueX, baseline, tmp);
+
+    if (label[0]) {
+        d.setFont(u8g2_font_4x6_tr);
+        d.drawStr(kLabelX, baseline, label);
+        d.setFont(UIFonts::kText);
+    }
 }
 
 void BadgeInfoViewScreen::onItemSelect(uint8_t index, GUIManager& gui) {

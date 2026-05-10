@@ -144,12 +144,23 @@ void DoomScreen::handleInput(const Inputs& inp, int16_t cursorX,
         }
     } else if (phase_ == Phase::kNoWad) {
         if (e.confirmPressed && badgeConfig.assetRegistryUrl()[0]) {
-            // Hop straight to the registry detail for the WAD entry.
-            // The Asset Library screen consumes the queued id on
-            // onEnter and pre-positions its cursor.
-            AssetLibraryScreen::selectAssetById("doom1-shareware");
-            gui.popScreen();
-            gui.pushScreen(kScreenAssetLibrary);
+            // Jump straight to the registry detail for the WAD entry,
+            // skipping the library list. The detail screen renders
+            // size + description so the user still sees what they're
+            // committing to before the 4 MB download starts.
+            const ota::AssetEntry* entry =
+                ota::registry::findById("doom1-shareware");
+            if (entry) {
+                AssetDetailScreen::setActiveAsset(entry);
+                gui.popScreen();
+                gui.pushScreen(kScreenAssetDetail);
+            } else {
+                // Registry not yet refreshed (no WiFi at boot, or first
+                // run). Fall back to the library so a refresh fires.
+                AssetLibraryScreen::selectAssetById("doom1-shareware");
+                gui.popScreen();
+                gui.pushScreen(kScreenAssetLibrary);
+            }
         } else if (e.cancelPressed || e.confirmPressed ||
                    e.xPressed || e.yPressed) {
             gui.popScreen();

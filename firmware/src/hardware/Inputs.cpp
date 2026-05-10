@@ -63,6 +63,38 @@ uint16_t Inputs::applyJoystickSensitivity(uint16_t raw, float& smoothed,
   return static_cast<uint16_t>(out);
 }
 
+namespace {
+// Median-of-3 filter for analogRead.
+//
+// On the echo board JOY_X (GPIO 13) and JOY_Y (GPIO 12) sit on ADC2,
+// which the ESP32-S3 shares with the WiFi peripheral. When WiFi briefly
+// owns ADC2 — DHCP renewal, beacon listening, OTA polls, the daily
+// registry refresh, etc. — a single `analogRead()` on those pins
+// returns 0 or stale data. That manifested as occasional spurious
+// "UP" cursor moves on the home menu (every minute or so, matching
+// WiFi keepalive cadence), because user-visible Y is sourced from
+// JOY_X after the 90° axis rotation.
+//
+// Sampling three times in quick succession and taking the median lets
+// a single corrupted read be dropped as the outlier — the other two
+// reads bracket the true value. Total cost is ~30 µs per axis, well
+// under the joystick poll budget.
+uint16_t analogReadMedian3(uint8_t pin) {
+  const int a = analogRead(pin);
+  const int b = analogRead(pin);
+  const int c = analogRead(pin);
+  int hi = a > b ? a : b;
+  int lo = a < b ? a : b;
+  int mid;
+  if (c > hi) mid = hi;
+  else if (c < lo) mid = lo;
+  else mid = c;
+  if (mid < 0) mid = 0;
+  if (mid > 4095) mid = 4095;
+  return static_cast<uint16_t>(mid);
+}
+}  // namespace
+
 void Inputs::begin() {
   instance_ = this;
   // return;
@@ -183,10 +215,10 @@ void Inputs::service() {
   const uint32_t nowMs = millis();
   if ((nowMs - lastAnalogSampleMs_) >= Power::Policy::joystickPollMs) {
     uint16_t physicalX =
-        applyJoystickSensitivity(static_cast<uint16_t>(analogRead(JOY_X)),
+        applyJoystickSensitivity(analogReadMedian3(JOY_X),
                                  joyXSmoothed_, joystickSensitivityPercent_);
     uint16_t physicalY =
-        applyJoystickSensitivity(static_cast<uint16_t>(analogRead(JOY_Y)),
+        applyJoystickSensitivity(analogReadMedian3(JOY_Y),
                                  joyYSmoothed_, joystickSensitivityPercent_);
 
     if (joystickDeadzonePercent_ > 0) {
@@ -231,14 +263,8 @@ uint16_t Inputs::joyY() const { return joyYRaw_; }
 void Inputs::readJoystickImmediate(uint16_t* outX, uint16_t* outY,
                                    bool applyDeadzone) const {
   if (!outX || !outY) return;
-  long ax = analogRead(JOY_X);
-  long ay = analogRead(JOY_Y);
-  if (ax < 0) ax = 0;
-  if (ax > 4095) ax = 4095;
-  if (ay < 0) ay = 0;
-  if (ay > 4095) ay = 4095;
-  uint16_t physicalX = static_cast<uint16_t>(ax);
-  uint16_t physicalY = static_cast<uint16_t>(ay);
+  uint16_t physicalX = analogReadMedian3(JOY_X);
+  uint16_t physicalY = analogReadMedian3(JOY_Y);
 
   uint16_t jx = static_cast<uint16_t>(4095 - static_cast<int>(physicalY));
   uint16_t jy = physicalX;

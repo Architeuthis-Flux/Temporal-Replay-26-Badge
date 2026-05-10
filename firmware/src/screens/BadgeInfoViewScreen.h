@@ -14,6 +14,11 @@ class BadgeInfoViewScreen : public ListMenuScreen {
   BadgeInfoViewScreen();
   uint8_t itemCount() const override;
   void formatItem(uint8_t index, char* buf, uint8_t bufSize) const override;
+  // Custom row layout: tiny 4x6 font for labels in a left column, regular
+  // text font for values in a fixed value column so every editable row
+  // lines up regardless of label length.
+  void drawItem(oled& d, uint8_t index, uint8_t y, uint8_t rowHeight,
+                bool selected) const override;
   bool navigableItems() const override { return true; }
   const char* hintText() const override { return "Edit:set Cancel:back"; }
   void onItemSelect(uint8_t index, GUIManager& gui) override;
