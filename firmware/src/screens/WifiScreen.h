@@ -43,6 +43,9 @@ class WifiScreen : public Screen {
   // Called by the static TextInput trampoline.
   void onTextSubmit(const char* text);
 
+  // Called from the background connect task when the attempt finishes.
+  void onConnectResult(bool ok);
+
  private:
   // Two-stage flow: when expanding a saved row, the per-slot action
   // menu replaces the slot's children in the list. This mirrors the
@@ -117,4 +120,16 @@ class WifiScreen : public Screen {
   // 96 = WPA password max (63) + NUL + headroom; matches the
   // SettingsScreen scratch buffer used for the same purpose.
   char inputBuf_[96] = {};
+
+  // ── Async connect state ─────────────────────────────────────────────────
+  // Written from the background connect task (Core 0) and read from the
+  // main-loop render / handleInput (Core 1).  A plain enum sized to one
+  // byte with `volatile` is safe for this simple producer-consumer pattern
+  // on ESP32 (coherent write-back cache, no reorder that crosses a core
+  // boundary for single-byte stores).
+  enum class ConnectState : uint8_t { kIdle, kConnecting, kSuccess, kFailed };
+  volatile ConnectState connectState_ = ConnectState::kIdle;
+  // millis() snapshot taken when a connect result (success or fail) arrives,
+  // used to auto-clear the transient "FAILED" subtitle after a few seconds.
+  uint32_t connectResultMs_ = 0;
 };
