@@ -1,0 +1,115 @@
+{
+  "_comment": [
+    "Credit roster for the badge AboutCredits screen + companion",
+    "MicroPython app. Order here is render order top-to-bottom.",
+    "",
+    "Schema is person-centric: each entry under `people` declares the",
+    "metadata that's shared across all of that person's headshots",
+    "(name, position, company, website, bio) plus an `images` list of",
+    "one or more variants. The screen pools every variant of a person",
+    "into one card slot and randomly picks among them every time the",
+    "slot scrolls into view — so the displayed name + company never",
+    "changes as the photo rotates.",
+    "",
+    "Person fields:",
+    "  name        required  display name (large font; embed '\\n' to wrap)",
+    "  position    optional  job title (small line under the name)",
+    "  company     optional  affiliation (small line)",
+    "  website     optional  url / handle; leading https:// is stripped",
+    "  bio         optional  free-form text (wraps to fill remaining space)",
+    "  group       optional  pool key. Defaults to `name`. Set explicitly",
+    "                        only if you want two people with different",
+    "                        names to share one card slot.",
+    "  images      required  list of image specs (see below)",
+    "",
+    "Image fields (per variant; nothing here changes a person's metadata):",
+    "  file        optional  image filename inside assets/credits/. Used",
+    "                        as the dither source.",
+    "  prebinned   optional  string filename or directory under",
+    "                        assets/credits/prebinned/. A '.bin' resolves",
+    "                        to a single 64×64 frame; a directory becomes",
+    "                        an animation (frames sorted alphabetically,",
+    "                        per-frame delays parsed from `_delay-Xs`",
+    "                        tokens in the filenames). Pass `true` to",
+    "                        auto-detect a same-stemmed .bin alongside",
+    "                        the source image.",
+    "  dither      optional  one of: floyd (default), atkinson, bayer4,",
+    "                        bayer8, threshold, none. Object form lets",
+    "                        you tune knobs alongside the mode.",
+    "  contrast    optional  PIL autocontrast cutoff %% (0..49, default 2)",
+    "  brightness  optional  pixel multiplier (default 1.0; >1 brightens)",
+    "  threshold   optional  only for dither=threshold (0..255, default 128)",
+    "  speed       optional  animation speed multiplier (default 1.0;",
+    "                        0.5 = half speed / each frame held twice as long)",
+    "  loop_blank  optional  when true, the loop-end pause renders an empty",
+    "                        cell instead of holding the last frame",
+    "  random_transform  optional  when true, the screen picks a fresh random",
+    "                        rotation+flip every time the animation loops",
+    "  weight      optional  weighted-random pool selection. Defaults: 3 for",
+    "                        animated entries, 1 for static; explicit values",
+    "                        override either default.",
+    "",
+    "Each image must supply at least one of `file` / `prebinned`. Image",
+    "files in assets/credits/ and .bin files in assets/credits/prebinned/",
+    "that no person references are reported at the end of a bake but are",
+    "never auto-added to the roster — credits.json is authoritative.",
+    "",
+    "Run `python3 scripts/gen_credit_xbms.py --preview` to dump per-credit",
+    "comparison sheets to assets/credits/preview/ for A/B-ing dither modes."
+  ],
+  "people": [
+    {
+      "name": "Shy\nRuparel",
+      "company": "Temporal",
+      "images": [
+        { "prebinned": "shy.bin" },
+        { "prebinned": "shy2.bin" }
+      ]
+    },
+    {
+      "name": "Alex\nLynd",
+      "company": "LyndLabs",
+      "images": [
+        { "prebinned": "alex.bin" }
+      ]
+    },
+    {
+      "name": "Kevin\nSanto\nCappuccio",
+      "company": "Jumperless",
+      "images": [
+       
+        { "prebinned": "kevin_1.bin" },
+        { "prebinned": "kevin_3.bin" },
+        { "prebinned": "kevin2.bin" },
+        { "prebinned": "kevin3.bin" },
+        {
+          "prebinned": "kevinWIFOS",
+          "speed": 0.5,
+          "loop_blank": true,
+          "random_transform": true,
+          "weight": 2
+        }
+      ]
+    },
+    {
+      "name": "Amelia\nWietting",
+      "company": "John Deere",
+      "images": [
+        { "prebinned": "amelia.bin" }
+      ]
+    },
+    {
+      "name": "Edward\nAmsden",
+      "company": "Temporal",
+      "images": [
+        { "prebinned": "edward.bin" }
+      ]
+    },
+    {
+      "name": "Michael\nPacheco",
+      "images": [
+        { "prebinned": "michael.bin" }
+      ]
+    }
+  ]
+}

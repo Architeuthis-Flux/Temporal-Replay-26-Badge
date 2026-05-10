@@ -938,6 +938,89 @@ async def flash_badge_filesystem(env: str, port: str, firmware_dir: str = "") ->
             "error": "Filesystem upload failed.", "duration_s": round(time.monotonic() - start, 1)}
 
 
+@activity.defn
+async def sync_badge_filesystem(
+    port: str,
+    firmware_dir: str = "",
+    *,
+    push_missing: bool = True,
+    push_stale: bool = True,
+    clear_extras: bool = False,
+    clear_stale: bool = False,
+) -> dict:
+    """Diff-sync the badge's FATFS against firmware/data/manifest.json.
+
+    Use this for *upgrade* / *recovery* flashes — factory flashing
+    (flash_badge_images) already writes fatfs.bin so a sync is
+    redundant in that path. By default this only pushes; it never
+    deletes user files unless `clear_extras=True`.
+
+    Returns: success, port, pushed, cleared, skipped, errors,
+             output, duration_s.
+    """
+    fw_dir = _fw(firmware_dir)
+    start = time.monotonic()
+    activity.heartbeat(_heartbeat_payload(f"syncing -> {port}"))
+
+    # Lazy import — pyserial isn't a hard worker dependency.
+    import sys
+    sys.path.insert(0, str(fw_dir / "scripts"))
+    try:
+        import badge_sync
+    except Exception as e:
+        return {
+            "success": False, "port": port,
+            "pushed": [], "cleared": [], "skipped": [], "errors": [str(e)],
+            "output": f"badge_sync import failed: {e}",
+            "duration_s": round(time.monotonic() - start, 1),
+        }
+
+    data_dir = fw_dir / "data"
+    if not (data_dir / "manifest.json").exists():
+        return {
+            "success": False, "port": port,
+            "pushed": [], "cleared": [], "skipped": [], "errors": ["manifest.json missing"],
+            "output": "Run scripts/generate_startup_files.py first.",
+            "duration_s": round(time.monotonic() - start, 1),
+        }
+
+    def _do_sync():
+        return badge_sync.sync(
+            port, data_dir,
+            push_missing=push_missing,
+            push_stale=push_stale,
+            clear_extras=clear_extras,
+            clear_stale=clear_stale,
+            timeout=10.0,
+        )
+
+    try:
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, _do_sync)
+    except Exception as e:
+        return {
+            "success": False, "port": port,
+            "pushed": [], "cleared": [], "skipped": [], "errors": [str(e)],
+            "output": f"sync exception: {e}",
+            "duration_s": round(time.monotonic() - start, 1),
+        }
+
+    summary = (
+        f"Sync: pushed={len(res.pushed)} cleared={len(res.cleared)} "
+        f"skipped={len(res.skipped)} errors={len(res.errors)}"
+    )
+    return {
+        "success": res.ok,
+        "port": port,
+        "pushed": list(res.pushed),
+        "cleared": list(res.cleared),
+        "skipped": list(res.skipped),
+        "errors": list(res.errors),
+        "output": summary,
+        "duration_s": round(time.monotonic() - start, 1),
+    }
+
+
 # ── Verify: boot marker ───────────────────────────────────────────────────────
 
 @activity.defn

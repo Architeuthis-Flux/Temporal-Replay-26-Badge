@@ -2,31 +2,50 @@
 //
 // Lets the badge install user-facing asset files (DOOM WAD, sound packs,
 // fonts, anything else) on demand from a configurable URL set in
-// `settings.txt` (`asset_registry_url`).
+// `settings.txt` (`community_apps_url`, formerly `asset_registry_url`).
 //
-// Registry schema (registry.json):
+// Schema v2 (registry/community_apps.json) supports two entry kinds:
+// single files (`kind: "file"`) and multi-file app bundles
+// (`kind: "app"`). The on-badge install path currently implements
+// kind:"file"; kind:"app" handling is a follow-up.
 //
 //   {
-//     "schema_version": 1,
+//     "schema_version": 2,
 //     "assets": [
 //       {
 //         "id": "doom1-shareware",
+//         "kind": "file",
 //         "name": "DOOM 1 Shareware WAD",
 //         "version": "1.9",
-//         "url": "https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/blob/main/firmware/initial_filesystem/doom1.wad",
+//         "url": "https://.../doom1.wad",
 //         "sha256": "<hex>",            // optional, corruption check only
 //         "size": 4196020,
 //         "dest_path": "/doom1.wad",
 //         "min_free_bytes": 4500000,    // optional
 //         "description": "..."
+//       },
+//       {
+//         "id": "tardigotchi",
+//         "kind": "app",
+//         "name": "Tardigotchi",
+//         "version": "<sha256-stem>",
+//         "dest_dir": "/apps/tardigotchi",
+//         "size": 33744,
+//         "description": "...",
+//         "files": [                     // inlined; no separate manifest.json
+//           {"path": "/main.py",   "size": 187,
+//            "sha256": "...", "url": "https://..."},
+//           {"path": "/engine.py", "size": 24006,
+//            "sha256": "...", "url": "https://..."}
+//         ]
 //       }
 //     ]
 //   }
 //
 // Per-asset state (installed version) is persisted in NVS under
-// namespace `badge_assets` keyed by asset id. The file body is written
-// to `<dest_path>.tmp` then atomically renamed; on failure the live
-// file is left untouched.
+// namespace `badge_assets` keyed by asset id. Single-file installs
+// stream into `<dest_path>.tmp` and atomic-rename; on failure the
+// live file is left untouched.
 
 #pragma once
 

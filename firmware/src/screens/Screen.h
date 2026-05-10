@@ -42,6 +42,7 @@ enum ScreenId : uint8_t {
   kScreenDrawStickerPicker,
   kScreenDrawScalePicker,
   kScreenAboutSponsors,
+  kScreenAboutCredits,
   kScreenMenuOrder,
   kScreenHelp,
   kScreenWifi,

@@ -914,13 +914,14 @@ void actionKey(char* out, size_t cap, int x, int baseline,
 
 int drawActionsFitting(oled& d, ActionScrollState& state, int x, int baseline,
                        const char* xLabel, const char* yLabel,
-                       const char* bLabel, const char* aLabel) {
+                       const char* bLabel, const char* aLabel,
+                       bool leftAlign = false) {
   const int w = measureActions(d, xLabel, yLabel, bLabel, aLabel);
   const int availW = kScreenW - x + 1;
   if (w <= 0 || availW <= 0) return w;
 
   if (w <= availW) {
-    const int drawX = max(x, kScreenW - w);
+    const int drawX = leftAlign ? x : max(x, kScreenW - w);
     drawActions(d, drawX, baseline, xLabel, yLabel, bLabel, aLabel);
     return w;
   }
@@ -954,22 +955,24 @@ int drawActionsFitting(oled& d, ActionScrollState& state, int x, int baseline,
 }
 
 int drawFooterActions(oled& d, const char* xLabel, const char* yLabel,
-                      const char* bLabel, const char* aLabel, int x) {
+                      const char* bLabel, const char* aLabel, int x,
+                      bool leftAlign) {
   // Always paint chip labels in the standard UI font so callers
   // (modals, etc.) that left a different font active for body
   // content don't bleed that font into the footer chips.
   d.setFont(UIFonts::kText);
   static ActionScrollState scrollState;
   return drawActionsFitting(d, scrollState, x, kFooterBaseY,
-                            xLabel, yLabel, bLabel, aLabel);
+                            xLabel, yLabel, bLabel, aLabel, leftAlign);
 }
 
 int drawUpperFooterActions(oled& d, const char* xLabel, const char* yLabel,
-                           const char* bLabel, const char* aLabel, int x) {
+                           const char* bLabel, const char* aLabel, int x,
+                           bool leftAlign) {
   d.setFont(UIFonts::kText);
   static ActionScrollState scrollState;
   return drawActionsFitting(d, scrollState, x, kFooterUpperBaseY,
-                            xLabel, yLabel, bLabel, aLabel);
+                            xLabel, yLabel, bLabel, aLabel, leftAlign);
 }
 
 }  // namespace OLEDLayout

@@ -125,8 +125,10 @@ int drawFooterHint(oled& d, const char* text, int x = 0);
 int drawFooterHintRight(oled& d, const char* text, int rightX = kScreenW);
 int drawUpperFooterHint(oled& d, const char* text, int x = 0);
 int drawFooterActions(oled& d, const char* xLabel, const char* yLabel,
-                      const char* bLabel, const char* aLabel, int x = 0);
+                      const char* bLabel, const char* aLabel, int x = 0,
+                      bool leftAlign = false);
 int drawUpperFooterActions(oled& d, const char* xLabel, const char* yLabel,
-                           const char* bLabel, const char* aLabel, int x = 0);
+                           const char* bLabel, const char* aLabel, int x = 0,
+                           bool leftAlign = false);
 
 }  // namespace OLEDLayout

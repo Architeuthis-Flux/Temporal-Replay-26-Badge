@@ -23,6 +23,7 @@ from flash_worker.activities import (
     prepare_badge_devices_for_flashing,
     prepare_flash_artifacts,
     resolve_badge_port,
+    sync_badge_filesystem,
     verify_badge_boot_marker,
     verify_badge_ble,
 )
@@ -57,6 +58,7 @@ async def main() -> None:
             prepare_badge_devices_for_flashing,
             prepare_flash_artifacts,
             resolve_badge_port,
+            sync_badge_filesystem,
             verify_badge_boot_marker,
             verify_badge_ble,
         ],

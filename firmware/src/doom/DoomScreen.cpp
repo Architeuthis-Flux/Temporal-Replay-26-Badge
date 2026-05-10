@@ -143,7 +143,7 @@ void DoomScreen::handleInput(const Inputs& inp, int16_t cursorX,
             launchDoom(gui);
         }
     } else if (phase_ == Phase::kNoWad) {
-        if (e.confirmPressed && badgeConfig.assetRegistryUrl()[0]) {
+        if (e.confirmPressed && badgeConfig.communityAppsUrl()[0]) {
             // Jump straight to the registry detail for the WAD entry,
             // skipping the library list. The detail screen renders
             // size + description so the user still sees what they're
@@ -331,15 +331,15 @@ void DoomScreen::renderNoWadScreen(oled& d) {
     d.drawHLine(0, 14, 128);
 
     d.setFontPreset(FONT_TINY);
-    if (badgeConfig.assetRegistryUrl()[0]) {
+    if (badgeConfig.communityAppsUrl()[0]) {
         d.drawStr(2, 24, "doom1.wad not on badge.");
         d.drawStr(2, 36, "Press Confirm to open");
-        d.drawStr(2, 45, "the Asset Library and");
+        d.drawStr(2, 45, "Community Apps and");
         d.drawStr(2, 54, "download it over WiFi.");
         d.drawHLine(0, 56, 128);
         ButtonGlyphs::drawInlineHint(d, 2, 63, "Cancel:Back");
         ButtonGlyphs::drawInlineHintRight(d, 126, 63,
-                                          "Confirm:Library");
+                                          "Confirm:Apps");
     } else {
         d.drawStr(2, 24, "doom1.wad not found on");
         d.drawStr(2, 33, "the badge filesystem.");

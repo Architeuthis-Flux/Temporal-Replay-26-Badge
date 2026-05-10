@@ -1,4 +1,5 @@
 #include "GUI.h"
+#include "screens/AboutCreditsScreen.h"
 #include "screens/AboutSponsorsScreen.h"
 #include "screens/MenuOrderScreen.h"
 #include "screens/AnimTestScreen.h"
@@ -179,6 +180,22 @@ static void launchTardigotchi(GUIManager& gui) {
   launchPythonApp(gui, "/apps/tardigotchi/main.py", "Tardigotchi");
 }
 
+// CREDITS dispatcher. Two backends exist:
+//   * native AboutCreditsScreen (drawXBM out of AboutCredits.h)
+//   * MicroPython /apps/credits.py (set_pixel walk on the editable FS)
+// Both consume the same byte blob — re-running scripts/gen_credit_xbms.py
+// rewrites both sides — so the only user-visible difference is start
+// latency (Python warm-up) and per-frame cost. The kCreditsUsePython
+// setting picks at click time so flipping it in settings.txt swaps the
+// renderer immediately, no reboot required.
+static void launchCredits(GUIManager& gui) {
+  if (badgeConfig.get(kCreditsUsePython)) {
+    launchPythonApp(gui, "/apps/credits.py", "Credits");
+  } else {
+    gui.pushScreen(kScreenAboutCredits);
+  }
+}
+
 // Firmware-update tile label flips between "Check Updates" and
 // "UPDATE" depending on what BadgeOTA has cached.
 static void firmwareUpdateLabel(char* buf, uint8_t bufSize) {
@@ -196,9 +213,9 @@ static uint16_t firmwareUpdateBadge() {
   return ota::updateAvailable() ? 1 : 0;
 }
 
-// LIBRARY tile is always visible on the home grid. The screen itself
-// surfaces "no asset_registry_url configured" / "needs WiFi" inline,
-// which is more discoverable than hiding the tile entirely.
+// COMMUNITY APPS tile is always visible on the home grid. The screen
+// itself surfaces "no community_apps_url configured" / "needs WiFi"
+// inline, which is more discoverable than hiding the tile entirely.
 static bool assetLibraryVisible() {
   return true;
 }
@@ -221,31 +238,28 @@ static const GridMenuItem kCuratedMenuItems[] = {
 
     {"DRAW", "Draw frames and animations with stickers and pixels",
      DrawIcons::menuDraw, kScreenDrawPicker, nullptr, nullptr, nullptr},
-#ifndef BADGE_DEV_MENU
+
     {"IR BLOCK", "Clear lines and send garbage over IR",
      AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle, nullptr, nullptr},
     {"BREAKSNAKE",  "Play Breakout and Snake together",
      AppIcons::breaksnake, kScreenNone,       launchBreakSnake, nullptr, nullptr},
     {"FLAPPY", "Play Asteroids and Flappy Bird together",
      AppIcons::flappyAsteroids, kScreenNone,  launchFlappyAsteroids, nullptr, nullptr},
-#endif
+
     {"SYNTH", "Play joystick tones, loops, and loadable sounds",
      AppIcons::synth,     kScreenNone,       launchSynth, nullptr, nullptr},
     {"TARDIGOTCHI", "Hatch and care for a tiny tardigrade",
      AppIcons::tardigotchi, kScreenNone, launchTardigotchi, nullptr, nullptr},
-#ifdef BADGE_HAS_DOOM
+
     {"DOOM",        "Play DOOM on the badge",
      AppIcons::doom,      kScreenDoom,        nullptr, nullptr, nullptr},
-#endif
-    {"HELP", "Tips, button shortcuts, and links to the developer docs",
-     AppIcons::docs,      kScreenHelp,         nullptr, nullptr, nullptr},
-    {"SPONSORS", "Thank you to our sponsors!",
-     AppIcons::about,     kScreenAboutSponsors, nullptr, nullptr, nullptr},
-#ifdef BADGE_DEV_MENU
-
 
     {"APPS",        "Run MicroPython apps stored on the badge",
      AppIcons::apps,      kScreenApps,        nullptr, nullptr, nullptr},
+     {"COMMUNITY APPS",
+      "Browse and install community-built apps + assets like the DOOM WAD",
+      AppIcons::assetLibrary, kScreenAssetLibrary, nullptr,
+      &assetLibraryVisible, nullptr, nullptr},
     {"MATRIX", "Pick a persistent LED matrix animation or app",
      AppIcons::matrixApps, kScreenMatrixApps, nullptr, nullptr, nullptr},
     // {"HAPTICS",     "Preview vibration strength, frequency, and duration",
@@ -254,20 +268,22 @@ static const GridMenuItem kCuratedMenuItems[] = {
      AppIcons::directory, kScreenFiles,       nullptr, nullptr, nullptr},
     {"ANIMATIONS",   "Preview OLED and LED matrix animations",
      AppIcons::animations, kScreenAnimTest,   nullptr, nullptr, nullptr},
-    {"DIAGNOSTICS", "Inspect runtime state, tasks, battery, and memory",
-     AppIcons::about,     kScreenDiagnostics, nullptr, nullptr, nullptr},
-#endif
-
     {"WIFI", "Manage saved networks and connect to the internet",
      AppIcons::wifi,      kScreenWifi,     nullptr, nullptr, nullptr},
     {"FW UPDATE", "Check for and install firmware updates over WiFi",
      AppIcons::firmwareUpdate, kScreenUpdateFirmware, nullptr, nullptr,
      &firmwareUpdateLabel, &firmwareUpdateBadge},
-    {"REGISTRY", "Download games and assets like the DOOM WAD",
-     AppIcons::assetLibrary, kScreenAssetLibrary, nullptr,
-     &assetLibraryVisible, nullptr, nullptr},
+
     {"SETTINGS", "Adjust display, input, power, and haptics",
      AppIcons::settings,  kScreenSettings, nullptr, nullptr, nullptr},
+     {"HELP", "Tips, button shortcuts, and links to the developer docs",
+      AppIcons::docs,      kScreenHelp,         nullptr, nullptr, nullptr},
+     {"SPONSORS", "Thank you to our sponsors!",
+      AppIcons::about,     kScreenAboutSponsors, nullptr, nullptr, nullptr},
+     {"CREDITS", "Meet the crew that built this badge",
+      AppIcons::profile,   kScreenNone,          launchCredits, nullptr, nullptr},
+      {"DIAGNOSTICS", "Inspect runtime state, tasks, battery, and memory",
+        AppIcons::about,     kScreenDiagnostics, nullptr, nullptr, nullptr},
 };
 
 static constexpr size_t kCuratedMenuItemCount =
@@ -413,6 +429,7 @@ static InputTestScreen sInputTest;
 TextInputScreen sTextInput;
 static BadgeInfoViewScreen sBadgeInfoView;
 static AboutSponsorsScreen sAboutSponsors;
+static AboutCreditsScreen sAboutCredits;
 static HelpScreen sHelp;
 static MenuOrderScreen sMenuOrder;
 static WifiScreen sWifi;
@@ -442,11 +459,16 @@ static DoomScreen sDoom;
 //                       infrequently, naturally lives at the bottom)
 static constexpr int16_t kCuratedOrderStride = 10;
 static constexpr int16_t kDynamicDefaultOrderBase = 10000;
-static constexpr int16_t kSettingsAlwaysLastOrder = 30000;
-static constexpr int16_t kWifiAlwaysLastOrder     = 30100;
-static constexpr int16_t kFwUpdateAlwaysLastOrder = 30200;
-static constexpr int16_t kHelpAlwaysLastOrder     = 30300;
-static constexpr int16_t kRegistryAlwaysLastOrder = 30400;
+// "Always-last" tail order, applied unless the user has explicitly
+// reordered an item via MenuOrderScreen. Strict ordering matches the
+// sequence below: utility / config first, then the credit roll.
+static constexpr int16_t kSettingsAlwaysLastOrder       = 30000;
+static constexpr int16_t kWifiAlwaysLastOrder           = 30100;
+static constexpr int16_t kFwUpdateAlwaysLastOrder       = 30200;
+static constexpr int16_t kHelpAlwaysLastOrder           = 30300;
+static constexpr int16_t kCommunityAppsAlwaysLastOrder  = 30400;
+static constexpr int16_t kSponsorsAlwaysLastOrder       = 30500;
+static constexpr int16_t kCreditsAlwaysLastOrder        = 30600;
 
 // Effective order = NVS override → manifest hint → fallback.
 static int16_t resolveItemOrder(const char* label, int16_t fallback) {
@@ -465,11 +487,18 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     GridMenuItem& slot = sMenuItems[cursor];
     slot = kCuratedMenuItems[i];
     // System tiles all pin to the tail in a fixed order
-    // (SETTINGS → WIFI → FW UPDATE → HELP), unless the user has
-    // explicitly reordered any of them via MenuOrderScreen.
+    // (SETTINGS → WIFI → FW UPDATE → HELP → COMMUNITY APPS →
+    // SPONSORS → CREDITS), unless the user has explicitly reordered
+    // any of them via MenuOrderScreen. Sponsors + Credits land at the
+    // very end so the "thank-you" tail of the menu reads as a credit
+    // roll rather than getting buried mid-grid.
     int16_t fallback;
-    if (slot.label && strcmp(slot.label, "REGISTRY") == 0) {
-      fallback = kRegistryAlwaysLastOrder;
+    if (slot.label && strcmp(slot.label, "CREDITS") == 0) {
+      fallback = kCreditsAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "SPONSORS") == 0) {
+      fallback = kSponsorsAlwaysLastOrder;
+    } else if (slot.label && strcmp(slot.label, "COMMUNITY APPS") == 0) {
+      fallback = kCommunityAppsAlwaysLastOrder;
     } else if (slot.label && strcmp(slot.label, "HELP") == 0) {
       fallback = kHelpAlwaysLastOrder;
     } else if (slot.label && strcmp(slot.label, "FW UPDATE") == 0) {
@@ -637,6 +666,7 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   registerScreen(&sStickerPicker);
   registerScreen(&sScalePicker);
   registerScreen(&sAboutSponsors);
+  registerScreen(&sAboutCredits);
   registerScreen(&sHelp);
   registerScreen(&sMenuOrder);
   registerScreen(&sWifi);

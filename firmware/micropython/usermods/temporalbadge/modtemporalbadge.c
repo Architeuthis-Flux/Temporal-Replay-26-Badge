@@ -1139,6 +1139,148 @@ static mp_obj_t temporalbadge_rescan_apps(void) {
 static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_rescan_apps_obj,
                                   temporalbadge_rescan_apps);
 
+// ── badge.kv — NVS-backed key/value store ──────────────────────────────────
+//
+// Survives every flash type (firmware OTA, fatfs.bin reflash, full
+// factory flash). Use this for game saves / scores / user prefs that
+// must persist across reflashes — files on FATFS do NOT survive a
+// `pio run -t uploadfs` rewrite. See firmware/docs/STORAGE-MODEL.md.
+//
+// Type policy (mirrored on the C side):
+//   str      → tag 's', UTF-8 bytes
+//   int      → tag 'i', 8-byte little-endian (signed)
+//   float    → tag 'f', 8-byte little-endian (double)
+//   bytes    → tag 'b', raw payload
+// Other Python types raise TypeError.
+
+#define BADGE_KV_MAX_VALUE 1024
+
+static int badge_kv_dispatch_put(const char *key, mp_obj_t value) {
+    if (mp_obj_is_str(value)) {
+        size_t n = 0;
+        const char *s = mp_obj_str_get_data(value, &n);
+        return temporalbadge_runtime_kv_put(key, 's', (const uint8_t *)s, n);
+    }
+    if (mp_obj_is_type(value, &mp_type_bytes) ||
+        mp_obj_is_type(value, &mp_type_bytearray)) {
+        mp_buffer_info_t bi;
+        mp_get_buffer_raise(value, &bi, MP_BUFFER_READ);
+        return temporalbadge_runtime_kv_put(key, 'b',
+                                             (const uint8_t *)bi.buf, bi.len);
+    }
+    if (mp_obj_is_int(value)) {
+        // int64_t fits a Python small int comfortably; large ints clip.
+        long long v = mp_obj_get_int_truncated(value);
+        uint8_t buf[8];
+        for (int i = 0; i < 8; ++i) buf[i] = (uint8_t)(v >> (8 * i));
+        return temporalbadge_runtime_kv_put(key, 'i', buf, 8);
+    }
+    if (mp_obj_is_float(value)) {
+        double v = mp_obj_get_float(value);
+        uint8_t buf[8];
+        memcpy(buf, &v, 8);
+        return temporalbadge_runtime_kv_put(key, 'f', buf, 8);
+    }
+    return -2;  // unsupported type
+}
+
+static mp_obj_t temporalbadge_kv_put(mp_obj_t key_obj, mp_obj_t value_obj) {
+    const char *key = mp_obj_str_get_str(key_obj);
+    int rc = badge_kv_dispatch_put(key, value_obj);
+    if (rc == -2) {
+        mp_raise_TypeError(MP_ERROR_TEXT("badge.kv_put: value must be str, "
+                                          "bytes, int, or float"));
+    }
+    if (rc < 0) {
+        // Use the MP errno surface; on the embed port the
+        // py/mperrno.h variant is defined to a literal int matching
+        // ESP-IDF's `EIO`. We can't rely on `<errno.h>` symbols here
+        // because the usermod is included before that header gets
+        // pulled in.
+        mp_raise_OSError(5);  // EIO
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(temporalbadge_kv_put_obj,
+                                  temporalbadge_kv_put);
+
+static mp_obj_t temporalbadge_kv_get(size_t n_args, const mp_obj_t *args) {
+    const char *key = mp_obj_str_get_str(args[0]);
+    mp_obj_t default_val = (n_args > 1) ? args[1] : mp_const_none;
+
+    char tag = 0;
+    uint8_t buf[BADGE_KV_MAX_VALUE];
+    int len = temporalbadge_runtime_kv_get(key, &tag, buf, sizeof(buf));
+    if (len < 0) return default_val;
+
+    switch (tag) {
+        case 's':
+            return mp_obj_new_str((const char *)buf, len);
+        case 'b':
+            return mp_obj_new_bytes(buf, len);
+        case 'i': {
+            if (len != 8) return default_val;
+            // Reassemble little-endian signed int64 by going through
+            // an unsigned accumulator and reinterpreting at the end —
+            // this is well-defined and avoids the UB-prone "shift a
+            // negative value" path the obvious code triggers.
+            unsigned long long u = 0;
+            for (int i = 7; i >= 0; --i) {
+                u = (u << 8) | buf[i];
+            }
+            long long v;
+            memcpy(&v, &u, sizeof(v));
+            return mp_obj_new_int_from_ll(v);
+        }
+        case 'f': {
+            if (len != 8) return default_val;
+            double v;
+            memcpy(&v, buf, 8);
+            return mp_obj_new_float(v);
+        }
+        default:
+            return default_val;
+    }
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_kv_get_obj, 1, 2,
+                                            temporalbadge_kv_get);
+
+static mp_obj_t temporalbadge_kv_delete(mp_obj_t key_obj) {
+    const char *key = mp_obj_str_get_str(key_obj);
+    int rc = temporalbadge_runtime_kv_delete(key);
+    return mp_obj_new_bool(rc == 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(temporalbadge_kv_delete_obj,
+                                  temporalbadge_kv_delete);
+
+static mp_obj_t temporalbadge_kv_keys(void) {
+    char buf[1024];
+    int len = temporalbadge_runtime_kv_keys(buf, sizeof(buf));
+    if (len < 0) {
+        return mp_obj_new_list(0, NULL);
+    }
+    // Parse the JSON array we just built (cheap because we control the
+    // format: never any escapes). Yields list[str].
+    mp_obj_t out = mp_obj_new_list(0, NULL);
+    const char *p = buf;
+    while (*p && *p != '[') ++p;
+    if (*p != '[') return out;
+    ++p;
+    while (*p && *p != ']') {
+        while (*p == ',' || *p == ' ') ++p;
+        if (*p != '"') break;
+        ++p;
+        const char *start = p;
+        while (*p && *p != '"') ++p;
+        if (*p != '"') break;
+        mp_obj_list_append(out, mp_obj_new_str(start, p - start));
+        ++p;
+    }
+    return out;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_kv_keys_obj,
+                                  temporalbadge_kv_keys);
+
 // ── exit ────────────────────────────────────────────────────────────────────
 
 static mp_obj_t temporalbadge_exit(void) {
@@ -1301,6 +1443,14 @@ static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
     // Apps registry — refresh the main-menu grid after writing a new
     // /apps/<slug>/main.py from JumperIDE.
     { MP_ROM_QSTR(MP_QSTR_rescan_apps), MP_ROM_PTR(&temporalbadge_rescan_apps_obj) },
+
+    // NVS-backed key/value store. Survives every kind of flash; use
+    // for game saves / scores / user prefs that must persist across
+    // a fatfs.bin reflash. See firmware/docs/STORAGE-MODEL.md.
+    { MP_ROM_QSTR(MP_QSTR_kv_put),    MP_ROM_PTR(&temporalbadge_kv_put_obj) },
+    { MP_ROM_QSTR(MP_QSTR_kv_get),    MP_ROM_PTR(&temporalbadge_kv_get_obj) },
+    { MP_ROM_QSTR(MP_QSTR_kv_delete), MP_ROM_PTR(&temporalbadge_kv_delete_obj) },
+    { MP_ROM_QSTR(MP_QSTR_kv_keys),   MP_ROM_PTR(&temporalbadge_kv_keys_obj) },
 
     // Mouse overlay
     { MP_ROM_QSTR(MP_QSTR_mouse_overlay),    MP_ROM_PTR(&temporalbadge_mouse_overlay_obj) },

@@ -124,6 +124,14 @@ enum SettingIndex : uint8_t {
   // MicroPython) bail immediately. Default 1; effectively forced off
   // when no SSID/password is configured.
   kWifiEnabled,
+
+  // CREDITS launcher backend. 0 = run the native AboutCreditsScreen
+  // (drawXBM directly out of AboutCredits.h, no Python interpreter
+  // overhead). 1 = launch the MicroPython /apps/credits.py companion
+  // (slower per-frame but lives on the editable filesystem so the
+  // bitmap-walk code can be tweaked without reflashing). Both views
+  // render the same headshot blob — see scripts/gen_credit_xbms.py.
+  kCreditsUsePython,
 };
 
 extern const uint8_t kFontFamilyCount;
@@ -261,11 +269,21 @@ class Config {
      const char* otaManifestUrl() const { return otaManifestUrl_; }
      void setOtaManifestUrl(const char* value);
 
-     /// `[ota] asset_registry_url = ...` — JSON file enumerating
-     /// downloadable user assets (DOOM WAD, etc.). Empty disables the
-     /// Asset Library screen.
-     const char* assetRegistryUrl() const;
-     void setAssetRegistryUrl(const char* value);
+     /// `[ota] community_apps_url = ...` — JSON file enumerating
+     /// installable Community Apps + assets (DOOM WAD, etc.). Empty
+     /// disables the Community Apps screen.
+     ///
+     /// The legacy `asset_registry_url` setting is read transparently
+     /// (and written into `communityAppsUrl_`) so settings.txt files
+     /// from older builds keep working unmodified.
+     const char* communityAppsUrl() const;
+     void setCommunityAppsUrl(const char* value);
+
+     // Backwards-compat aliases. Existing call sites (BadgeConfig.cpp,
+     // GUI.cpp, DoomScreen.cpp, AssetRegistry.cpp) still call these;
+     // they forward to the new community_apps_url field.
+     const char* assetRegistryUrl() const { return communityAppsUrl(); }
+     void setAssetRegistryUrl(const char* value) { setCommunityAppsUrl(value); }
 
    private:
     int32_t values_[kMaxSettings];
@@ -282,8 +300,19 @@ class Config {
      char timezone_[64] = "PST8PDT,M3.2.0,M11.1.0";
      char nametagSetting_[64] = "default";
      char otaManifestUrl_[160] = "";
-     char assetRegistryUrl_[160] =
-         "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/registry.json";
+     // The repo-root /registry/community_apps.json file is the v2
+     // Community Apps registry. The previous /registry/registry.json
+     // (v1) is kept in-tree for backwards compatibility; older firmware
+     // out in the field still hits it via its own baked default URL.
+     //
+     // Why raw.githubusercontent.com and not jsDelivr? The repo (with
+     // its MicroPython submodule + DOOM WAD + zigmoji frames) is over
+     // jsDelivr's free 50 MB per-package limit, so jsdelivr replies
+     // with a 403 "Package size exceeded" page. GitHub raw has a
+     // 60 req/hr unauthenticated rate limit but the badge only fetches
+     // once a day so this is fine.
+     char communityAppsUrl_[160] =
+         "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/community_apps.json";
 
      uint32_t lastFileSize_ = 0;
      uint16_t lastFileDate_ = 0;

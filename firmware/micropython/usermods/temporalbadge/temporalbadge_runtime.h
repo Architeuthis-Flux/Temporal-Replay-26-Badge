@@ -139,6 +139,36 @@ const char *temporalbadge_runtime_boops(void);
 // the menu after writing a new script without rebooting.
 int temporalbadge_runtime_rescan_apps(void);
 
+// ── NVS-backed key/value store (badge.kv_*) ────────────────────────────
+//
+// Survives every flash type (firmware reflash, fatfs.bin reflash, full
+// esptool batch). Use this for game saves, scores, user prefs that
+// must persist across reflashes — files on FATFS do NOT survive a
+// fatfs.bin reflash. See firmware/docs/STORAGE-MODEL.md.
+//
+// Type tags (one ASCII byte prepended to the stored blob):
+//   's' UTF-8 string (no NUL terminator stored)
+//   'i' signed 64-bit integer (little-endian, 8 bytes)
+//   'f' double  (little-endian, 8 bytes)
+//   'b' raw bytes
+//
+// kv_put: returns 0 on success, -1 on failure (key invalid, NVS full,
+//   etc.). `type` is the ASCII tag; `data`/`len` is the payload (NOT
+//   including the tag byte — the runtime prepends it).
+// kv_get: returns payload length on success (without tag), -1 on
+//   missing/error. `*out_type` receives the tag byte.
+// kv_delete: returns 0 on success, -1 if key absent.
+// kv_keys: writes a JSON array of key strings into `buf`; returns the
+//   byte length written (excluding NUL), -1 on error.
+//
+// Limits: 32 chars per key, 1 KB per value, 64 keys total.
+int  temporalbadge_runtime_kv_put(const char *key, char type,
+                                  const uint8_t *data, size_t len);
+int  temporalbadge_runtime_kv_get(const char *key, char *out_type,
+                                  uint8_t *buf, size_t buf_cap);
+int  temporalbadge_runtime_kv_delete(const char *key);
+int  temporalbadge_runtime_kv_keys(char *buf, size_t buf_cap);
+
 #if defined(BADGE_ENABLE_MP_DEV)
 // Dev/test harness — called from MicroPython as badge.dev(*string_args).
 const char *temporalbadge_runtime_dev(int argc, const char **argv);

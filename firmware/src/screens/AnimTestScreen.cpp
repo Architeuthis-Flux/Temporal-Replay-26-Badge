@@ -137,6 +137,15 @@ void copyTailName(const char* path, char* out, size_t cap) {
   out[cap - 1] = '\0';
 }
 
+// Credit `.bin` body bytes are MSB-first (bit 7 = left); `oled::drawXBM`
+// expects LSB-first — same fix as `scripts/gen_credit_xbms.py`.
+static inline uint8_t creditBinRev8(uint8_t b) {
+  b = static_cast<uint8_t>(((b & 0xF0u) >> 4) | ((b & 0x0Fu) << 4));
+  b = static_cast<uint8_t>(((b & 0xCCu) >> 2) | ((b & 0x33u) << 2));
+  b = static_cast<uint8_t>(((b & 0xAAu) >> 1) | ((b & 0x55u) << 1));
+  return b;
+}
+
 }  // namespace
 
 void AnimTestScreen::loadFB(const char* path) {
@@ -255,6 +264,64 @@ void AnimTestScreen::loadXBM(const char* path) {
                 (unsigned)imgW, (unsigned)imgH);
 }
 
+bool AnimTestScreen::loadCreditBin(const char* path) {
+  freeExternal();
+  if (!path || !path[0]) return false;
+  copyTailName(path, extName_, sizeof(extName_));
+  char* buf = nullptr;
+  size_t len = 0;
+  if (!Filesystem::readFileAlloc(path, &buf, &len, 64 * 1024) || len < 6) {
+    extLoadError_ = true;
+    return false;
+  }
+  uint16_t imgW =
+      static_cast<uint16_t>(static_cast<uint8_t>(buf[0])) |
+      (static_cast<uint16_t>(static_cast<uint8_t>(buf[1])) << 8);
+  uint16_t imgH =
+      static_cast<uint16_t>(static_cast<uint8_t>(buf[2])) |
+      (static_cast<uint16_t>(static_cast<uint8_t>(buf[3])) << 8);
+  if (imgW == 0 || imgH == 0 || imgW > 1024 || imgH > 1024) {
+    free(buf);
+    extLoadError_ = true;
+    return false;
+  }
+  uint32_t frameBytes =
+      static_cast<uint32_t>((imgW + 7) / 8) * static_cast<uint32_t>(imgH);
+  if (frameBytes == 0) {
+    free(buf);
+    extLoadError_ = true;
+    return false;
+  }
+  size_t bodyLen = len - 4;
+  if (bodyLen < frameBytes || bodyLen % frameBytes != 0) {
+    free(buf);
+    extLoadError_ = true;
+    return false;
+  }
+  uint32_t frames = static_cast<uint32_t>(bodyLen / frameBytes);
+  if (frames > 32) frames = 32;
+  uint32_t need = frameBytes * frames;
+  extBits_ = static_cast<uint8_t*>(BadgeMemory::allocPreferPsram(need));
+  if (!extBits_) {
+    free(buf);
+    extLoadError_ = true;
+    return false;
+  }
+  const uint8_t* src = reinterpret_cast<const uint8_t*>(buf + 4);
+  for (uint32_t i = 0; i < need; i++) {
+    extBits_[i] = creditBinRev8(src[i]);
+  }
+  free(buf);
+  extW_ = imgW;
+  extH_ = imgH;
+  extFrameBytes_ = frameBytes;
+  extFrameCount_ = static_cast<uint8_t>(frames);
+  extFormat_ = ExtFormat::kXBM;
+  Serial.printf("[AnimTest] loadCreditBin %s: %ux%u %u frame(s) (bin)\n", path,
+                (unsigned)imgW, (unsigned)imgH, (unsigned)frames);
+  return true;
+}
+
 // ─── Render ─────────────────────────────────────────────────────────────────
 
 void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
@@ -320,9 +387,11 @@ void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
 
     OLEDLayout::drawGameFooter(d);
     if (extFrameCount_ > 1) {
-      OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr);
+      OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr,
+                                         0, /*leftAlign=*/true);
     }
-    OLEDLayout::drawFooterActions(d, nullptr, nullptr, "esc", nullptr);
+    OLEDLayout::drawFooterActions(d, nullptr, nullptr, "esc", nullptr,
+                                  0, /*leftAlign=*/true);
 
     uint32_t now = millis();
     if (extFrameCount_ > 1 && now - lastFrameMs_ >= frameDelayMs_) {
@@ -364,8 +433,10 @@ void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
   d.drawStr(0, 32, buf);
 
   OLEDLayout::drawGameFooter(d);
-  OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr);
-  OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "next");
+  OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr,
+                                     0, /*leftAlign=*/true);
+  OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "next",
+                                0, /*leftAlign=*/true);
 
   uint32_t now = millis();
   uint16_t delay = (img.frameTimes && frameIdx_ < img.frameCount)

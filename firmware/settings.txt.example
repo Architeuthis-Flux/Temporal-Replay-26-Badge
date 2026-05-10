@@ -28,12 +28,14 @@ timezone = PST8PDT,M3.2.0,M11.1.0
 # into the build (Architeuthis-Flux/Temporal-Replay-26-Badge releases).
 manifest_url =
 
-# Asset Library registry. A JSON file enumerating user-installable
-# files (DOOM WAD, sound packs, etc.). The badge fetches this once a
-# day and lets users browse / install entries from the Asset Library
-# screen. See firmware/docs/OTA-MAINTAINER.md for the schema.
+# Community Apps registry. A JSON file enumerating user-installable
+# apps + assets (DOOM WAD, sound packs, etc.). The badge fetches this
+# once a day and lets users browse / install entries from the
+# Community Apps screen. See firmware/docs/OTA-MAINTAINER.md for the
+# schema. The legacy `asset_registry_url` key is still accepted for
+# backwards compatibility.
 # Default: the registry shipped alongside the firmware repo.
-asset_registry_url = https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/registry.json
+community_apps_url = https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/community_apps.json
 
 [wifi]
 # No badge backend is configured or polled by firmware.

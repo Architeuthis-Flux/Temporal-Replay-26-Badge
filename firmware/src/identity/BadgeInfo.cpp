@@ -3,6 +3,7 @@
 #include "../infra/Filesystem.h"
 
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <cstring>
 
 extern char badgeName[];
@@ -16,6 +17,15 @@ static const char* TAG = "BadgeInfo";
 static constexpr size_t kInfoMaxBytes = 2048;
 static constexpr const char* kDefaultNote =
     "Edit this file over USB. See https://badge.temporal.io for update instructions.";
+
+// NVS storage layout: namespace=badge_info, key=json holds a UTF-8
+// JSON blob whose schema matches the historical /badgeInfo.json file.
+// Migrating BadgeInfo into NVS lets the FATFS partition be reformatted
+// (e.g. by a fatfs.bin re-flash from flash_loop_gui2 / Ignition)
+// without losing the operator's name/title/contact info — see
+// firmware/docs/STORAGE-MODEL.md for the full survival matrix.
+static constexpr const char* kNvsNamespace = "badge_info";
+static constexpr const char* kNvsKey = "json";
 
 char s_email[64] = "";
 char s_website[80] = "";
@@ -35,38 +45,11 @@ void ensureNote(BadgeInfo::Fields& f) {
     if (f.note[0] == '\0') safeCopy(f.note, sizeof(f.note), kDefaultNote);
 }
 
-}  // namespace
-
-namespace BadgeInfo {
-
-void populateDefaults(Fields& out, const uint8_t* /*uidBytes*/) {
-    memset(&out, 0, sizeof(out));
-    safeCopy(out.name, sizeof(out.name), "Ziggy");
-    safeCopy(out.title, sizeof(out.title), "Chief Tartigrade");
-    safeCopy(out.company, sizeof(out.company), "Temporal");
-    safeCopy(out.attendeeType, sizeof(out.attendeeType), "Dev");
-    safeCopy(out.note, sizeof(out.note), kDefaultNote);
-
-    Serial.printf("[%s] default identity: %s / %s / %s\n",
-                  TAG, out.name, out.title, out.company);
-}
-
-bool loadFromFile(Fields& out) {
-    memset(&out, 0, sizeof(out));
-    Filesystem::removeFile(kLegacyInfoPath);
-
-    char* buf = nullptr;
-    size_t len = 0;
-    if (!Filesystem::readFileAlloc(kInfoPath, &buf, &len, kInfoMaxBytes)) {
-        return false;
-    }
-
+bool parseJsonInto(BadgeInfo::Fields& out, const char* buf, size_t len) {
     StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, buf, len);
-    free(buf);
     if (err) {
         Serial.printf("[%s] JSON parse failed: %s\n", TAG, err.c_str());
-        Filesystem::removeFile(kInfoPath);
         return false;
     }
 
@@ -89,17 +72,11 @@ bool loadFromFile(Fields& out) {
     safeCopy(out.note, sizeof(out.note),
              doc["note"] | doc["instructions"] | "");
     ensureNote(out);
-
-    const bool matched =
-        out.name[0] || out.title[0] || out.company[0] || out.email[0] ||
-        out.website[0] || out.phone[0] || out.bio[0];
-    Serial.printf("[%s] loaded %s (%u bytes)\n", TAG, kInfoPath,
-                  static_cast<unsigned>(len));
-    return matched;
+    return true;
 }
 
-bool saveToFile(const Fields& f) {
-    Fields copy = f;
+size_t serializeFields(const BadgeInfo::Fields& f, char* buf, size_t cap) {
+    BadgeInfo::Fields copy = f;
     ensureNote(copy);
 
     StaticJsonDocument<1024> doc;
@@ -116,19 +93,125 @@ bool saveToFile(const Fields& f) {
     contact["phone"] = copy.phone;
     contact["bio"] = copy.bio;
 
+    return serializeJsonPretty(doc, buf, cap);
+}
+
+bool loadFromNvs(BadgeInfo::Fields& out) {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, true)) return false;
+    if (!p.isKey(kNvsKey)) {
+        p.end();
+        return false;
+    }
+    size_t len = p.getBytesLength(kNvsKey);
+    if (len == 0 || len > kInfoMaxBytes) {
+        p.end();
+        return false;
+    }
+    char* buf = static_cast<char*>(malloc(len + 1));
+    if (!buf) {
+        p.end();
+        return false;
+    }
+    size_t got = p.getBytes(kNvsKey, buf, len);
+    p.end();
+    if (got != len) {
+        free(buf);
+        return false;
+    }
+    buf[len] = '\0';
+    bool ok = parseJsonInto(out, buf, len);
+    free(buf);
+    if (ok) {
+        Serial.printf("[%s] loaded from NVS (%u bytes)\n", TAG,
+                      static_cast<unsigned>(len));
+    }
+    return ok;
+}
+
+bool saveToNvs(const BadgeInfo::Fields& f) {
     char buf[kInfoMaxBytes];
-    size_t len = serializeJsonPretty(doc, buf, sizeof(buf));
+    size_t len = serializeFields(f, buf, sizeof(buf));
     if (len == 0 || len >= sizeof(buf)) {
         Serial.printf("[%s] save skipped: JSON buffer too small\n", TAG);
         return false;
     }
+    Preferences p;
+    if (!p.begin(kNvsNamespace, false)) {
+        Serial.printf("[%s] NVS open failed\n", TAG);
+        return false;
+    }
+    size_t wrote = p.putBytes(kNvsKey, buf, len);
+    p.end();
+    Serial.printf("[%s] %s NVS (%u bytes)\n", TAG,
+                  (wrote == len) ? "saved" : "FAILED save",
+                  static_cast<unsigned>(len));
+    return wrote == len;
+}
 
+}  // namespace
+
+namespace BadgeInfo {
+
+void populateDefaults(Fields& out, const uint8_t* /*uidBytes*/) {
+    memset(&out, 0, sizeof(out));
+    safeCopy(out.name, sizeof(out.name), "Ziggy");
+    safeCopy(out.title, sizeof(out.title), "Chief Tartigrade");
+    safeCopy(out.company, sizeof(out.company), "Temporal");
+    safeCopy(out.attendeeType, sizeof(out.attendeeType), "Dev");
+    safeCopy(out.note, sizeof(out.note), kDefaultNote);
+
+    Serial.printf("[%s] default identity: %s / %s / %s\n",
+                  TAG, out.name, out.title, out.company);
+}
+
+bool loadFromFile(Fields& out) {
+    // Despite the name (kept for source-compat with all the old call
+    // sites), the canonical store is now NVS. We fall back to the old
+    // /badgeInfo.json file for one boot to migrate any existing badge,
+    // then nuke both legacy files so a future fatfs.bin reflash can't
+    // resurrect stale data.
+    memset(&out, 0, sizeof(out));
+
+    if (loadFromNvs(out)) {
+        // Drop legacy files defensively in case the user re-uploaded
+        // an old image and we just promoted NVS to canonical.
+        Filesystem::removeFile(kLegacyInfoPath);
+        Filesystem::removeFile(kInfoPath);
+        return true;
+    }
+
+    // Migration path: read the old file once, mirror it into NVS,
+    // then delete both file copies.
     Filesystem::removeFile(kLegacyInfoPath);
-    const bool ok = Filesystem::writeFileAtomic(kInfoPath, buf, len);
-    Serial.printf("[%s] %s %s (%u bytes)\n", TAG,
-                  ok ? "saved" : "failed saving",
-                  kInfoPath, static_cast<unsigned>(len));
-    return ok;
+    char* buf = nullptr;
+    size_t len = 0;
+    if (!Filesystem::readFileAlloc(kInfoPath, &buf, &len, kInfoMaxBytes)) {
+        return false;
+    }
+    bool parsed = parseJsonInto(out, buf, len);
+    free(buf);
+    if (!parsed) {
+        Filesystem::removeFile(kInfoPath);
+        return false;
+    }
+
+    Serial.printf("[%s] migrating %s -> NVS\n", TAG, kInfoPath);
+    saveToNvs(out);
+    Filesystem::removeFile(kInfoPath);
+
+    const bool matched =
+        out.name[0] || out.title[0] || out.company[0] || out.email[0] ||
+        out.website[0] || out.phone[0] || out.bio[0];
+    return matched;
+}
+
+bool saveToFile(const Fields& f) {
+    // Source-compat name; goes to NVS. Belt-and-braces remove any
+    // straggling legacy file so callers don't see a half-migrated state.
+    Filesystem::removeFile(kLegacyInfoPath);
+    Filesystem::removeFile(kInfoPath);
+    return saveToNvs(f);
 }
 
 bool clear() {

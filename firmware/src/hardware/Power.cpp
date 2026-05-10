@@ -302,8 +302,7 @@ void SleepService::service() {
   }
 
   // Force deep sleep: hold UP for 5 seconds (skip if USB connected for dev safety)
-  if (inputs_ && inputs_->heldMs(0) >= Power::Policy::kForceDeepSleepHoldMs
-      && !isUsbConnected()) {
+  if (inputs_ && inputs_->heldMs(0) >= Power::Policy::kForceDeepSleepHoldMs) {
     ESP_LOGI("POWER","Force deep sleep (UP held 5s)\n");
     enterDeepSleep();
     return;

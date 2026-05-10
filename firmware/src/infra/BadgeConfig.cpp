@@ -124,7 +124,12 @@ int8_t fontFamilyFromName(const char* name) {
      // Networking master switch. 0 = WiFi never auto-connects and explicit
      // connect attempts (incl. MicroPython badge.http_get/post) bail.
      {"wifi_en",     "WiFi",         1,    0,        1,      1},
- };
+
+     // CREDITS launcher backend. 0 = native AboutCreditsScreen,
+     // 1 = MicroPython /apps/credits.py. Default 0 because the
+     // native path has no Python warm-up cost on entry.
+     {"creds_py",    "Credits Py",   0,    0,        1,      1},
+};
   const uint8_t Config::kCount = sizeof(Config::kDefs) / sizeof(Config::kDefs[0]);
 
   // Guardrail: adding a setting without resizing values_[] corrupts
@@ -638,38 +643,45 @@ int8_t fontFamilyFromName(const char* name) {
     otaManifestUrl_[sizeof(otaManifestUrl_) - 1] = '\0';
   }
 
-  // Belt-and-suspenders: if for any reason the legacy raw.gh URL is
-  // sitting in assetRegistryUrl_ at fetch time (e.g. a path that wrote
-  // the field directly, or a settings.txt parse race), patch it on
-  // every read. The cost is one strstr per access; AssetRegistry only
-  // reads at refresh time so this is not hot.
-  const char* Config::assetRegistryUrl() const {
-    static constexpr const char kJsdelivr[] =
-        "https://cdn.jsdelivr.net/gh/Architeuthis-Flux/"
-        "Temporal-Replay-26-Badge@main/registry/registry.json";
-    if (strstr(assetRegistryUrl_, "raw.githubusercontent.com") &&
-        strstr(assetRegistryUrl_, "Temporal-Replay-26-Badge") &&
-        strstr(assetRegistryUrl_, "registry.json")) {
-      return kJsdelivr;
+  // Belt-and-suspenders: if a stale URL ends up in communityAppsUrl_
+  // (a settings.txt write that predates the v1->v2 schema, a jsDelivr
+  // URL that 403s past the 50 MB package limit, or a partial parse),
+  // patch it on every read. The cost is a few strstr calls per
+  // access; AssetRegistry only reads at refresh time so this is not
+  // hot.
+  const char* Config::communityAppsUrl() const {
+    static constexpr const char kV2Url[] =
+        "https://raw.githubusercontent.com/Architeuthis-Flux/"
+        "Temporal-Replay-26-Badge/main/registry/community_apps.json";
+    // Auto-upgrade jsDelivr URLs (any path) to GitHub raw — the repo
+    // is over jsDelivr's 50 MB free-tier limit and the CDN replies
+    // with a 403 "Package size exceeded" HTML page that AssetRegistry
+    // can't parse.
+    if (strstr(communityAppsUrl_, "cdn.jsdelivr.net")) {
+      return kV2Url;
     }
-    return assetRegistryUrl_;
+    // Auto-upgrade legacy v1 URL to v2.
+    if (strstr(communityAppsUrl_, "Temporal-Replay-26-Badge") &&
+        strstr(communityAppsUrl_, "/registry/registry.json")) {
+      return kV2Url;
+    }
+    return communityAppsUrl_;
   }
 
   // TEMPORARY: ignore whatever is in settings.txt and always use the
   // baked-in default. The settings.txt parser was silently truncating
   // long URLs (line buffer was 80 chars), and we don't want stale
-  // values in NVS/disk fighting us while the LIBRARY screen is still
-  // being stabilised. Pinning to the firmware-baked URL means every
-  // boot starts from a known-good state. Restore the file-driven
-  // override later by removing the `(void)value;` short-circuit.
-  void Config::setAssetRegistryUrl(const char* value) {
-    static constexpr const char kDefaultAssetRegistryUrl[] =
-        "https://cdn.jsdelivr.net/gh/Architeuthis-Flux/"
-        "Temporal-Replay-26-Badge@main/registry/registry.json";
+  // values in NVS/disk fighting us while the Community Apps screen
+  // is still being stabilised. Pinning to the firmware-baked URL
+  // means every boot starts from a known-good state.
+  void Config::setCommunityAppsUrl(const char* value) {
+    static constexpr const char kDefaultCommunityAppsUrl[] =
+        "https://raw.githubusercontent.com/Architeuthis-Flux/"
+        "Temporal-Replay-26-Badge/main/registry/community_apps.json";
     (void)value;
-    strncpy(assetRegistryUrl_, kDefaultAssetRegistryUrl,
-            sizeof(assetRegistryUrl_) - 1);
-    assetRegistryUrl_[sizeof(assetRegistryUrl_) - 1] = '\0';
+    strncpy(communityAppsUrl_, kDefaultCommunityAppsUrl,
+            sizeof(communityAppsUrl_) - 1);
+    communityAppsUrl_[sizeof(communityAppsUrl_) - 1] = '\0';
   }
 
   void Config::setNametagSetting(const char* value) {
@@ -900,8 +912,12 @@ int8_t fontFamilyFromName(const char* name) {
         if (strcmp(key, "manifest_url") == 0) {
           setOtaManifestUrl(val);
           matched++;
-        } else if (strcmp(key, "asset_registry_url") == 0) {
-          setAssetRegistryUrl(val);
+        } else if (strcmp(key, "community_apps_url") == 0 ||
+                   strcmp(key, "asset_registry_url") == 0) {
+          // Legacy `asset_registry_url` is read transparently so old
+          // settings.txt files keep working — both names map to the
+          // same field.
+          setCommunityAppsUrl(val);
           matched++;
         }
         continue;
@@ -1085,11 +1101,13 @@ int8_t fontFamilyFromName(const char* name) {
         "# endpoint baked into the build. Set to override (advanced).\n");
     pos += snprintf(buf + pos, room(), "manifest_url = %s\n", otaManifestUrl_);
     pos += snprintf(buf + pos, room(),
-        "# Asset Library: URL of a registry.json describing downloadable\n");
+        "# Community Apps: URL of a registry JSON describing installable\n");
     pos += snprintf(buf + pos, room(),
-        "# files (DOOM WAD, etc.). Empty disables the Library screen.\n");
+        "# apps + assets (DOOM WAD, etc.). Empty disables the Community\n");
     pos += snprintf(buf + pos, room(),
-        "asset_registry_url = %s\n\n", assetRegistryUrl_);
+        "# Apps screen. (Legacy alias: asset_registry_url.)\n");
+    pos += snprintf(buf + pos, room(),
+        "community_apps_url = %s\n\n", communityAppsUrl_);
 
     pos += snprintf(buf + pos, room(), "[wifi]\n");
     pos += snprintf(buf + pos, room(), "# Master WiFi enable. When 0, the badge never connects on boot and\n");
@@ -1185,9 +1203,9 @@ int8_t fontFamilyFromName(const char* name) {
       applyTimezone();
       Serial.println("Config: loaded from settings.txt");
       Serial.printf(
-          "Config: asset_registry_url = %s (firmware default; "
+          "Config: community_apps_url = %s (firmware default; "
           "settings.txt value ignored for now)\n",
-          assetRegistryUrl_);
+          communityAppsUrl_);
       if (hadLegacyNetworkSecrets) {
         Serial.println("Config: removing legacy network secrets from settings.txt");
         saveToFile();

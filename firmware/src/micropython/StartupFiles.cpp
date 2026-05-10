@@ -289,15 +289,13 @@ void provisionStartupFiles(bool forceSync) {
         }
     }
 
-    // doom1.wad is shipped via `pio run -t uploadfs` (it's too large to
-    // embed in the firmware image alongside the factory app), so it
-    // never appears in kStartupFiles and we can't recreate it here.
-    // Warn loudly if it's missing so the operator knows to re-uploadfs.
-    if (!fileExists(fs, "/doom1.wad")) {
-        Serial.println("[startup] WARNING: /doom1.wad missing — Doom will not launch. "
-                       "Re-run `pio run -e <env> -t uploadfs` to restore it.");
-    }
-
+    // Most user-facing files (apps, docs, images, doom1.wad) are
+    // expected-missing on a freshly-flashed badge that hasn't run
+    // `pio run -t uploadfs` / Community Apps install / JumperIDE sync
+    // yet. Suppressing per-file warnings here keeps the boot log
+    // useful for actual problems. Operators can run
+    //     python3 firmware/scripts/badge_sync.py diff $PORT
+    // for a full diff against firmware/data/manifest.json.
     if (created > 0 || updated > 0) {
         Serial.printf("[startup] Provisioned: %d created, %d updated, %d unchanged\n",
                       created, updated, skipped);

@@ -167,6 +167,10 @@ class FlashStation:
         self.running = True
         self.enabled = True
         self.worker: threading.Thread | None = None
+        # `--post-sync` toggles the optional badge_sync run after
+        # firmware/fatfs write completes. PortManager copies its own
+        # `post_sync` flag onto each new station before .start().
+        self.post_sync = False
 
     @property
     def tag(self) -> str:
@@ -209,6 +213,36 @@ class FlashStation:
             s.close()
         except Exception as e:
             self.log(f"  DTR/RTS toggle failed: {e}", DIM_AMBER)
+
+    def _run_post_sync(self) -> None:
+        """Optional post-flash diff sync against firmware/data/.
+
+        Lets the operator reflash firmware on a badge that already has
+        local files without wiping them — anything still missing/stale
+        gets pushed via badge_sync's MicroPython raw-REPL transport."""
+        try:
+            sys.path.insert(0, os.path.join(SCRIPT_DIR, "scripts"))
+            import badge_sync  # noqa: WPS433 — late import keeps GUI startup fast
+        except Exception as e:
+            self.log(f"  POST-SYNC SKIPPED (import failed: {e})", DIM_AMBER)
+            return
+        data_dir = os.path.join(SCRIPT_DIR, "data")
+        # Wait for badge to enumerate its REPL banner.
+        time.sleep(2.0)
+        self.log("  POST-FLASH SYNC ...", DIM_GREEN)
+        try:
+            res = badge_sync.sync(self.port, data_dir,
+                                  push_missing=True, push_stale=True,
+                                  clear_extras=False, timeout=10.0)
+            self.log(
+                f"  SYNC: pushed={len(res.pushed)} skipped={len(res.skipped)} "
+                f"errors={len(res.errors)}",
+                GREEN if res.ok else AMBER,
+            )
+            for err in res.errors[:3]:
+                self.log(f"    ! {err}", DIM_AMBER)
+        except Exception as e:
+            self.log(f"  POST-SYNC FAILED: {e}", DIM_AMBER)
 
     def run_cmd(self, cmd: list[str], label: str) -> bool:
         self.log(f"> {' '.join(cmd)}", DIM_GREEN)
@@ -336,6 +370,15 @@ class FlashStation:
                 if self.port_exists():
                     self.dtr_rts_reset(into_download=False)
 
+                # Optional post-flash filesystem sync. The fatfs.bin
+                # write above is the canonical baseline, but badges
+                # we're upgrading (rather than factory-flashing) may
+                # already have local files — `--post-sync` runs the
+                # diff engine to push anything still missing/stale
+                # without wiping user uploads. Default: off.
+                if getattr(self, "post_sync", False) and self.port_exists():
+                    self._run_post_sync()
+
                 self.state = S_SUCCESS
                 self.log(f"✓ #{self.count} PROGRAMMING COMPLETE", GREEN)
                 try:
@@ -363,7 +406,8 @@ class PortManager:
     creates FlashStation instances for them on the fly."""
 
     def __init__(self, env: str, shared_log: SharedLog,
-                 build_done: threading.Event, build_ok: list):
+                 build_done: threading.Event, build_ok: list,
+                 post_sync: bool = False):
         self.env = env
         self.shared_log = shared_log
         self.build_done = build_done
@@ -372,6 +416,7 @@ class PortManager:
         self.known_ports: set[str] = set()
         self.lock = threading.Lock()
         self.running = True
+        self.post_sync = post_sync
 
     def seed_ports(self, ports: list[str]):
         """Register initial ports (from CLI args) before scanning."""
@@ -385,6 +430,7 @@ class PortManager:
             self.known_ports.add(port)
             idx = len(self.stations)
             s = FlashStation(self.env, port, idx, self.shared_log)
+            s.post_sync = self.post_sync
             self.stations.append(s)
             self.shared_log.add(
                 f"▶ NEW PORT DETECTED: {port}", AMBER)
@@ -453,6 +499,11 @@ def main():
                         help="PlatformIO env (default: echo-dev)")
     parser.add_argument("--port", nargs="+", default=None,
                         help="Serial port(s) to flash (default: auto-detect all)")
+    parser.add_argument("--post-sync", action="store_true",
+                        help="After firmware+fatfs.bin write, run "
+                             "badge_sync to push anything still missing/stale "
+                             "via MicroPython raw REPL. Useful for upgrade "
+                             "flashes where you want to preserve user files.")
     args = parser.parse_args()
 
     pio_path = os.path.expanduser("~/.platformio/penv/bin/pio")
@@ -569,7 +620,8 @@ def main():
     build_thread.start()
 
     # ── Port manager (auto-discovers new ports) ───────────────────────────
-    port_mgr = PortManager(env, shared_log, build_done, build_ok)
+    port_mgr = PortManager(env, shared_log, build_done, build_ok,
+                           post_sync=args.post_sync)
     port_mgr.seed_ports(ports)
 
     def start_stations():

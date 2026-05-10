@@ -1,17 +1,46 @@
 #!/usr/bin/env python3
 """
-Generate StartupFilesData.h from initial_filesystem/
+Generate StartupFilesData.h + manifests from firmware/initial_filesystem/
 
-Scans the initial_filesystem/ directory tree and embeds every file as a C
-constant (raw string literal for text, uint8_t array for binary).  Each file
-gets an FNV-1a hash and a hash-history array so the runtime provisioning can
-detect user-modified files vs. old firmware defaults.
+`firmware/initial_filesystem/` is the **canonical source** of every
+file the badge ships with. It's hand-edited and tracked in git.
+
+`firmware/data/` is the **build mirror** PlatformIO's uploadfs reads
+from — this script keeps it byte-identical to initial_filesystem/.
+data/ is gitignored; never edit it by hand.
+
+Outputs from a single walk:
+
+1) firmware/src/micropython/StartupFilesData.h
+   The "survival floor" — only files under BAKE_DIRS ({'lib','matrixApps'})
+   are embedded as C string literals into app0. Everything else lives
+   on FATFS and is shipped via fatfs.bin / Community Apps / badge_sync.
+
+2) firmware/data/  (mirror of firmware/initial_filesystem/)
+   PlatformIO's `pio run -t buildfs` / `uploadfs` consumes this.
+
+3) firmware/initial_filesystem/manifest.json
+   Full filesystem manifest (every file, with sha256 + fnv1a32 + size +
+   raw URL). Consumed by:
+     - badge_sync.py (USB raw-REPL diff sync)
+     - JumperIDE "Sync Filesystem" button
+
+4) registry/community_apps.json  (at repo root, NOT under firmware/)
+   The Community Apps registry consumed by the on-badge screen.
+   Each kind:"app" entry has its full file list inlined under "files":
+   [...] — no separate per-app manifest.json needed.
 
 Usage:
-  - Automatic: listed in platformio.ini as  extra_scripts = pre:scripts/generate_startup_files.py
+  - Automatic: listed in platformio.ini as
+      extra_scripts = pre:scripts/generate_startup_files.py
   - Manual:    python3 scripts/generate_startup_files.py
+
+The script is idempotent: if every output file already has identical
+content it skips the write so downstream `make` / SCons don't see a
+spurious change.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -20,10 +49,36 @@ from pathlib import Path
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-BINARY_EXTENSIONS = {'.bin', '.bmp', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.raw', '.pbm', '.xbm', '.fb'}
+# Only files inside these top-level directories are baked into app0. The
+# rest of firmware/data/ is shipped via fatfs.bin (factory flash) or
+# Community Apps / JumperIDE sync.
+BAKE_DIRS = {'lib', 'matrixApps'}
+
+# Top-level dirs whose loose files become kind:"file" registry entries.
+# Subdirs of /apps/ become kind:"app" registry entries (one per folder).
+LOOSE_FILE_DIRS = {'docs', 'images', 'messages'}
+
+# Files at the data/ root that should also become kind:"file" entries.
+LOOSE_ROOT_FILES = {'API_REFERENCE.md', 'messages.json'}
+
+# Skip lists (build artefacts, editor noise).
+BINARY_EXTENSIONS = {
+    '.bin', '.bmp', '.png', '.jpg', '.jpeg', '.gif', '.ico',
+    '.raw', '.pbm', '.xbm', '.fb',
+}
 PROTECTED_FILENAMES = set()
-SKIP_DIR_NAMES = {'__pycache__'}
+SKIP_DIR_NAMES = {'__pycache__', 'tests', 'registry'}
 SKIP_EXTENSIONS = {'.pyc', '.pyo', '.wad'}
+# tests/ is dev-only (uploadfs picks it up but we don't bake or distribute it).
+# registry/ is generator output; never recurse into it.
+
+# Default raw-file URL pattern. Override with TEMPORAL_BADGE_RAW_BASE env var
+# if you fork the repo. Points at firmware/initial_filesystem/ since that's
+# the canonical committed source — firmware/data/ is gitignored.
+DEFAULT_RAW_BASE = (
+    "https://raw.githubusercontent.com/"
+    "Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem"
+)
 
 
 # ── FNV-1a (must match the C++ implementation) ──────────────────────────────
@@ -92,96 +147,91 @@ def rel_path_to_var(rel_path: str) -> str:
 
 # ── Timestamp-based skip ────────────────────────────────────────────────────
 
-def needs_regeneration(initial_fs_dir: Path, output_file: Path, script_file: Path = None) -> bool:
+def needs_regeneration(data_dir: Path, output_file: Path,
+                       script_file: Path = None) -> bool:
     if not output_file.exists():
         return True
     out_mtime = output_file.stat().st_mtime
     if script_file is not None and script_file.exists() and script_file.stat().st_mtime > out_mtime:
         return True
-    for p in initial_fs_dir.rglob('*'):
+    for p in data_dir.rglob('*'):
+        if any(part in SKIP_DIR_NAMES for part in p.relative_to(data_dir).parts):
+            continue
+        if p.suffix.lower() in SKIP_EXTENSIONS:
+            continue
         if p.stat().st_mtime > out_mtime:
             return True
     return False
 
 
-# ── Main generation ─────────────────────────────────────────────────────────
+def write_if_changed(path: Path, content: str | bytes) -> bool:
+    """Write `content` only if the file is missing or differs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            return False
+        path.write_text(content, encoding="utf-8")
+        return True
+    if path.exists() and path.read_bytes() == content:
+        return False
+    path.write_bytes(content)
+    return True
 
-def generate(project_dir: Path, script_file: Path = None):
-    initial_fs_dir = project_dir / 'initial_filesystem'
-    output_file = project_dir / 'src' / 'micropython' / 'StartupFilesData.h'
-    history_file = project_dir / 'scripts' / 'startup_hash_history.json'
 
-    if not initial_fs_dir.exists():
-        print(f"[generate_startup_files] WARNING: {initial_fs_dir} not found, generating empty header")
-        output_file.write_text(
-            '#pragma once\n'
-            '#include <stdint.h>\n\n'
-            'struct StartupFileInfo { const char* path; const char* content;\n'
-            '    uint32_t contentLen; const uint32_t* knownHashes;\n'
-            '    int hashCount; uint8_t flags; };\n\n'
-            'static const StartupFileInfo kStartupFiles[] = { {nullptr,nullptr,0,nullptr,0,0} };\n'
-            'static const int kStartupFileCount = 0;\n'
-            'static const char* kStartupDirs[] = { nullptr };\n'
-            'static const int kStartupDirCount = 0;\n'
-        )
-        return
+# ── File scan ────────────────────────────────────────────────────────────────
 
-    if not needs_regeneration(initial_fs_dir, output_file, script_file):
-        print("[generate_startup_files] Up to date, skipping")
-        return
+def scan_files(data_dir: Path) -> list[dict]:
+    """Walk firmware/data/ and return a list of file records.
 
-    print("[generate_startup_files] Scanning initial_filesystem/ ...")
-
-    history = load_hash_history(history_file)
+    Each record has rel_path, bytes, fnv (for the bake hash table),
+    sha256 (for the manifest / registry), size, and a `bake` flag
+    indicating whether the file goes into StartupFilesData.h."""
     files = []
-    dirs = set()
-    current_paths = set()
-
-    for path in sorted(initial_fs_dir.rglob('*')):
-        rel_parts = path.relative_to(initial_fs_dir).parts
+    for path in sorted(data_dir.rglob('*')):
+        rel_parts = path.relative_to(data_dir).parts
         if any(part.startswith('.') or part in SKIP_DIR_NAMES for part in rel_parts):
             continue
         if path.suffix.lower() in SKIP_EXTENSIONS:
-            print(f"  SKIP (not embedded): {path.name}")
             continue
         if path.is_dir():
-            rel = '/' + path.relative_to(initial_fs_dir).as_posix()
-            dirs.add(rel)
             continue
-
-        rel_path = '/' + path.relative_to(initial_fs_dir).as_posix()
-        current_paths.add(rel_path)
-        protected = path.name in PROTECTED_FILENAMES
-        content_bytes = path.read_bytes()
-        content_hash = fnv1a32(content_bytes)
-        all_hashes = update_history(history, rel_path, content_hash)
-        binary = is_binary(path)
-
+        rel_path = '/' + path.relative_to(data_dir).as_posix()
+        content = path.read_bytes()
+        bake = (rel_parts and rel_parts[0] in BAKE_DIRS)
         files.append({
             'rel_path': rel_path,
-            'var': rel_path_to_var(rel_path),
-            'bytes': content_bytes,
-            'text': None if binary else content_bytes.decode('utf-8', errors='replace'),
-            'binary': binary,
-            'hash': content_hash,
-            'all_hashes': all_hashes,
-            'protected': protected,
-            'size': len(content_bytes),
+            'rel_parts': rel_parts,
+            'bytes': content,
+            'text': None if is_binary(path) else content.decode('utf-8', errors='replace'),
+            'binary': is_binary(path),
+            'fnv': fnv1a32(content),
+            'sha256': hashlib.sha256(content).hexdigest(),
+            'size': len(content),
+            'bake': bake,
+            'protected': path.name in PROTECTED_FILENAMES,
         })
+    return files
 
-        tag = " [PROTECTED]" if protected else ""
-        print(f"  {rel_path} ({len(content_bytes)} bytes, 0x{content_hash:08X}{tag})")
 
-    history = {key: value for key, value in history.items() if key in current_paths}
-    save_hash_history(history_file, history)
+# ── Header generation (BAKE set only) ───────────────────────────────────────
 
-    # ── Build the header ─────────────────────────────────────────────────────
+def generate_header(bake_files: list[dict], history: dict) -> tuple[str, dict]:
+    """Build StartupFilesData.h content + the updated history dict.
 
-    L = []  # output lines
+    Files outside BAKE_DIRS are *not* listed in kStartupFiles. We still
+    record their hashes in startup_hash_history.json so the manifest /
+    registry consumer (badge_sync, etc.) has a stable history if it
+    needs one — but the badge's boot-time provisioner only sees the
+    bake set."""
+    L: list[str] = []
     L.append('#pragma once')
     L.append('// ═══════════════════════════════════════════════════════════════════════')
     L.append('// AUTO-GENERATED by scripts/generate_startup_files.py')
-    L.append('// DO NOT EDIT — modify files in initial_filesystem/ and rebuild.')
+    L.append('// DO NOT EDIT — modify files in firmware/data/ and rebuild.')
+    L.append('//')
+    L.append('// Only files under BAKE_DIRS = {lib, matrixApps} are embedded here.')
+    L.append('// Everything else ships via fatfs.bin (factory flash) or Community Apps')
+    L.append('// / JumperIDE sync — see firmware/docs/STORAGE-MODEL.md.')
     L.append('// ═══════════════════════════════════════════════════════════════════════')
     L.append('')
     L.append('#include <stdint.h>')
@@ -198,13 +248,15 @@ def generate(project_dir: Path, script_file: Path = None):
     L.append('};')
     L.append('')
 
-    # ── File contents ────────────────────────────────────────────────────────
-
     L.append('// ─── Embedded file contents ──────────────────────────────────────────')
     L.append('')
 
-    for f in files:
-        v = f['var']
+    var_for: dict[str, str] = {}
+    for f in bake_files:
+        v = rel_path_to_var(f['rel_path'])
+        var_for[f['rel_path']] = v
+        all_hashes = update_history(history, f['rel_path'], f['fnv'])
+        f['all_hashes'] = all_hashes
         if f['binary']:
             L.append(f'static const uint8_t {v}_DATA[] = {{')
             L.append(bytes_to_c_array(f['bytes']))
@@ -212,19 +264,15 @@ def generate(project_dir: Path, script_file: Path = None):
             L.append(f'static const uint32_t {v}_LEN = sizeof({v}_DATA);')
         else:
             L.append(f'static const char {v}_DATA[] = {text_to_c_raw_string(f["text"])};')
-        hashes_str = ', '.join(f['all_hashes'])
-        count = len(f['all_hashes'])
-        L.append(f'static const uint32_t {v}_HASHES[{count}] = {{ {hashes_str} }};')
+        hashes_str = ', '.join(all_hashes)
+        L.append(f'static const uint32_t {v}_HASHES[{len(all_hashes)}] = {{ {hashes_str} }};')
         L.append('')
-
-    # ── File table ───────────────────────────────────────────────────────────
 
     L.append('// ─── File table ───────────────────────────────────────────────────────')
     L.append('')
     L.append('static const StartupFileInfo kStartupFiles[] = {')
-
-    for f in files:
-        v = f['var']
+    for f in bake_files:
+        v = var_for[f['rel_path']]
         flags = 'STARTUP_FILE_PROTECTED' if f['protected'] else '0'
         if f['binary']:
             content_expr = f'(const char*){v}_DATA'
@@ -234,36 +282,296 @@ def generate(project_dir: Path, script_file: Path = None):
             size_expr = f'sizeof({v}_DATA) - 1'
         count = len(f['all_hashes'])
         L.append(f'    {{ "{f["rel_path"]}", {content_expr}, {size_expr}, {v}_HASHES, {count}, {flags} }},')
-
+    if not bake_files:
+        L.append('    { nullptr, nullptr, 0, nullptr, 0, 0 }')
     L.append('};')
-    L.append(f'static const int kStartupFileCount = {len(files)};')
+    L.append(f'static const int kStartupFileCount = {len(bake_files)};')
     L.append('')
 
-    # ── Managed directories ──────────────────────────────────────────────────
-
-    sorted_dirs = sorted(dirs)
+    # Managed directories — every directory under BAKE_DIRS that we
+    # actually emitted a file for. provisionStartupFiles ensures these
+    # exist on FATFS at boot.
+    bake_dirs = sorted({
+        '/' + '/'.join(f['rel_parts'][:-1])
+        for f in bake_files if len(f['rel_parts']) > 1
+    })
     L.append('// ─── Managed directories ─────────────────────────────────────────────')
     L.append('')
-    if sorted_dirs:
+    if bake_dirs:
         L.append('static const char* kStartupDirs[] = {')
-        for d in sorted_dirs:
+        for d in bake_dirs:
             L.append(f'    "{d}",')
         L.append('};')
     else:
         L.append('static const char* kStartupDirs[] = { nullptr };')
-    L.append(f'static const int kStartupDirCount = {len(sorted_dirs)};')
+    L.append(f'static const int kStartupDirCount = {len(bake_dirs)};')
     L.append('')
 
-    # ── Write output ─────────────────────────────────────────────────────────
+    return '\n'.join(L).rstrip() + '\n', history
 
-    output_content = '\n'.join(L).rstrip() + '\n'
 
-    if output_file.exists() and output_file.read_text(encoding='utf-8') == output_content:
-        print(f"[generate_startup_files] {output_file.name} content unchanged")
+# ── Manifest generation (FULL set) ──────────────────────────────────────────
+
+def generate_full_manifest(files: list[dict], raw_base: str) -> str:
+    """Emit firmware/data/manifest.json — every file in firmware/data/.
+
+    Used by badge_sync (the diff engine) and by JumperIDE."""
+    entries = []
+    for f in files:
+        entries.append({
+            "path": f['rel_path'],
+            "size": f['size'],
+            "sha256": f['sha256'],
+            "fnv1a32": f"0x{f['fnv']:08X}",
+            "url": f"{raw_base}{f['rel_path']}",
+            "baked": f['bake'],
+        })
+    return json.dumps({
+        "schema_version": 2,
+        "generator": "generate_startup_files.py",
+        "raw_base": raw_base,
+        "files": entries,
+    }, indent=2) + "\n"
+
+
+def generate_community_apps(files: list[dict], data_dir: Path,
+                            raw_base: str) -> str:
+    """Emit registry/community_apps.json.
+
+    Sources:
+      - apps/<name>/  → kind:"app", dest_dir=/apps/<name>, files: [...]
+      - docs/, images/, messages/  → kind:"file"
+      - data/ root files in LOOSE_ROOT_FILES → kind:"file"
+
+    For app entries the per-file list (path/sha256/size/url) is
+    inlined directly rather than referenced through a per-app
+    manifest.json — keeps the registry fully self-describing in one
+    HTTP fetch and avoids cluttering app folders.
+    """
+    apps: dict[str, list[dict]] = {}
+    file_entries: list[dict] = []
+    for f in files:
+        parts = f['rel_parts']
+        if not parts:
+            continue
+        head = parts[0]
+        if head == 'apps' and len(parts) >= 3:
+            apps.setdefault(parts[1], []).append(f)
+        elif head in LOOSE_FILE_DIRS or (
+                len(parts) == 1 and parts[0] in LOOSE_ROOT_FILES):
+            file_entries.append(f)
+        # Skip BAKE_DIRS; they're not user-installable.
+
+    assets = []
+
+    # App entries.
+    for name in sorted(apps.keys()):
+        app_files = sorted(apps[name], key=lambda f: f['rel_path'])
+        size = sum(f['size'] for f in app_files)
+        # Stable version derived from sha256(concat of per-file sha256s)
+        # so any change to any file in the bundle bumps the version.
+        h = hashlib.sha256()
+        for f in app_files:
+            h.update(f['sha256'].encode())
+        version = h.hexdigest()[:12]
+        # Try to lift a description from the app's main.py docstring;
+        # fall back to the folder name.
+        desc = name.replace('_', ' ').title()
+        for f in app_files:
+            if f['rel_parts'][-1] == 'main.py' and not f['binary']:
+                lines = f['text'].splitlines()
+                if lines and lines[0].strip().startswith('"""'):
+                    body = []
+                    for line in lines[1:]:
+                        if '"""' in line:
+                            break
+                        body.append(line.strip())
+                    if body:
+                        desc = ' '.join(body[:3])[:480] or desc
+                break
+        # Inlined per-file list — paths are *relative to dest_dir* so
+        # the on-badge installer can write them with `dest_dir + path`.
+        bundle = []
+        for f in app_files:
+            rel = '/' + '/'.join(f['rel_parts'][2:])  # strip apps/<name>/
+            bundle.append({
+                "path": rel,
+                "size": f['size'],
+                "sha256": f['sha256'],
+                "url": f"{raw_base}{f['rel_path']}",
+            })
+        assets.append({
+            "id": name.replace('_', '-')[:32],
+            "kind": "app",
+            "name": name.replace('_', ' ').title(),
+            "version": version,
+            "dest_dir": f"/apps/{name}",
+            "size": size,
+            "min_free_bytes": size + 4096,
+            "description": desc,
+            "files": bundle,
+        })
+
+    # File entries.
+    for f in sorted(file_entries, key=lambda f: f['rel_path']):
+        stem_id = f['rel_path'].lstrip('/').replace('/', '-').replace('.', '-')[:32]
+        assets.append({
+            "id": stem_id,
+            "kind": "file",
+            "name": f['rel_path'].split('/')[-1],
+            "version": f['sha256'][:12],
+            "dest_path": f['rel_path'],
+            "url": f"{raw_base}{f['rel_path']}",
+            "sha256": f['sha256'],
+            "size": f['size'],
+            "min_free_bytes": f['size'] + 1024,
+            "description": f"Optional asset ({f['rel_path']})",
+        })
+
+    return json.dumps({
+        "schema_version": 2,
+        "generator": "generate_startup_files.py",
+        "assets": assets,
+    }, indent=2) + "\n"
+
+
+# ── Main generation ─────────────────────────────────────────────────────────
+
+def generate(project_dir: Path, script_file: Path = None):
+    src_dir = project_dir / 'initial_filesystem'  # canonical
+    mirror_dir = project_dir / 'data'             # uploadfs build mirror
+    output_header = project_dir / 'src' / 'micropython' / 'StartupFilesData.h'
+    history_file = project_dir / 'scripts' / 'startup_hash_history.json'
+    full_manifest_file = src_dir / 'manifest.json'
+    # registry/ lives at the repo root so it has a stable raw URL the
+    # badge can hit (firmware/initial_filesystem/ being part of the
+    # raw URL would also work, but keeping the registry one click
+    # off the repo root is friendlier for forks / external CDNs).
+    repo_root = project_dir.parent if project_dir.name == 'firmware' else project_dir
+    registry_file = repo_root / 'registry' / 'community_apps.json'
+
+    if not src_dir.exists():
+        print(f"[generate_startup_files] WARNING: {src_dir} not found, generating empty header")
+        write_if_changed(output_header,
+            '#pragma once\n'
+            '#include <stdint.h>\n\n'
+            'struct StartupFileInfo { const char* path; const char* content;\n'
+            '    uint32_t contentLen; const uint32_t* knownHashes;\n'
+            '    int hashCount; uint8_t flags; };\n\n'
+            'static const StartupFileInfo kStartupFiles[] = { {nullptr,nullptr,0,nullptr,0,0} };\n'
+            'static const int kStartupFileCount = 0;\n'
+            'static const char* kStartupDirs[] = { nullptr };\n'
+            'static const int kStartupDirCount = 0;\n')
         return
 
-    output_file.write_text(output_content, encoding='utf-8')
-    print(f"[generate_startup_files] Generated {output_file.name} ({len(files)} files, {len(sorted_dirs)} dirs)")
+    needs_run = needs_regeneration(src_dir, output_header, script_file)
+    needs_mirror = not mirror_dir.exists() or needs_run
+
+    if not needs_run:
+        if full_manifest_file.exists() and registry_file.exists() and not needs_mirror:
+            print("[generate_startup_files] Up to date, skipping")
+            return
+
+    print("[generate_startup_files] Scanning firmware/initial_filesystem/ ...")
+
+    history = load_hash_history(history_file)
+    files = scan_files(src_dir)
+
+    bake_files = [f for f in files if f['bake']]
+    raw_base = os.environ.get("TEMPORAL_BADGE_RAW_BASE", DEFAULT_RAW_BASE)
+
+    # 1) StartupFilesData.h (bake set only).
+    header_text, history = generate_header(bake_files, history)
+    save_hash_history(history_file,
+        {k: v for k, v in history.items()
+         if any(f['rel_path'] == k for f in bake_files)})
+    if write_if_changed(output_header, header_text):
+        print(f"[generate_startup_files] wrote {output_header.name} "
+              f"({len(bake_files)} baked files)")
+    else:
+        print(f"[generate_startup_files] {output_header.name} unchanged")
+
+    # 2) firmware/data/manifest.json (every file).
+    manifest_text = generate_full_manifest(files, raw_base)
+    if write_if_changed(full_manifest_file, manifest_text):
+        print(f"[generate_startup_files] wrote {full_manifest_file.relative_to(project_dir)} "
+              f"({len(files)} files)")
+
+    # Clean up any stale per-app manifest.json files left over from
+    # the older schema where each app folder had its own manifest.
+    # The same data is now inlined into community_apps.json.
+    apps_root = src_dir / 'apps'
+    if apps_root.exists():
+        for app_dir in apps_root.iterdir():
+            stale = app_dir / 'manifest.json'
+            if stale.is_file():
+                stale.unlink()
+
+    # 3) registry/community_apps.json (with inlined per-app file lists).
+    registry_text = generate_community_apps(files, src_dir, raw_base)
+    if write_if_changed(registry_file, registry_text):
+        try:
+            display = registry_file.relative_to(project_dir)
+        except ValueError:
+            display = registry_file
+        print(f"[generate_startup_files] wrote {display}")
+
+    # 5) Mirror initial_filesystem/ → data/ for `pio run -t buildfs/uploadfs`.
+    #    Done last so the per-app manifest.json files we just wrote also
+    #    propagate. We mirror at file granularity (not a blanket rmtree+cp)
+    #    so unchanged files keep their mtimes, which avoids spurious
+    #    fatfs.bin rebuilds on every PlatformIO run.
+    mirror_files(src_dir, mirror_dir)
+
+
+def mirror_files(src: Path, dst: Path) -> None:
+    """Byte-mirror `src` → `dst`, preserving mtimes on unchanged files.
+
+    Mirror policy is broader than the manifest's: we keep `tests/` in
+    the mirror (dev builds want them via `pio run -t uploadfs`) even
+    though they're filtered out of the registry/manifest. We do skip
+    editor noise and Python build artefacts."""
+    import shutil
+
+    MIRROR_SKIP_PARTS = {'__pycache__', '.DS_Store'}
+    MIRROR_SKIP_SUFFIX = {'.pyc', '.pyo'}
+
+    def skip(parts) -> bool:
+        return any(p.startswith('.') or p in MIRROR_SKIP_PARTS for p in parts)
+
+    seen: set[Path] = set()
+    for p in src.rglob('*'):
+        rel = p.relative_to(src)
+        if skip(rel.parts):
+            continue
+        if p.suffix in MIRROR_SKIP_SUFFIX:
+            continue
+        target = dst / rel
+        if p.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            seen.add(target)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (not target.exists() or
+                target.stat().st_size != p.stat().st_size or
+                target.read_bytes() != p.read_bytes()):
+            shutil.copy2(p, target)
+        seen.add(target)
+
+    # Prune anything in dst that no longer has a counterpart in src.
+    if dst.exists():
+        for p in sorted(dst.rglob('*'), reverse=True):
+            if p in seen:
+                continue
+            if skip(p.relative_to(dst).parts):
+                continue
+            try:
+                if p.is_dir():
+                    p.rmdir()
+                else:
+                    p.unlink()
+            except OSError:
+                pass
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────

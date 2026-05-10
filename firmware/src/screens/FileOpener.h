@@ -11,7 +11,7 @@ class GUIManager;
 //   .py / .json / .txt / .md / .csv / .ini / .log / .cfg
 //   .toml / .yaml / .yml / .xml / .html / .h / .c / .cpp / .ino
 //                                                          → EditorScreen
-//   .xbm / .fb                                              → AnimTestScreen
+//   .xbm / .fb / .bin (credit prebinned layout)               → AnimTestScreen
 //   anything else (binary, .bmp/.png/.jpg/.gif/.wad/...)    → HexViewScreen
 //
 // Lives in `screens/` rather than `infra/` because it only references

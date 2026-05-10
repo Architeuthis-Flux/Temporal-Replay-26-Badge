@@ -168,7 +168,7 @@ void begin() {
 
 void tick() {
   if (!sBegun) return;
-  if (!badgeConfig.assetRegistryUrl()[0]) return;
+  if (!badgeConfig.communityAppsUrl()[0]) return;
   if (!wifiService.isConnected()) return;
   if (!wifiService.clockReady()) return;
   const time_t now = time(nullptr);
@@ -185,9 +185,9 @@ RegistryRefresh refresh(bool ignoreCooldown) {
   if (!sBegun) begin();
   setError("");
 
-  const char* url = badgeConfig.assetRegistryUrl();
+  const char* url = badgeConfig.communityAppsUrl();
   if (!url || !url[0]) {
-    setError("asset_registry_url not configured");
+    setError("community_apps_url not configured");
     return RegistryRefresh::kNotConfigured;
   }
 

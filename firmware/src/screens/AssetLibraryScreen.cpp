@@ -32,7 +32,7 @@ const char* statusLabel(ota::AssetStatus s) {
 // ── AssetLibraryScreen ────────────────────────────────────────────────────
 
 AssetLibraryScreen::AssetLibraryScreen()
-    : ListMenuScreen(kScreenAssetLibrary, "ASSET LIBRARY") {}
+    : ListMenuScreen(kScreenAssetLibrary, "COMMUNITY APPS") {}
 
 void AssetLibraryScreen::selectAssetById(const char* id) {
   if (!id) { sQueuedSelectId[0] = '\0'; return; }

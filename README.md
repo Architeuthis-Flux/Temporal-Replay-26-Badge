@@ -5,7 +5,7 @@ OLED, IR TX/RX for attendee pairing, joystick, tilt switch, and NVS-backed ident
 
 ## Hardware
 
-- **MCU**: ESP32-S3-MINI-1 (XIAO form factor), dual-core Xtensa LX7, 8 MB flash
+- **MCU**: ESP32-S3 16r8, dual-core Xtensa LX7, 8 MB flash
 - **Display**: SSD1309 128×64 OLED via hardware I2C (SDA=D4/GPIO5, SCL=D5/GPIO6)
 - **IR**: NEC protocol TX (D2/GPIO3) + RX (D3/GPIO4)
 - **Input**: 4 buttons (D7–D10), analog joystick (D0/D1), tilt switch (D6)

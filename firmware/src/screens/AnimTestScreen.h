@@ -7,12 +7,12 @@
 //   1. Catalog mode (default) — cycles through the built-in `kImageCatalog`
 //      ziggy frames. Same look-and-feel as the original animation test.
 //   2. External mode — owns a PSRAM-backed bit buffer + frame metadata
-//      loaded from a file (`.xbm` or `.fb`). Catalog cycling is suppressed
-//      while external mode is active; B = pop back to caller (Files
+//      loaded from a file (`.xbm`, `.fb`, or credit `.bin`). Catalog cycling
+//      is suppressed while external mode is active; B = pop back to caller (Files
 //      browser), Confirm pops as well so external viewing reads as a
 //      regular image opener.
 //
-// External mode is entered via `loadXBM(path)` / `loadFB(path)` and
+// External mode is entered via `loadXBM` / `loadFB` / `loadCreditBin` and
 // cleared on `onExit`. Memory is released eagerly so we don't pin PSRAM
 // while the screen is offstack.
 
@@ -33,6 +33,12 @@ class AnimTestScreen : public Screen {
   // come from the sibling `info.json` when present, else inferred from
   // file size. Multi-frame .fb files become animation frames.
   void loadFB(const char* path);
+  // Credit prebinned `.bin`: `width(LE16) height(LE16)` then row-major
+  // packed bits with bit 7 = leftmost per byte (same as
+  // assets/credits/prebinned/ + scripts/gen_credit_xbms.py). Bytes are
+  // reversed for `drawXBM` (LSB-left). Returns false if the file does
+  // not match that layout (caller may open hex view instead).
+  bool loadCreditBin(const char* path);
 
  private:
   uint8_t imageIdx_ = 0;
@@ -50,7 +56,7 @@ class AnimTestScreen : public Screen {
   uint8_t scaleDims_[8];
   uint8_t scaleCount_ = 0;
 
-  // ── External-file state (loadXBM / loadFB). When extBits_ != null
+  // ── External-file state (loadXBM / loadFB / loadCreditBin). When extBits_ != null
   //    the screen renders this buffer instead of the catalog. ─────
   enum class ExtFormat : uint8_t {
     kXBM,   // row-major, LSB-leftmost (per-row stride = ceil(W/8))

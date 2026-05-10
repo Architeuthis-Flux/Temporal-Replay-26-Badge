@@ -72,6 +72,21 @@ void open(const char* path, GUIManager& gui) {
     gui.pushScreen(kScreenAnimTest);
     return;
   }
+  // Credit prebinned bitmaps (`width LE16` + `height LE16` + MSB-first
+  // packed rows — same layout as scripts/gen_credit_xbms.py). Unrelated
+  // `.bin` blobs fail validation and fall through to the hex viewer.
+  if (extEq(path, ".bin")) {
+    if (sAnimTest.loadCreditBin(path)) {
+      Serial.printf("[FileOpener] %s -> AnimTest (bin)\n", path);
+      gui.pushScreen(kScreenAnimTest);
+    } else {
+      Serial.printf("[FileOpener] %s -> HexView (bin not credit image)\n",
+                    path);
+      sHexView.loadFile(path);
+      gui.pushScreen(kScreenHexView);
+    }
+    return;
+  }
 
   if (isEditorExt(path)) {
     Serial.printf("[FileOpener] %s -> Editor\n", path);
