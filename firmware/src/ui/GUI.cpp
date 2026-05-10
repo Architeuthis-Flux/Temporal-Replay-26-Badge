@@ -203,6 +203,27 @@ static bool assetLibraryVisible() {
   return true;
 }
 
+// ── Games submenu items ───────────────────────────────────────────────────
+// Curated games surfaced behind the home-grid GAMES tile. Same GridMenuItem
+// shape as the main menu so we get the same UI for free; cancelPressed in
+// GridMenuScreen pops back to the home grid.
+static const GridMenuItem kGamesMenuItems[] = {
+    {"Ir Block Battle", "Clear lines and send garbage over IR",
+     AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle, nullptr, nullptr},
+    {"BREAKSNAKE", "Play Breakout and Snake together",
+     AppIcons::breaksnake, kScreenNone, launchBreakSnake, nullptr, nullptr},
+    {"Flappy Asteroids", "Play Asteroids and Flappy Bird together",
+     AppIcons::flappyAsteroids, kScreenNone, launchFlappyAsteroids, nullptr, nullptr},
+    {"TARDIGOTCHI", "Hatch and care for a tiny tardigrade",
+     AppIcons::tardigotchi, kScreenNone, launchTardigotchi, nullptr, nullptr},
+#ifdef BADGE_HAS_DOOM
+    {"DOOM", "Play DOOM on the badge",
+     AppIcons::doom, kScreenDoom, nullptr, nullptr, nullptr},
+#endif
+};
+static constexpr size_t kGamesMenuItemCount =
+    sizeof(kGamesMenuItems) / sizeof(kGamesMenuItems[0]);
+
 // ── Curated C++ menu items ────────────────────────────────────────────────
 // These are the always-on items the firmware ships with. Dynamic Python
 // apps discovered by AppRegistry are appended after this list when the
@@ -221,22 +242,10 @@ static const GridMenuItem kCuratedMenuItems[] = {
 
     {"DRAW", "Draw frames and animations with stickers and pixels",
      DrawIcons::menuDraw, kScreenDrawPicker, nullptr, nullptr, nullptr},
-#ifndef BADGE_DEV_MENU
-    {"IR BLOCK", "Clear lines and send garbage over IR",
-     AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle, nullptr, nullptr},
-    {"BREAKSNAKE",  "Play Breakout and Snake together",
-     AppIcons::breaksnake, kScreenNone,       launchBreakSnake, nullptr, nullptr},
-    {"FLAPPY", "Play Asteroids and Flappy Bird together",
-     AppIcons::flappyAsteroids, kScreenNone,  launchFlappyAsteroids, nullptr, nullptr},
-#endif
+    {"GAMES", "Play games installed on the badge",
+     AppIcons::games, kScreenGames, nullptr, nullptr, nullptr},
     {"SYNTH", "Play joystick tones, loops, and loadable sounds",
      AppIcons::synth,     kScreenNone,       launchSynth, nullptr, nullptr},
-    {"TARDIGOTCHI", "Hatch and care for a tiny tardigrade",
-     AppIcons::tardigotchi, kScreenNone, launchTardigotchi, nullptr, nullptr},
-#ifdef BADGE_HAS_DOOM
-    {"DOOM",        "Play DOOM on the badge",
-     AppIcons::doom,      kScreenDoom,        nullptr, nullptr, nullptr},
-#endif
     {"HELP", "Tips, button shortcuts, and links to the developer docs",
      AppIcons::docs,      kScreenHelp,         nullptr, nullptr, nullptr},
     {"SPONSORS", "Thank you to our sponsors!",
@@ -387,6 +396,8 @@ static BootScreen sBoot;
 // merges in dynamic apps before the menu first renders.
 static GridMenuScreen sMainMenu(kScreenMainMenu, "MENU",
                                 sMenuItems, 0);
+static GridMenuScreen sGames(kScreenGames, "GAMES",
+                             kGamesMenuItems, kGamesMenuItemCount);
 static ScheduleScreen sSchedule;
 static MapScreen sMap;
 static MapSectionScreen sMapSection;
@@ -503,24 +514,36 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     // browser when that happens.
     if (app->slug && strcmp(app->slug, "crash_log") == 0) continue;
 
-    // Dedupe against curated tiles. If a curated entry already
-    // launches the exact same /apps/<slug>/main.py path (SYNTH,
-    // BREAKSNAKE, FLAPPY, IR BLOCK, etc.), skip the auto-discovered
-    // dynamic tile so the user doesn't see two icons that do the same
-    // thing — a hand-drawn one and a generic one.
-    bool isCuratedDuplicate = false;
-    for (size_t c = 0; c < kCuratedMenuItemCount; c++) {
+    // Dedupe against curated tiles. If a curated entry (or a Games
+    // submenu entry) already launches the exact same
+    // /apps/<slug>/main.py path (SYNTH, BREAKSNAKE, FLAPPY, IR BLOCK,
+    // TARDIGOTCHI, etc.), skip the auto-discovered dynamic tile so the
+    // user doesn't see two icons that do the same thing — a hand-drawn
+    // one and a generic one. Without this, removing a game from the
+    // home grid (to relocate it into the Games submenu) would cause
+    // AppRegistry to re-surface it on the home grid.
+    auto labelMatchesApp = [&](const char* curLabel) {
+      if (!curLabel) return false;
+      if (strcasecmp(curLabel, app->title) == 0) return true;
       // Curated launchers stash the script path inside their action's
       // closure (we can't introspect that), so match heuristically on
-      // label: "SYNTH" → "Synth" slug, etc. Both forms share the
-      // case-insensitive prefix of the label up to the first space.
-      const char* curLabel = kCuratedMenuItems[c].label;
-      if (!curLabel) continue;
-      if (strcasecmp(curLabel, app->title) == 0 ||
-          (strncasecmp(curLabel, app->slug, strlen(app->slug)) == 0 &&
-           strlen(curLabel) == strlen(app->slug))) {
+      // label: "SYNTH" → "synth" slug, etc.
+      return strncasecmp(curLabel, app->slug, strlen(app->slug)) == 0 &&
+             strlen(curLabel) == strlen(app->slug);
+    };
+    bool isCuratedDuplicate = false;
+    for (size_t c = 0; c < kCuratedMenuItemCount; c++) {
+      if (labelMatchesApp(kCuratedMenuItems[c].label)) {
         isCuratedDuplicate = true;
         break;
+      }
+    }
+    if (!isCuratedDuplicate) {
+      for (size_t c = 0; c < kGamesMenuItemCount; c++) {
+        if (labelMatchesApp(kGamesMenuItems[c].label)) {
+          isCuratedDuplicate = true;
+          break;
+        }
       }
     }
     if (isCuratedDuplicate) continue;
@@ -607,6 +630,7 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
 #endif
   registerScreen(&sBoot);
   registerScreen(&sMainMenu);
+  registerScreen(&sGames);
   registerScreen(&sSchedule);
   registerScreen(&sMap);
   registerScreen(&sMapSection);
