@@ -27,6 +27,7 @@ enum ScreenId : uint8_t {
   kScreenAnimTest,
   kScreenApps,
   kScreenMatrixApps,
+  kScreenGames,
   kScreenTests,
   kScreenTextInput,
   kScreenBadgeInfo,
