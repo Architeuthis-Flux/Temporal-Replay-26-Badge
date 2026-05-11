@@ -163,6 +163,63 @@ it manually makes the generated diff visible before the build. Commit both
 `scripts/startup_hash_history.json` when app files change. Do not edit
 `StartupFilesData.h` by hand.
 
+### Forcing a refresh while iterating on a Python app
+
+By default app files (`/apps/<app>/*.py`) ship via `fatfs.bin` — re-flashing a
+~7 MB partition every iteration is too slow for the edit-build-flash loop.
+The dev path bakes the app into the firmware binary itself and force-refreshes
+it on boot. Two coordinated knobs:
+
+1. **Compile-time `-DBADGE_DEV_FORCE_REFRESH=...`** in
+   `firmware/platformio.ini`'s `build_flags_common` block. Comma-separated
+   paths/prefixes; trailing `/` or `*` = prefix match.
+
+   The whole flag MUST be wrapped in single quotes so SCons preserves
+   the embedded double quotes — same convention as the existing
+   `'-DFFCONF_H="ffconf.h"'` line in `platformio.ini`. Without the outer
+   quotes the macro expands to bare tokens and the build fails with
+   `expected primary-expression before '/' token`.
+
+   ```ini
+   '-DBADGE_DEV_FORCE_REFRESH="/apps/ir_remote/,/lib/badge_ui.py"'
+   ```
+
+   This single flag does **two** things automatically:
+
+   - `scripts/generate_startup_files.py` reads the flag, treats every
+     listed path as an additional bake prefix, and embeds the matching
+     files in `StartupFilesData.h` (firmware app0). Look for the
+     `[generate_startup_files] DEV BAKE: N extra files, N bytes` line
+     in the build log.
+   - At boot, `provisionStartupFiles()` overwrites the on-FAT version
+     of every matching file with the freshly-baked content, even if
+     the user has edited it through JumperIDE.
+
+   Net effect: `pio run -e echo -t upload` (firmware-only, ~10 s) is
+   enough to push new app code. **No `uploadfs` needed during iteration.**
+
+2. **Runtime marker `/dev_force_refresh.txt`** — drop the file on the badge's
+   FAT (via JumperIDE, `pio run -t uploadfs`, or serial). Same syntax as the
+   build flag, one entry per line is fine, `#` starts a comment. The marker
+   is auto-deleted after one boot so it's a one-shot. Useful when you don't
+   want to rebuild firmware just to refresh one file (note: this only refreshes
+   files that are actually in `kStartupFiles[]` — i.e. either under
+   `lib/`/`matrixApps/` or covered by the build-time bake flag at last
+   firmware build).
+
+Boot log:
+
+```text
+[startup] dev force-refresh (build): /apps/ir_remote/,/lib/badge_ui.py
+[startup] Dev force-refreshed /apps/ir_remote/main.py
+[startup] Dev force-refreshed /apps/ir_remote/ir_lib.py
+...
+[startup] Provisioned: 0 created, 0 updated, 13 dev-forced, 5 unchanged
+```
+
+**REMOVE the build flag for production builds** — leaving it set bloats
+app0 and forces overwrites users have made through JumperIDE.
+
 Use `echo-dev` when you need the generic Apps menu or internal diagnostics:
 
 ```sh

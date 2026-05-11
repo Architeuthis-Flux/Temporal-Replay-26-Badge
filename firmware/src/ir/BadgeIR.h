@@ -341,6 +341,18 @@ int irRawSend(const uint16_t* pairs, size_t pair_count, uint32_t carrier_hz);
 // Drop every frame queued in the active alternate-mode RX path.
 void irDrainAltRx();
 
+// IR Playground top-bar activity. The badge has dedicated TX (D2) and RX
+// (D3) lines, so "is something flashing" is literal hardware state. We
+// expose two short-lived counters that snapshots how recently the carrier
+// was on (TX) or a frame was decoded (RX), both in milliseconds since the
+// event. UINT32_MAX means "no event yet this session".
+//
+// Used by the IR Playground's status bar to drive a 2-segment pixel
+// indicator that flashes in lock-step with the actual hardware. Other
+// apps don't need to call this.
+uint32_t irMsSinceTx();
+uint32_t irMsSinceRx();
+
 // ─── FreeRTOS task (Core 0) ─────────────────────────────────────────────────
 
 // Launch via: xTaskCreatePinnedToCore(irTask, "IR", 8192, NULL, 1, NULL, 0);

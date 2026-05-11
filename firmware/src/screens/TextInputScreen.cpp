@@ -71,7 +71,16 @@ uint16_t previousDisplayGlyphOffset(const char* buf, uint16_t len,
 
 void TextInputScreen::configure(const char* title, char* buffer,
                                 uint16_t capacity, Submit onDone, void* user) {
-    title_ = title;
+    // Copy the title — never hold the caller's pointer. WifiScreen
+    // builds the password title in a stack buffer and the pointer-only
+    // version left `title_` dangling once the caller returned, which
+    // surfaced as garbage characters in the keyboard's header.
+    if (title) {
+        std::strncpy(title_, title, sizeof(title_) - 1);
+        title_[sizeof(title_) - 1] = '\0';
+    } else {
+        title_[0] = '\0';
+    }
     buf_ = buffer;
     cap_ = capacity;
     len_ = buffer ? static_cast<uint16_t>(strlen(buffer)) : 0;

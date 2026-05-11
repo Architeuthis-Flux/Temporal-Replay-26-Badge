@@ -111,6 +111,13 @@ struct IrRawTxRequest {
 };
 static QueueHandle_t s_raw_tx_queue = nullptr;
 
+// Activity timestamps (millis() snapshots). Updated whenever the carrier
+// turns on (s_last_tx_ms) or a CRC-good RX burst is decoded
+// (s_last_rx_ms). volatile so the MicroPython bridge reading from Core 1
+// sees the latest value without a memory barrier.
+static volatile uint32_t s_last_tx_ms = 0;
+static volatile uint32_t s_last_rx_ms = 0;
+
 static void irLogHeap(const char* phase) {
     Serial.printf("[%s] heap %s largest=%u free=%u\n",
                   TAG,
@@ -224,9 +231,11 @@ bool sendFrame(const uint32_t* words, size_t count) {
     // No pre-TX queue drain — self-echoes are filtered in recvFrame, and
     // draining here would discard peer beacons that arrived just before
     // our TX slot.
+    s_last_tx_ms = (uint32_t)millis();
     esp_err_t ret = nec_tx_send(s_tx_ctx, words, count, 3000);
     if (ret == ESP_OK) {
         nec_tx_wait(s_tx_ctx, 3000);
+        s_last_tx_ms = (uint32_t)millis();
     }
     return (ret == ESP_OK);
 }
@@ -435,6 +444,11 @@ static void on_raw_symbols(const rmt_symbol_word_t* symbols,
                             void* /*user_data*/) {
     if (symbols == nullptr || symbol_count == 0U) return;
 
+    // Mark RX activity for the IR Playground status bar regardless of
+    // mode — the bar tracks "the receiver decoded SOMETHING", not "the
+    // active app cared about it".
+    s_last_rx_ms = (uint32_t)millis();
+
     const uint8_t mode = s_ir_mode;
     if (mode == IR_MODE_CONSUMER_NEC) {
         uint8_t addr = 0, cmd = 0;
@@ -568,6 +582,18 @@ int irRawSend(const uint16_t* pairs, size_t pair_count, uint32_t carrier_hz) {
     return (xQueueSend(s_raw_tx_queue, &req, pdMS_TO_TICKS(500)) == pdPASS) ? 0 : -1;
 }
 
+uint32_t irMsSinceTx() {
+    if (s_last_tx_ms == 0) return UINT32_MAX;
+    uint32_t now  = (uint32_t)millis();
+    return (uint32_t)(now - s_last_tx_ms);
+}
+
+uint32_t irMsSinceRx() {
+    if (s_last_rx_ms == 0) return UINT32_MAX;
+    uint32_t now  = (uint32_t)millis();
+    return (uint32_t)(now - s_last_rx_ms);
+}
+
 // ─── Python queue feed ──────────────────────────────────────────────────────
 // When nothing on-device is actively using IR, drain any arriving frames
 // into the MicroPython-facing queue so ir_read() sees them.
@@ -620,9 +646,11 @@ static void serviceConsumerNecTx() {
         size_t n = nec_consumer_encode(req.addr, req.cmd, syms,
                                         NEC_CONSUMER_FRAME_SYMBOLS);
         if (n == 0U) continue;
+        s_last_tx_ms = (uint32_t)millis();
         if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, syms, n, 1500)
                 == ESP_OK) {
             nec_tx_wait(s_tx_ctx, 1500);
+            s_last_tx_ms = (uint32_t)millis();
         }
 
         // Held-button repeats: ~110 ms gap between each leader-only burst.
@@ -630,9 +658,11 @@ static void serviceConsumerNecTx() {
         size_t rn = nec_consumer_encode_repeat(rep, NEC_CONSUMER_REPEAT_SYMBOLS);
         for (uint8_t r = 0; r < req.repeats && rn > 0U; r++) {
             vTaskDelay(pdMS_TO_TICKS(110));
+            s_last_tx_ms = (uint32_t)millis();
             if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, rep, rn, 1500)
                     == ESP_OK) {
                 nec_tx_wait(s_tx_ctx, 1500);
+                s_last_tx_ms = (uint32_t)millis();
             }
         }
     }
@@ -665,9 +695,11 @@ static void serviceRawTx() {
             syms[i].level1    = 0U;
             syms[i].duration1 = req.pairs[i * 2U + 1U];
         }
+        s_last_tx_ms = (uint32_t)millis();
         if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, syms, n, 3000)
                 == ESP_OK) {
             nec_tx_wait(s_tx_ctx, 3000);
+            s_last_tx_ms = (uint32_t)millis();
         }
 
         // Restore the default 38 kHz carrier so any subsequent badge-mode

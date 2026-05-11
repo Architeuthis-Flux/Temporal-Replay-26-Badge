@@ -165,3 +165,13 @@ extern "C" int temporalbadge_runtime_ir_raw_send(const uint16_t *pairs,
 {
     return irRawSend(pairs, pair_count, carrier_hz);
 }
+
+extern "C" uint32_t temporalbadge_runtime_ir_ms_since_tx(void)
+{
+    return irMsSinceTx();
+}
+
+extern "C" uint32_t temporalbadge_runtime_ir_ms_since_rx(void)
+{
+    return irMsSinceRx();
+}

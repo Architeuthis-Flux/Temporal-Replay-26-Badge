@@ -232,6 +232,93 @@ void GridMenuScreen::formatLabel(const GridMenuItem& item, char* buf,
   }
 }
 
+// ── Public OLEDLayout helpers ──────────────────────────────────────────────
+// These live here (instead of OLEDLayout.cpp) because they need the
+// `kCellW`, `kCellH`, `kGridX`, `kGridY` constants from this TU's
+// anonymous namespace. They expose the same cell geometry the home grid
+// uses so MicroPython apps can draw native-looking menus without
+// pixel-pushing in Python.
+
+namespace OLEDLayout {
+
+void drawGridCell(oled& d, uint8_t col, uint8_t row,
+                   const char* label, bool selected,
+                   const uint8_t* iconData, uint8_t iconW, uint8_t iconH) {
+  if (col >= kCols || row >= kRows) return;
+  const int x = kGridX + col * (kCellW + kGapX);
+  const int y = kGridY + row * kRowStride;
+
+  if (iconData != nullptr && (iconW == 0 || iconH == 0)) {
+    iconW = AppIcons::kW;
+    iconH = AppIcons::kH;
+  }
+
+  // Cell shape — same draw sequence the native drawCell uses.
+  if (selected) {
+    d.setDrawColor(1);
+    d.drawRBox(x, y, kCellW, kCellH, kCellRadius);
+    d.setDrawColor(0);
+  } else if (iconData != nullptr) {
+    // Inverted backing strip behind the icon, matching the native chrome
+    // — gives the icon a slight "knockout" look against the outline.
+    const int iconFillH = iconH + 4 <= kCellH ? iconH + 4 : kCellH;
+    const int iconFillX = x + kCellIconX - 1;
+    const int iconFillY = y + (kCellH - iconFillH) / 2;
+    const int iconFillW = iconW + 2;
+    d.setDrawColor(1);
+    d.drawBox(iconFillX, iconFillY, iconFillW, iconFillH);
+    d.setDrawColor(0);
+    for (int dr = 0; dr < kCellRadius; dr++) {
+      for (int dc = 0; dc < kCellRadius - dr; dc++) {
+        d.drawPixel(x + dc, y + dr);
+        d.drawPixel(x + dc, y + kCellH - 1 - dr);
+      }
+    }
+    d.setDrawColor(1);
+    d.drawRFrame(x, y, kCellW, kCellH, kCellRadius);
+    d.setDrawColor(0);
+  } else {
+    // No icon — plain rounded outline, no inverted backing strip.
+    d.setDrawColor(1);
+    d.drawRFrame(x, y, kCellW, kCellH, kCellRadius);
+    d.setDrawColor(0);
+  }
+
+  // Icon (if any).
+  int labelLeftPx;
+  if (iconData != nullptr) {
+    const int iconX = x + kCellIconX;
+    const int iconY = y + (kCellH - iconH) / 2;
+    d.drawXBM(iconX, iconY, iconW, iconH, iconData);
+    labelLeftPx = iconX + iconW + kLabelGapX;
+  } else {
+    labelLeftPx = x + kCellPadX;
+  }
+
+  // Label \u2014 right-aligned in the remaining width, single line, fitted
+  // to the cell.  Native renderer also supports marquee scrolling; for
+  // the MP-side helper we just clip + ellipsize, since rendering is
+  // single-shot per call.
+  d.setDrawColor(selected ? 0 : 1);
+  d.setFont(UIFonts::kText);
+  char buf[32] = {};
+  if (label) {
+    std::strncpy(buf, label, sizeof(buf) - 1);
+  }
+  const int labelW = x + kCellW - kCellPadX - labelLeftPx;
+  fitText(d, buf, sizeof(buf), labelW);
+  const int tw = d.getStrWidth(buf);
+  const int labelBaseY = y + (kCellH + d.getAscent()) / 2;
+  d.drawStr(x + kCellW - tw - kCellPadX, labelBaseY, buf);
+  d.setDrawColor(1);
+}
+
+void drawGridFooter(oled& d, const char* description) {
+  drawActionFooter(d, description ? description : "", "select");
+}
+
+}  // namespace OLEDLayout
+
 void GridMenuScreen::drawHeader(oled& d) const {
   const char* title = title_;
   // Personalised "Hi <first>" greeting: shown whenever the badge is

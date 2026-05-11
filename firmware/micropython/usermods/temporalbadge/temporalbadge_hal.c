@@ -131,6 +131,24 @@ int temporalbadge_hal_ui_measure_hint(const char *hint) {
     return temporalbadge_runtime_ui_measure_hint(hint);
 }
 
+int temporalbadge_hal_ui_grid_cell(int col, int row, const char *label,
+                                   int selected, const char *icon_name) {
+    return temporalbadge_runtime_ui_grid_cell(col, row, label,
+                                               selected, icon_name);
+}
+
+int temporalbadge_hal_ui_grid_footer(const char *description) {
+    return temporalbadge_runtime_ui_grid_footer(description);
+}
+
+int temporalbadge_hal_ui_list_row(int row, const char *label, int selected) {
+    return temporalbadge_runtime_ui_list_row(row, label, selected);
+}
+
+int temporalbadge_hal_ui_list_rows_visible(void) {
+    return temporalbadge_runtime_ui_list_rows_visible();
+}
+
 // Buttons
 
 int temporalbadge_hal_button_state(int button_id) {
@@ -360,6 +378,14 @@ int temporalbadge_hal_ir_raw_send(const uint16_t *pairs,
                                    size_t          pair_count,
                                    uint32_t        carrier_hz) {
     return temporalbadge_runtime_ir_raw_send(pairs, pair_count, carrier_hz);
+}
+
+uint32_t temporalbadge_hal_ir_ms_since_tx(void) {
+    return temporalbadge_runtime_ir_ms_since_tx();
+}
+
+uint32_t temporalbadge_hal_ir_ms_since_rx(void) {
+    return temporalbadge_runtime_ir_ms_since_rx();
 }
 
 // Badge identity / boops

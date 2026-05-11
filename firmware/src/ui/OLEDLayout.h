@@ -131,4 +131,28 @@ int drawUpperFooterActions(oled& d, const char* xLabel, const char* yLabel,
                            const char* bLabel, const char* aLabel, int x = 0,
                            bool leftAlign = false);
 
+// ── Grid cell renderer ─────────────────────────────────────────────
+// Draws a single 2x2-grid menu cell using the same geometry the native
+// home-menu GridMenuScreen uses. Exposed so MicroPython apps can build
+// menus that look pixel-identical to the native chrome.
+//
+// `col` is 0 or 1, `row` is 0 or 1. `label` is right-aligned within the
+// cell after the icon. `iconData` may be NULL — the renderer falls back
+// to a blank icon slot (so the label gets ~10 extra px). When `selected`
+// is true the cell is filled and the icon + label are drawn in the
+// inverse colour.
+//
+// kGridX = 0, kGridY = 11, kCellW = 62, kCellH = 18, kGapX = kGapY = 4,
+// kRowStride = 22. Rounded corners with kCellRadius = 3, matching the
+// native renderer.
+void drawGridCell(oled& d, uint8_t col, uint8_t row,
+                   const char* label, bool selected,
+                   const uint8_t* iconData, uint8_t iconW, uint8_t iconH);
+
+// Bottom-edge footer with a scrolling description on the left and a
+// confirm-glyph chip on the right ("select"). Same chrome the native
+// GridMenuScreen draws so the IR Playground sub-apps line up cleanly.
+// Pass nullptr or "" to leave the description blank.
+void drawGridFooter(oled& d, const char* description);
+
 }  // namespace OLEDLayout

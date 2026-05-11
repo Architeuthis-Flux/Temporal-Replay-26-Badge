@@ -54,6 +54,81 @@ from pathlib import Path
 # Community Apps / JumperIDE sync.
 BAKE_DIRS = {'lib', 'matrixApps'}
 
+# Dev-only: additional path prefixes that should ALSO be baked into
+# kStartupFiles[] for the duration of an iteration cycle. Driven by
+# whatever is currently active in BADGE_DEV_FORCE_REFRESH (in
+# platformio.ini) — both knobs read from one source of truth so the
+# generator and the firmware always agree on which files are
+# refreshable.
+#
+# When this list is empty (production builds) the generator's behavior
+# is byte-for-byte identical to before.
+def read_dev_bake_paths(project_dir: Path) -> list[str]:
+    """Parse `firmware/platformio.ini` for the active (uncommented)
+    `-DBADGE_DEV_FORCE_REFRESH="..."` token and return its comma-
+    separated path entries.
+
+    Tolerates both `'-DBADGE_DEV_FORCE_REFRESH="..."'` (single-quoted,
+    SCons style) and `-DBADGE_DEV_FORCE_REFRESH=...` (no outer quotes).
+    Lines starting with `;` are skipped (PlatformIO INI comment).
+    """
+    pio_ini = project_dir / 'platformio.ini'
+    if not pio_ini.exists():
+        return []
+    paths: list[str] = []
+    try:
+        with open(pio_ini, 'r', encoding='utf-8') as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith(';') or line.startswith('#'):
+                    continue
+                if 'BADGE_DEV_FORCE_REFRESH' not in line:
+                    continue
+                # Extract the substring after the first `=`. The value
+                # should be a quoted string for SCons; handle both " and '.
+                idx = line.find('=')
+                if idx < 0:
+                    continue
+                tail = line[idx + 1:].strip()
+                # Strip any outer single quote (SCons-style wrap).
+                if tail.startswith("'") and tail.endswith("'"):
+                    tail = tail[1:-1].strip()
+                # Strip the inner double quotes.
+                if tail.startswith('"'):
+                    end = tail.find('"', 1)
+                    if end > 1:
+                        tail = tail[1:end]
+                # Now tail is the comma-separated path list.
+                for entry in tail.split(','):
+                    entry = entry.strip()
+                    # Strip leading slash so we can match against
+                    # `rel_path` parts. Trailing `*` or `/` mean prefix
+                    # — preserve `/` as the explicit prefix marker.
+                    if entry.endswith('*'):
+                        entry = entry[:-1]
+                    if entry.startswith('/'):
+                        entry = entry[1:]
+                    if entry:
+                        paths.append(entry)
+                # First active line wins; ignore further occurrences.
+                break
+    except OSError:
+        return []
+    return paths
+
+
+def _matches_dev_bake(rel_path: str, dev_bake_paths: list[str]) -> bool:
+    """Return True if rel_path (no leading `/`) is covered by any of the
+    dev-bake prefixes. A prefix ending in `/` requires path to start
+    with the prefix; otherwise an exact match is required."""
+    for prefix in dev_bake_paths:
+        if prefix.endswith('/'):
+            if rel_path.startswith(prefix):
+                return True
+        elif rel_path == prefix:
+            return True
+    return False
+
 # Top-level dirs whose loose files become kind:"file" registry entries.
 # Subdirs of /apps/ become kind:"app" registry entries (one per folder).
 LOOSE_FILE_DIRS = {'docs', 'images', 'messages'}
@@ -180,12 +255,20 @@ def write_if_changed(path: Path, content: str | bytes) -> bool:
 
 # ── File scan ────────────────────────────────────────────────────────────────
 
-def scan_files(data_dir: Path) -> list[dict]:
+def scan_files(data_dir: Path,
+                dev_bake_paths: list[str] | None = None) -> list[dict]:
     """Walk firmware/data/ and return a list of file records.
 
     Each record has rel_path, bytes, fnv (for the bake hash table),
     sha256 (for the manifest / registry), size, and a `bake` flag
-    indicating whether the file goes into StartupFilesData.h."""
+    indicating whether the file goes into StartupFilesData.h.
+
+    `dev_bake_paths` is the optional list of additional dev-only
+    prefixes pulled from BADGE_DEV_FORCE_REFRESH; any matching file
+    is force-baked even if it lives outside BAKE_DIRS."""
+    if dev_bake_paths is None:
+        dev_bake_paths = []
+
     files = []
     for path in sorted(data_dir.rglob('*')):
         rel_parts = path.relative_to(data_dir).parts
@@ -197,7 +280,9 @@ def scan_files(data_dir: Path) -> list[dict]:
             continue
         rel_path = '/' + path.relative_to(data_dir).as_posix()
         content = path.read_bytes()
-        bake = (rel_parts and rel_parts[0] in BAKE_DIRS)
+        rel_str = path.relative_to(data_dir).as_posix()
+        bake = (rel_parts and rel_parts[0] in BAKE_DIRS) or \
+               _matches_dev_bake(rel_str, dev_bake_paths)
         files.append({
             'rel_path': rel_path,
             'rel_parts': rel_parts,
@@ -289,12 +374,18 @@ def generate_header(bake_files: list[dict], history: dict) -> tuple[str, dict]:
     L.append('')
 
     # Managed directories — every directory under BAKE_DIRS that we
-    # actually emitted a file for. provisionStartupFiles ensures these
-    # exist on FATFS at boot.
-    bake_dirs = sorted({
-        '/' + '/'.join(f['rel_parts'][:-1])
-        for f in bake_files if len(f['rel_parts']) > 1
-    })
+    # actually emitted a file for, plus every ancestor up to the root.
+    # provisionStartupFiles iterates this list calling f_mkdir; FATFS
+    # f_mkdir won't auto-create missing ancestors, so we have to list
+    # them explicitly. Sorted so parents appear before children.
+    bake_dirs_set = set()
+    for f in bake_files:
+        if len(f['rel_parts']) <= 1:
+            continue
+        parent_parts = f['rel_parts'][:-1]
+        for i in range(1, len(parent_parts) + 1):
+            bake_dirs_set.add('/' + '/'.join(parent_parts[:i]))
+    bake_dirs = sorted(bake_dirs_set)
     L.append('// ─── Managed directories ─────────────────────────────────────────────')
     L.append('')
     if bake_dirs:
@@ -536,10 +627,34 @@ def generate(project_dir: Path, script_file: Path = None):
     print("[generate_startup_files] Scanning firmware/initial_filesystem/ ...")
 
     history = load_hash_history(history_file)
-    files = scan_files(src_dir)
+
+    # Dev-bake — pull any active BADGE_DEV_FORCE_REFRESH paths from
+    # platformio.ini and add them to the bake set so the firmware ships
+    # them in app0 (and shouldForceRefresh() at boot can overwrite the
+    # stale on-FAT versions). Empty list = production mode = no-op.
+    dev_bake_paths = read_dev_bake_paths(project_dir)
+    if dev_bake_paths:
+        print("[generate_startup_files] DEV BAKE active "
+              "(paths from platformio.ini BADGE_DEV_FORCE_REFRESH):")
+        for p in dev_bake_paths:
+            print(f"    {p}")
+        print("[generate_startup_files] DEV BAKE: extra files will be "
+              "embedded in firmware app0 — REMOVE the build flag for "
+              "production builds")
+
+    files = scan_files(src_dir, dev_bake_paths=dev_bake_paths)
 
     bake_files = [f for f in files if f['bake']]
     raw_base = os.environ.get("TEMPORAL_BADGE_RAW_BASE", DEFAULT_RAW_BASE)
+
+    if dev_bake_paths:
+        extra = [f for f in bake_files
+                  if f['rel_parts']
+                  and f['rel_parts'][0] not in BAKE_DIRS]
+        if extra:
+            total_bytes = sum(f['size'] for f in extra)
+            print(f"[generate_startup_files] DEV BAKE: "
+                  f"{len(extra)} extra files, {total_bytes} bytes")
 
     # 1) StartupFilesData.h (bake set only).
     header_text, history = generate_header(bake_files, history)

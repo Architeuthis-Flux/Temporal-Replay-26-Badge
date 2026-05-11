@@ -204,6 +204,55 @@ void freeFilePool() {
   sFileCap = 0;
 }
 
+// True iff the asset's destination is already fully present on disk
+// at the expected size. Used to:
+//   * adopt files that landed via `pio run -t uploadfs`, badge_sync,
+//     JumperIDE sync, or a prior firmware that didn't persist the
+//     NVS `v_<id>` marker, so statusOf can report them as installed
+//     rather than queueing a fresh download.
+//   * short-circuit `install()` when the bytes are already in place
+//     — without this, the free-space gate fails for big assets like
+//     the DOOM WAD whose own footprint dominates the free count, and
+//     the user sees "insufficient space" on an asset they already have.
+//
+// kFile checks the file size matches `entry.size`.
+// kApp checks every bundled file exists, with a size match for each
+// file that the registry declared a size for.
+//
+// `entry.size == 0` (registry omitted size) is treated as "can't
+// verify" and returns false — we'd rather redownload than mistakenly
+// adopt a stub.
+bool destFullyPresent(const AssetEntry& entry) {
+  if (entry.dest_path[0] == '\0') return false;
+  if (entry.kind == AssetKind::kFile) {
+    if (entry.size == 0) return false;
+    if (!Filesystem::fileExists(entry.dest_path)) return false;
+    const int32_t onDisk = Filesystem::fileSize(entry.dest_path);
+    return onDisk >= 0 && static_cast<uint32_t>(onDisk) == entry.size;
+  }
+  if (entry.fileCount == 0 || sFiles == nullptr) return false;
+  if (!Filesystem::fileExists(entry.dest_path)) return false;
+  for (uint16_t i = 0; i < entry.fileCount; ++i) {
+    const AssetFileEntry& fe = sFiles[entry.firstFileIdx + i];
+    char destFull[kAssetPathMax * 2];
+    if (fe.path[0] == '/') {
+      std::snprintf(destFull, sizeof(destFull), "%s%s",
+                    entry.dest_path, fe.path);
+    } else {
+      std::snprintf(destFull, sizeof(destFull), "%s/%s",
+                    entry.dest_path, fe.path);
+    }
+    if (!Filesystem::fileExists(destFull)) return false;
+    if (fe.size > 0) {
+      const int32_t onDisk = Filesystem::fileSize(destFull);
+      if (onDisk < 0 || static_cast<uint32_t>(onDisk) != fe.size) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool reserveFilePool(uint16_t want) {
   if (want <= sFileCap) return true;
   // Round up to the nearest 16 to keep realloc churn down across
@@ -400,9 +449,24 @@ const AssetEntry* findById(const char* id) {
 AssetStatus statusOf(const AssetEntry& entry) {
   char installed[kAssetVersionMax] = "";
   loadInstalledVersion(entry.id, installed, sizeof(installed));
+  // No NVS record yet, but the bytes might already be on disk — e.g.
+  // DOOM's WAD landed via `pio run -t uploadfs`, JumperIDE sync, or
+  // an older firmware that didn't write `v_<id>`. Adopt the asset and
+  // persist the version so subsequent calls (and especially
+  // installAll) treat it as installed instead of queueing a 4.5 MB
+  // redownload that immediately fails the free-space gate because
+  // the existing copy is using most of the free space.
+  if (installed[0] == '\0') {
+    if (destFullyPresent(entry)) {
+      Serial.printf("[registry] adopt existing %s (id=%s, version=%s)\n",
+                    entry.dest_path, entry.id, entry.version);
+      persistInstalledVersion(entry.id, entry.version);
+      return AssetStatus::kInstalled;
+    }
+    return AssetStatus::kNotInstalled;
+  }
   // File on disk must also exist; otherwise treat as not-installed
   // even if NVS says we did install once (user could have wiped FS).
-  if (installed[0] == '\0') return AssetStatus::kNotInstalled;
   if (!Filesystem::fileExists(entry.dest_path)) {
     return AssetStatus::kNotInstalled;
   }
@@ -684,6 +748,24 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
       cb(p, user);
     }
     return false;
+  }
+
+  // Adopt-on-install: if the destination is already fully present at
+  // the expected size, skip the download and just record the version.
+  // statusOf() now does the same on read, but a per-asset Install press
+  // from AssetDetailScreen bypasses statusOf entirely — and the
+  // free-space gate below would otherwise fail for assets whose own
+  // existing footprint dominates the free count (DOOM WAD: 4.5 MB
+  // against ~2 MB residual free on a typical ffat partition).
+  if (destFullyPresent(entry)) {
+    Serial.printf("[registry] install %s: already on disk, adopting\n",
+                  entry.id);
+    persistInstalledVersion(entry.id, entry.version);
+    if (cb) {
+      AssetProgress p{entry.size, entry.size, true, AssetInstallResult::kOk};
+      cb(p, user);
+    }
+    return true;
   }
 
   // Free-space gate. For app bundles we rely on the registry-declared

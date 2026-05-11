@@ -242,8 +242,17 @@ void WifiScreen::onTextSubmit(const char* text) {
       break;
     }
     case PendingInput::kEditPassword: {
+      // Skip the write when the user submitted an empty string — the
+      // editor always opens blank (we deliberately don't pre-fill an
+      // existing password), so the easy footgun is opening Edit
+      // Password to peek and pressing Send. That used to silently
+      // wipe the stored password via `setWifiCredentialsAt(..., "")`
+      // (which strncpy's "" into slot.pass and persistWifiSlot then
+      // removes the NVS pwd blob). If the user actually wants to
+      // clear a slot, they'd use Forget.
       if (pendingSlot_ >= 0 &&
-          static_cast<uint8_t>(pendingSlot_) < Config::kMaxWifiNetworks) {
+          static_cast<uint8_t>(pendingSlot_) < Config::kMaxWifiNetworks &&
+          text && text[0] != '\0') {
         badgeConfig.setWifiCredentialsAt(
             static_cast<uint8_t>(pendingSlot_), nullptr, text);
       }

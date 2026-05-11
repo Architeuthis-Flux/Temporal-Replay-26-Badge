@@ -55,6 +55,17 @@ compile_commands.json
 *.bak
 *.swp
 
+# Python bytecode caches. Created by host CPython any time we run
+# `python3 -m py_compile`, importable scripts under firmware/scripts/,
+# or any IDE's auto-import. They are tagged with the host interpreter
+# version (cpython-3xx) and are useless to the badge (which runs
+# MicroPython with a different bytecode magic). The build pipeline
+# (firmware/scripts/generate_startup_files.py) already skips them at
+# bake / mirror time, so we just want them out of git.
+__pycache__/
+*.pyc
+*.pyo
+
 # vcpkg
 vcpkg_installed/
 

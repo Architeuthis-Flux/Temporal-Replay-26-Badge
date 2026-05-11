@@ -287,6 +287,48 @@ static mp_obj_t temporalbadge_ui_measure_hint(mp_obj_t hint_obj) {
 static MP_DEFINE_CONST_FUN_OBJ_1(temporalbadge_ui_measure_hint_obj,
                                   temporalbadge_ui_measure_hint);
 
+static mp_obj_t temporalbadge_ui_grid_cell(size_t n_args,
+                                            const mp_obj_t *args) {
+    int col = mp_obj_get_int(args[0]);
+    int row = mp_obj_get_int(args[1]);
+    const char *label = mp_obj_str_get_str(args[2]);
+    int selected = mp_obj_is_true(args[3]);
+    const char *icon = (n_args > 4) ? optional_str(args[4]) : NULL;
+    temporalbadge_hal_ui_grid_cell(col, row, label, selected, icon);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ui_grid_cell_obj,
+                                            4, 5,
+                                            temporalbadge_ui_grid_cell);
+
+static mp_obj_t temporalbadge_ui_grid_footer(size_t n_args,
+                                              const mp_obj_t *args) {
+    const char *desc = (n_args > 0) ? optional_str(args[0]) : NULL;
+    temporalbadge_hal_ui_grid_footer(desc);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ui_grid_footer_obj,
+                                            0, 1,
+                                            temporalbadge_ui_grid_footer);
+
+static mp_obj_t temporalbadge_ui_list_row(size_t n_args,
+                                           const mp_obj_t *args) {
+    int row = mp_obj_get_int(args[0]);
+    const char *label = mp_obj_str_get_str(args[1]);
+    int selected = mp_obj_is_true(args[2]);
+    temporalbadge_hal_ui_list_row(row, label, selected);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ui_list_row_obj,
+                                            3, 3,
+                                            temporalbadge_ui_list_row);
+
+static mp_obj_t temporalbadge_ui_list_rows_visible(void) {
+    return mp_obj_new_int(temporalbadge_hal_ui_list_rows_visible());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_ui_list_rows_visible_obj,
+                                  temporalbadge_ui_list_rows_visible);
+
 // ── Buttons ─────────────────────────────────────────────────────────────────
 
 static mp_obj_t temporalbadge_button(mp_obj_t button_id_obj) {
@@ -877,6 +919,18 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ir_raw_send_obj,
                                             1, 2,
                                             temporalbadge_ir_raw_send);
 
+static mp_obj_t temporalbadge_ir_activity(void) {
+    uint32_t tx = temporalbadge_hal_ir_ms_since_tx();
+    uint32_t rx = temporalbadge_hal_ir_ms_since_rx();
+    mp_obj_t items[2] = {
+        (tx == UINT32_MAX) ? mp_const_none : mp_obj_new_int_from_uint(tx),
+        (rx == UINT32_MAX) ? mp_const_none : mp_obj_new_int_from_uint(rx),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_ir_activity_obj,
+                                  temporalbadge_ir_activity);
+
 // ── Badge identity / boops ──────────────────────────────────────────────────
 
 static mp_obj_t temporalbadge_my_uuid(void) {
@@ -1465,6 +1519,10 @@ static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_ui_inline_hint),       MP_ROM_PTR(&temporalbadge_ui_inline_hint_obj) },
     { MP_ROM_QSTR(MP_QSTR_ui_inline_hint_right), MP_ROM_PTR(&temporalbadge_ui_inline_hint_right_obj) },
     { MP_ROM_QSTR(MP_QSTR_ui_measure_hint),      MP_ROM_PTR(&temporalbadge_ui_measure_hint_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ui_grid_cell),         MP_ROM_PTR(&temporalbadge_ui_grid_cell_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ui_grid_footer),       MP_ROM_PTR(&temporalbadge_ui_grid_footer_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ui_list_row),          MP_ROM_PTR(&temporalbadge_ui_list_row_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ui_list_rows_visible), MP_ROM_PTR(&temporalbadge_ui_list_rows_visible_obj) },
 
     // Buttons & joystick
     { MP_ROM_QSTR(MP_QSTR_button),         MP_ROM_PTR(&temporalbadge_button_obj) },
@@ -1534,6 +1592,7 @@ static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_ir_nec_read),    MP_ROM_PTR(&temporalbadge_ir_nec_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_ir_raw_capture), MP_ROM_PTR(&temporalbadge_ir_raw_capture_obj) },
     { MP_ROM_QSTR(MP_QSTR_ir_raw_send),    MP_ROM_PTR(&temporalbadge_ir_raw_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_activity),    MP_ROM_PTR(&temporalbadge_ir_activity_obj) },
 
     // Badge identity / boops
     { MP_ROM_QSTR(MP_QSTR_my_uuid), MP_ROM_PTR(&temporalbadge_my_uuid_obj) },

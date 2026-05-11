@@ -3,6 +3,7 @@
 
 #include "../../infra/Bitops.h"
 #include "../../hardware/oled.h"
+#include "../../ui/AppIcons.h"
 #include "../../ui/ButtonGlyphs.h"
 #include "../../ui/OLEDLayout.h"
 #include "../../ui/UIFonts.h"
@@ -366,4 +367,150 @@ extern "C" int temporalbadge_runtime_ui_measure_hint(const char *hint)
     }
     prepareUiDraw();
     return ButtonGlyphs::measureInlineHint(badgeDisplay, hint);
+}
+
+// ── Native-grid menu primitives ─────────────────────────────────────────────
+// Lets MicroPython render a 2x2 menu using the exact same cell geometry as
+// the home GridMenuScreen, so apps like the IR Playground feel native.
+
+namespace {
+
+struct IconRegistryEntry
+{
+    const char *name;
+    const uint8_t *data;
+    uint8_t w;
+    uint8_t h;
+};
+
+// Small whitelist of icon names. Keep this short — adding an entry here
+// is the only way Python can reference a native icon, so the surface
+// stays tractable. Names are matched case-insensitively but tokens
+// should stay lowercase by convention.
+static const IconRegistryEntry kIconRegistry[] = {
+    {"apps",       AppIcons::apps,           AppIcons::kW, AppIcons::kH},
+    {"booper",     AppIcons::booper,         AppIcons::kW, AppIcons::kH},
+    {"games",      AppIcons::games,          AppIcons::kW, AppIcons::kH},
+    {"profile",    AppIcons::profile,        AppIcons::kW, AppIcons::kH},
+    {"settings",   AppIcons::settings,       AppIcons::kW, AppIcons::kH},
+    {"wifi",       AppIcons::wifi,           AppIcons::kW, AppIcons::kH},
+    {"map",        AppIcons::map,            AppIcons::kW, AppIcons::kH},
+    {"docs",       AppIcons::docs,           AppIcons::kW, AppIcons::kH},
+    {"schedule",   AppIcons::schedule,       AppIcons::kW, AppIcons::kH},
+    {"directory",  AppIcons::directory,      AppIcons::kW, AppIcons::kH},
+    {"synth",      AppIcons::synth,          AppIcons::kW, AppIcons::kH},
+    {"ir_play",    AppIcons::irPlayground,   AppIcons::kW, AppIcons::kH},
+    {"ir_block",   AppIcons::irBlockBattle,  AppIcons::kW, AppIcons::kH},
+};
+
+bool resolveIcon(const char *name, const uint8_t **out, uint8_t *w, uint8_t *h)
+{
+    if (out) *out = nullptr;
+    if (w) *w = 0;
+    if (h) *h = 0;
+    if (!name || !*name) return false;
+    for (const auto &entry : kIconRegistry)
+    {
+        if (strcmp(entry.name, name) == 0)
+        {
+            if (out) *out = entry.data;
+            if (w) *w = entry.w;
+            if (h) *h = entry.h;
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+extern "C" int temporalbadge_runtime_ui_grid_cell(int col, int row,
+                                                   const char *label,
+                                                   int selected,
+                                                   const char *icon_name)
+{
+    if (col < 0 || col > 1 || row < 0 || row > 1) return 0;
+    mpy_oled_note_activity();
+    prepareUiDraw();
+
+    const uint8_t *iconData = nullptr;
+    uint8_t iconW = 0;
+    uint8_t iconH = 0;
+    if (icon_name && *icon_name)
+    {
+        resolveIcon(icon_name, &iconData, &iconW, &iconH);
+    }
+    OLEDLayout::drawGridCell(badgeDisplay, (uint8_t)col, (uint8_t)row,
+                              label ? label : "",
+                              selected != 0,
+                              iconData, iconW, iconH);
+    return 1;
+}
+
+extern "C" int temporalbadge_runtime_ui_grid_footer(const char *description)
+{
+    mpy_oled_note_activity();
+    prepareUiDraw();
+    OLEDLayout::drawGridFooter(badgeDisplay, description ? description : "");
+    return 1;
+}
+
+// ── Native list-menu row primitive ──────────────────────────────────────────
+// Renders a single list row using the same geometry every native list
+// screen uses (Settings, Wifi, MenuOrder, etc.):
+//   kContentY = 10, kRowHeight = 11, UIFonts::kText (Smallsimple 5x7),
+//   text baseline = y + getAscent() + 1, drawSelectedRow for highlight,
+//   text colour inverted on the selected row.
+//
+// Caller is responsible for clearing the screen, drawing chrome, and
+// computing which slice of the items array is visible (the standard
+// IR Playground top bar leaves room for 4 rows: indices 0..3).
+
+extern "C" int temporalbadge_runtime_ui_list_row(int row,
+                                                  const char *label,
+                                                  int selected)
+{
+    if (row < 0) return 0;
+    mpy_oled_note_activity();
+    prepareUiDraw();
+
+    constexpr int kRowH = 11;
+    constexpr int kContentY = 10;
+    const int y = kContentY + row * kRowH;
+    if (y + kRowH > OLEDLayout::kFooterTopY) return 0;
+
+    badgeDisplay.setFont(UIFonts::kText);
+
+    if (selected != 0)
+    {
+        OLEDLayout::drawSelectedRow(badgeDisplay, y, kRowH,
+                                     /*x=*/0, /*w=*/OLEDLayout::kScreenW);
+        badgeDisplay.setDrawColor(0);
+    }
+    else
+    {
+        badgeDisplay.setDrawColor(1);
+    }
+
+    if (label && *label)
+    {
+        char buf[40] = {};
+        strncpy(buf, label, sizeof(buf) - 1);
+        OLEDLayout::fitText(badgeDisplay, buf, sizeof(buf),
+                             OLEDLayout::kScreenW - 6);
+        const int baseY = y + badgeDisplay.getAscent() + 1;
+        badgeDisplay.drawStr(3, baseY, buf);
+    }
+    badgeDisplay.setDrawColor(1);
+    return 1;
+}
+
+// Returns how many rows fit in the body region — exposed so MP-side
+// list_menu can paginate without hard-coding the cell height.
+extern "C" int temporalbadge_runtime_ui_list_rows_visible(void)
+{
+    constexpr int kRowH = 11;
+    constexpr int kContentY = 10;
+    const int avail = OLEDLayout::kFooterTopY - kContentY;
+    return avail > 0 ? (avail / kRowH) : 0;
 }

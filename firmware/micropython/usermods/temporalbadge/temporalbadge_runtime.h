@@ -55,6 +55,17 @@ int temporalbadge_runtime_ui_inline_hint_right(int right_x, int y,
                                                const char *hint);
 int temporalbadge_runtime_ui_measure_hint(const char *hint);
 
+// Native 2x2 grid menu primitives — render exactly like the home grid.
+int temporalbadge_runtime_ui_grid_cell(int col, int row,
+                                        const char *label, int selected,
+                                        const char *icon_name);
+int temporalbadge_runtime_ui_grid_footer(const char *description);
+
+// Native list-menu row + visible-row count.
+int temporalbadge_runtime_ui_list_row(int row, const char *label,
+                                       int selected);
+int temporalbadge_runtime_ui_list_rows_visible(void);
+
 // Buttons
 int temporalbadge_runtime_button_state(int button_id);
 int temporalbadge_runtime_button_pressed(int button_id);
@@ -141,6 +152,8 @@ int temporalbadge_runtime_ir_raw_capture(uint16_t *out_pairs,
 int temporalbadge_runtime_ir_raw_send(const uint16_t *pairs,
                                        size_t          pair_count,
                                        uint32_t        carrier_hz);
+uint32_t temporalbadge_runtime_ir_ms_since_tx(void);
+uint32_t temporalbadge_runtime_ir_ms_since_rx(void);
 
 // Badge identity / boops
 const char *temporalbadge_runtime_my_uuid(void);

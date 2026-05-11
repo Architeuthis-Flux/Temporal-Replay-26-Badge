@@ -64,7 +64,14 @@ class TextInputScreen : public Screen {
   // snaps to `len_` (append mode) so existing call sites that didn't
   // exercise inline editing keep their old behavior.
   uint16_t cursorPos_ = 0;
-  const char* title_ = "";
+  // Title is COPIED on configure() rather than held as a `const char*`.
+  // Callers (notably WifiScreen::onResume) build the title in a stack
+  // buffer and pass it through; storing just the pointer left `title_`
+  // dangling the moment the caller returned, and the next paint drew
+  // whatever stack bytes happened to be there as garbage in the header
+  // pill. 48 covers every current call site (longest is
+  // "Pwd for <SSID up to 20 chars>" → ~30 chars) with headroom.
+  char title_[48] = {};
   Submit onDone_ = nullptr;
   void* user_ = nullptr;
 

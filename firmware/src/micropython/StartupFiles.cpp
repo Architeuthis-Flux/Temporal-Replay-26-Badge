@@ -11,6 +11,112 @@ FATFS* replay_get_fatfs(void);
 #include "../infra/Filesystem.h"
 #include "StartupFilesData.h"
 
+// ── Dev force-refresh helpers ─────────────────────────────────────────────
+//
+// Source 1: compile-time `-DBADGE_DEV_FORCE_REFRESH="..."` (string literal).
+// Source 2: runtime marker file `/dev_force_refresh.txt`. Read once per
+//           provisioning pass, cached in s_runtime_force_refresh, deleted
+//           after the pass so it's a one-shot.
+//
+// Both sources concatenate. Entries are comma- or newline-separated;
+// trailing `/` or `*` makes the entry a prefix match.
+
+static constexpr const char* kForceRefreshMarker = "/dev_force_refresh.txt";
+static char s_runtime_force_refresh[1024] = {};
+static bool s_runtime_marker_loaded     = false;
+static bool s_runtime_marker_existed    = false;
+
+static void loadForceRefreshMarker(FATFS* fs) {
+    if (s_runtime_marker_loaded) return;
+    s_runtime_marker_loaded = true;
+
+    FIL fil;
+    if (f_open(fs, &fil, kForceRefreshMarker, FA_READ) != FR_OK) {
+        return;
+    }
+    s_runtime_marker_existed = true;
+    UINT n = 0;
+    FRESULT res = f_read(&fil, s_runtime_force_refresh,
+                         sizeof(s_runtime_force_refresh) - 1, &n);
+    f_close(&fil);
+    if (res != FR_OK) {
+        s_runtime_force_refresh[0] = '\0';
+        return;
+    }
+    s_runtime_force_refresh[n] = '\0';
+}
+
+static void consumeForceRefreshMarker(FATFS* fs) {
+    if (!s_runtime_marker_existed) return;
+    f_unlink(fs, kForceRefreshMarker);
+    Serial.printf("[startup] consumed %s (one-shot dev marker)\n",
+                  kForceRefreshMarker);
+}
+
+// Match a single path against a comma/newline-separated list of entries.
+// Each entry is trimmed; `#` starts a line comment. A trailing `/` or
+// `*` makes the entry a prefix match; otherwise it's an exact match.
+static bool matchInList(const char* path, const char* list) {
+    if (!path || !list || !*list) return false;
+
+    const char* p = list;
+    while (*p) {
+        // Skip separators.
+        while (*p == ',' || *p == '\n' || *p == '\r' ||
+               *p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!*p) break;
+
+        // Read one entry into a small stack buffer.
+        char entry[80];
+        size_t ei = 0;
+        while (*p && *p != ',' && *p != '\n' && *p != '\r' && *p != '#' &&
+               ei + 1 < sizeof(entry)) {
+            entry[ei++] = *p++;
+        }
+        // Skip past the rest of the line if we hit `#` or ran out of buf.
+        while (*p && *p != ',' && *p != '\n') p++;
+
+        // Right-trim spaces.
+        while (ei > 0 && (entry[ei - 1] == ' ' || entry[ei - 1] == '\t')) {
+            ei--;
+        }
+        entry[ei] = '\0';
+        if (ei == 0) continue;
+
+        // Treat trailing `*` or `/` as a prefix marker.
+        bool prefix = false;
+        if (entry[ei - 1] == '*') {
+            entry[--ei] = '\0';
+            prefix = true;
+        }
+        if (ei > 0 && entry[ei - 1] == '/') {
+            // Keep the slash in the comparison so `/apps/foo/` doesn't
+            // accidentally match `/apps/foobar.py`.
+            prefix = true;
+        }
+
+        if (prefix) {
+            if (strncmp(path, entry, ei) == 0) return true;
+        } else if (strcmp(path, entry) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool shouldForceRefresh(const char* path) {
+#ifdef BADGE_DEV_FORCE_REFRESH
+    if (matchInList(path, BADGE_DEV_FORCE_REFRESH)) return true;
+#endif
+    if (s_runtime_force_refresh[0] != '\0' &&
+        matchInList(path, s_runtime_force_refresh)) {
+        return true;
+    }
+    return false;
+}
+
 // ── FNV-1a hash (matches the Python generator) ─────────────────────────────
 
 static uint32_t fnv1a32(const uint8_t* data, size_t len) {
@@ -201,7 +307,19 @@ void provisionStartupFiles(bool forceSync) {
         ensureDir(fs, kStartupDirs[i]);
     }
 
-    int created = 0, updated = 0, skipped = 0;
+    // Pull in the dev force-refresh marker (if any). Cached for the
+    // remainder of this pass and consumed at the end so it's one-shot.
+    loadForceRefreshMarker(fs);
+#ifdef BADGE_DEV_FORCE_REFRESH
+    Serial.printf("[startup] dev force-refresh (build): %s\n",
+                  BADGE_DEV_FORCE_REFRESH);
+#endif
+    if (s_runtime_marker_existed && s_runtime_force_refresh[0] != '\0') {
+        Serial.printf("[startup] dev force-refresh (marker %s): %s\n",
+                      kForceRefreshMarker, s_runtime_force_refresh);
+    }
+
+    int created = 0, updated = 0, skipped = 0, devForced = 0;
 
     for (int i = 0; i < kStartupFileCount; i++) {
         const StartupFileInfo& f = kStartupFiles[i];
@@ -226,6 +344,18 @@ void provisionStartupFiles(bool forceSync) {
             if (writeFile(fs, f.path, f.content, f.contentLen)) {
                 Serial.printf("[startup] Force-synced %s\n", f.path);
                 updated++;
+            }
+            continue;
+        }
+
+        // Dev force-refresh — opt-in per file/prefix via build flag or
+        // /dev_force_refresh.txt marker. Bypasses the user-edit
+        // preservation entirely so iterating on a Python app doesn't
+        // require nuking the whole filesystem from Settings.
+        if (shouldForceRefresh(f.path)) {
+            if (writeFile(fs, f.path, f.content, f.contentLen)) {
+                Serial.printf("[startup] Dev force-refreshed %s\n", f.path);
+                devForced++;
             }
             continue;
         }
@@ -289,6 +419,11 @@ void provisionStartupFiles(bool forceSync) {
         }
     }
 
+    // Consume the runtime marker so the next boot starts clean. The
+    // build-flag list (if any) keeps applying — that's the design,
+    // it's the persistent dev-build behavior.
+    consumeForceRefreshMarker(fs);
+
     // Most user-facing files (apps, docs, images, doom1.wad) are
     // expected-missing on a freshly-flashed badge that hasn't run
     // `pio run -t uploadfs` / Community Apps install / JumperIDE sync
@@ -296,9 +431,10 @@ void provisionStartupFiles(bool forceSync) {
     // useful for actual problems. Operators can run
     //     python3 firmware/scripts/badge_sync.py diff $PORT
     // for a full diff against firmware/data/manifest.json.
-    if (created > 0 || updated > 0) {
-        Serial.printf("[startup] Provisioned: %d created, %d updated, %d unchanged\n",
-                      created, updated, skipped);
+    if (created > 0 || updated > 0 || devForced > 0) {
+        Serial.printf(
+            "[startup] Provisioned: %d created, %d updated, %d dev-forced, %d unchanged\n",
+            created, updated, devForced, skipped);
     }
 }
 
