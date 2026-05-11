@@ -17,13 +17,20 @@ namespace {
 const ota::AssetEntry* sActiveAsset = nullptr;
 char sQueuedSelectId[ota::kAssetIdMax] = "";
 
+// Checkbox-style markers — the bracket pair reads as a clear "is this
+// thing on my filesystem yet?" indicator on a single FONT_TINY row,
+// without needing a custom glyph font:
+//   [*]  installed (file/dir present on FFAT)
+//   [+]  installed but the registry has a newer version
+//   [!]  last install attempt failed
+//   [ ]  not installed yet
 const char* statusLabel(ota::AssetStatus s) {
   switch (s) {
-    case ota::AssetStatus::kInstalled:       return "OK";
-    case ota::AssetStatus::kUpdateAvailable: return "UPD";
-    case ota::AssetStatus::kFailed:          return "ERR";
+    case ota::AssetStatus::kInstalled:       return "[*]";
+    case ota::AssetStatus::kUpdateAvailable: return "[+]";
+    case ota::AssetStatus::kFailed:          return "[!]";
     case ota::AssetStatus::kNotInstalled:
-    default:                                 return " - ";
+    default:                                 return "[ ]";
   }
 }
 
@@ -43,10 +50,12 @@ void AssetLibraryScreen::selectAssetById(const char* id) {
 void AssetLibraryScreen::refreshStatusCache() {
   const uint8_t n = cachedCount_ < kStatusCacheCap ? cachedCount_
                                                    : kStatusCacheCap;
+  pendingCount_ = 0;
   for (uint8_t i = 0; i < n; ++i) {
     const ota::AssetEntry* e = ota::registry::at(i);
     statusCache_[i] = e ? ota::registry::statusOf(*e)
                         : ota::AssetStatus::kNotInstalled;
+    if (statusCache_[i] != ota::AssetStatus::kInstalled) ++pendingCount_;
   }
 }
 
@@ -82,15 +91,21 @@ void AssetLibraryScreen::onEnter(GUIManager& gui) {
   }
 
   // Honor a pending selectAssetById() from the DOOM no-WAD redirect.
+  // Asset rows live at index (registry_idx + 1) because of the
+  // synthetic "Download all" row at row 0.
   if (sQueuedSelectId[0]) {
     for (uint8_t i = 0; i < cachedCount_; ++i) {
       const ota::AssetEntry* e = ota::registry::at(i);
       if (e && std::strcmp(e->id, sQueuedSelectId) == 0) {
-        cursor_ = i;
+        cursor_ = static_cast<uint8_t>(i + 1);
         break;
       }
     }
     sQueuedSelectId[0] = '\0';
+  } else if (cursor_ == 0 && cachedCount_ > 0) {
+    // Default the cursor to the first real asset row instead of the
+    // "Download all" row — the bulk action is opt-in, not opt-out.
+    cursor_ = 1;
   }
 }
 
@@ -110,8 +125,12 @@ void AssetLibraryScreen::handleInput(const Inputs& inputs, int16_t cx,
 uint8_t AssetLibraryScreen::itemCount() const {
   // When the registry is empty we still expose one synthetic row so the
   // user gets actionable feedback ("No WiFi", "Refreshing...", etc.)
-  // instead of a blank list.
-  return cachedCount_ == 0 ? 1 : cachedCount_;
+  // instead of a blank list. Otherwise we always expose a synthetic
+  // "Download all" row at index 0 so the option is consistently
+  // findable, even when everything is already installed (in that
+  // case the row is informative rather than actionable).
+  if (cachedCount_ == 0) return 1;
+  return static_cast<uint8_t>(cachedCount_ + 1);
 }
 
 void AssetLibraryScreen::formatItem(uint8_t index, char* buf,
@@ -131,6 +150,17 @@ void AssetLibraryScreen::formatItem(uint8_t index, char* buf,
     }
     return;
   }
+  // Synthetic top row — always present.
+  if (index == 0) {
+    if (pendingCount_ == 0) {
+      std::snprintf(buf, bufSize, ">>> All up to date");
+    } else {
+      std::snprintf(buf, bufSize, ">>> Download all (%u) >>>",
+                    static_cast<unsigned>(pendingCount_));
+    }
+    return;
+  }
+  --index;  // shift past the synthetic row
   const ota::AssetEntry* e = ota::registry::at(index);
   if (!e) {
     std::snprintf(buf, bufSize, "(missing)");
@@ -141,8 +171,91 @@ void AssetLibraryScreen::formatItem(uint8_t index, char* buf,
   ota::AssetStatus s = (index < kStatusCacheCap)
                            ? statusCache_[index]
                            : ota::registry::statusOf(*e);
-  std::snprintf(buf, bufSize, "%-3s %s", statusLabel(s), e->name);
+  std::snprintf(buf, bufSize, "%s %s", statusLabel(s), e->name);
 }
+
+namespace {
+// Per-asset headline shown on the AssetLibraryScreen during a batch
+// install. Rendered directly here (instead of pushing AssetDetail) so
+// the batch flow is purely synchronous from the user's POV — no nested
+// screen pop dance.
+struct BatchUiCtx {
+  oled* d;
+  GUIManager* gui;
+  AssetLibraryScreen* screen;
+  char headline[32];
+  size_t indexInBatch;
+  size_t totalInBatch;
+  size_t bytesWritten;
+  size_t totalBytes;
+};
+
+void renderBatchProgress(BatchUiCtx& ctx) {
+  oled& d = *ctx.d;
+  d.clearBuffer();
+  d.setDrawColor(1);
+  OLEDLayout::drawStatusHeader(d, "INSTALLING ALL");
+  d.setFontPreset(FONT_TINY);
+  char line[40];
+  std::snprintf(line, sizeof(line), "Asset %u / %u",
+                static_cast<unsigned>(ctx.indexInBatch + 1),
+                static_cast<unsigned>(ctx.totalInBatch));
+  d.drawStr(2, 18, line);
+  // Per-asset name, truncated to fit.
+  char name[32];
+  std::snprintf(name, sizeof(name), "%s", ctx.headline);
+  OLEDLayout::fitText(d, name, sizeof(name), 124);
+  d.drawStr(2, 27, name);
+
+  if (ctx.totalBytes > 0) {
+    std::snprintf(line, sizeof(line), "%u / %u KB",
+                  static_cast<unsigned>(ctx.bytesWritten / 1024),
+                  static_cast<unsigned>(ctx.totalBytes / 1024));
+  } else {
+    std::snprintf(line, sizeof(line), "%u KB",
+                  static_cast<unsigned>(ctx.bytesWritten / 1024));
+  }
+  d.drawStr(2, 36, line);
+  constexpr int kBarX = 4, kBarY = 42, kBarW = 120, kBarH = 8;
+  d.drawRFrame(kBarX, kBarY, kBarW, kBarH, 1);
+  if (ctx.totalBytes > 0) {
+    int fill = static_cast<int>(((ctx.bytesWritten * (kBarW - 2)) /
+                                 ctx.totalBytes));
+    if (fill < 0) fill = 0;
+    if (fill > kBarW - 2) fill = kBarW - 2;
+    d.drawBox(kBarX + 1, kBarY + 1, fill, kBarH - 2);
+  }
+  OLEDLayout::drawNavFooter(d, "Do not unplug");
+  d.sendBuffer();
+}
+
+void batchHeadlineCb(const ota::AssetEntry& entry, size_t i, size_t total,
+                     void* user) {
+  auto* ctx = static_cast<BatchUiCtx*>(user);
+  if (!ctx) return;
+  std::strncpy(ctx->headline, entry.name, sizeof(ctx->headline) - 1);
+  ctx->headline[sizeof(ctx->headline) - 1] = '\0';
+  ctx->indexInBatch = i;
+  ctx->totalInBatch = total;
+  ctx->bytesWritten = 0;
+  ctx->totalBytes = entry.size;
+  renderBatchProgress(*ctx);
+}
+
+void batchProgressCb(const ota::AssetProgress& prog, void* user) {
+  auto* ctx = static_cast<BatchUiCtx*>(user);
+  if (!ctx) return;
+  ctx->bytesWritten = prog.bytesWritten;
+  if (prog.totalBytes > 0) ctx->totalBytes = prog.totalBytes;
+  // Throttle redraws — the progress callback fires up to 4x/sec from
+  // installFileToPath; redraw at the same cadence.
+  static uint32_t sLastDrawMs = 0;
+  const uint32_t now = millis();
+  if (!prog.done && (now - sLastDrawMs) < 200) return;
+  sLastDrawMs = now;
+  renderBatchProgress(*ctx);
+}
+}  // namespace
 
 void AssetLibraryScreen::onItemSelect(uint8_t index, GUIManager& gui) {
   if (cachedCount_ == 0) {
@@ -152,6 +265,28 @@ void AssetLibraryScreen::onItemSelect(uint8_t index, GUIManager& gui) {
     doRefresh(/*ignoreCooldown=*/true);
     return;
   }
+  // Synthetic top row.
+  if (index == 0) {
+    Haptics::shortPulse();
+    if (pendingCount_ == 0) {
+      // Nothing to install — re-fetch the registry so the user can
+      // confirm they actually have the latest list. Cheap and
+      // reassuring vs. a silent confirm-with-no-effect.
+      doRefresh(/*ignoreCooldown=*/true);
+      return;
+    }
+    BatchUiCtx ctx{};
+    ctx.d = &gui.oledDisplay();
+    ctx.gui = &gui;
+    ctx.screen = this;
+    std::strncpy(ctx.headline, "Starting...", sizeof(ctx.headline) - 1);
+    ctx.totalInBatch = pendingCount_;
+    renderBatchProgress(ctx);
+    ota::registry::installAll(&batchHeadlineCb, &batchProgressCb, &ctx);
+    refreshStatusCache();
+    return;
+  }
+  --index;  // shift past synthetic row
   const ota::AssetEntry* e = ota::registry::at(index);
   if (!e) return;
   AssetDetailScreen::setActiveAsset(e);
@@ -235,25 +370,48 @@ void AssetDetailScreen::render(oled& d, GUIManager& /*gui*/) {
 
   // Idle: show metadata + action footer.
   ota::AssetStatus status = ota::registry::statusOf(*sActiveAsset);
-  char line[64];
+  char line[80];
 
-  std::snprintf(line, sizeof(line), "Latest:    %s",
-                sActiveAsset->version);
-  d.drawStr(2, 18, line);
-
+  // Top line — installed version (or "not installed"). This is the
+  // single most useful "is it on my filesystem yet?" datum, so it
+  // gets the headline slot.
   const char* installed = ota::registry::installedVersionOf(*sActiveAsset);
   if (installed[0]) {
-    std::snprintf(line, sizeof(line), "Installed: %s", installed);
+    if (status == ota::AssetStatus::kUpdateAvailable) {
+      std::snprintf(line, sizeof(line), "On badge: %s (UPD)", installed);
+    } else {
+      std::snprintf(line, sizeof(line), "On badge: %s", installed);
+    }
   } else {
-    std::snprintf(line, sizeof(line), "Installed: (none)");
+    std::snprintf(line, sizeof(line), "On badge: (not installed)");
   }
+  d.drawStr(2, 18, line);
+
+  // Path it lives at on FFAT — directory for app bundles, file path
+  // for single-file assets.
+  const bool isApp = sActiveAsset->kind == ota::AssetKind::kApp;
+  if (isApp && sActiveAsset->fileCount > 0) {
+    std::snprintf(line, sizeof(line), "Path: %s/ (%u files)",
+                  sActiveAsset->dest_path,
+                  static_cast<unsigned>(sActiveAsset->fileCount));
+  } else {
+    std::snprintf(line, sizeof(line), "Path: %s",
+                  sActiveAsset->dest_path);
+  }
+  OLEDLayout::fitText(d, line, sizeof(line), 124);
   d.drawStr(2, 27, line);
 
+  // Latest version + size on one line so the description still fits.
   if (sActiveAsset->size > 0) {
-    std::snprintf(line, sizeof(line), "Size:      %u KB",
-                  (unsigned)(sActiveAsset->size / 1024));
-    d.drawStr(2, 36, line);
+    std::snprintf(line, sizeof(line), "Latest: %s  %u KB",
+                  sActiveAsset->version,
+                  static_cast<unsigned>(sActiveAsset->size / 1024));
+  } else {
+    std::snprintf(line, sizeof(line), "Latest: %s",
+                  sActiveAsset->version);
   }
+  OLEDLayout::fitText(d, line, sizeof(line), 124);
+  d.drawStr(2, 36, line);
 
   if (sActiveAsset->description[0]) {
     char desc[80];

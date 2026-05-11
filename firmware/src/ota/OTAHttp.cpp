@@ -13,6 +13,7 @@
 #include "esp32-hal-cpu.h"
 
 #include "../api/WiFiService.h"
+#include "../infra/PsramAllocator.h"
 
 namespace ota {
 
@@ -144,8 +145,13 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     wifiService.noteRequestFailed();
     return result;
   }
+  // Body lands in PSRAM when available so a 50-100 KB JSON response
+  // doesn't gnaw at internal heap. allocPreferPsram falls back to
+  // internal malloc for tiny (<4 KB) buffers and for boards without
+  // PSRAM. Caller frees with std::free(), which is safe for both
+  // heap regions on ESP-IDF.
   size_t pos = s.length();
-  char* buf = static_cast<char*>(std::malloc(pos + 1));
+  char* buf = static_cast<char*>(BadgeMemory::allocPreferPsram(pos + 1));
   if (!buf) {
     std::snprintf(sError, sizeof(sError), "out of memory");
     http.end();

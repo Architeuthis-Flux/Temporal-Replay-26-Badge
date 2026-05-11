@@ -18,7 +18,11 @@
 #define WIFI_PASS      badgeConfig.wifiPass()
 
 // Timing
-static const int WIFI_TIMEOUT_MS    = 15000;
+// Generous enough to cover WPA3 SAE handshakes and the occasional slow
+// AP that takes its time replying to assoc-request. Earlier slot
+// candidates use a shorter per-attempt budget (kPerAttemptTimeoutMs in
+// WiFiService.cpp); only the *last* candidate gets the full timeout.
+static const int WIFI_TIMEOUT_MS    = 30000;
 static const int PAIRING_TIMEOUT_MS = 15000;
 static const int POLL_INTERVAL_MS   = 2000;
 

@@ -495,8 +495,8 @@ def spinner_char(tick: int) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="W.O.P.R. Badge Flash Terminal")
-    parser.add_argument("env", nargs="?", default="echo-dev",
-                        help="PlatformIO env (default: echo-dev)")
+    parser.add_argument("env", nargs="?", default="echo-expanded",
+                        help="PlatformIO env (default: echo-expanded)")
     parser.add_argument("--port", nargs="+", default=None,
                         help="Serial port(s) to flash (default: auto-detect all)")
     parser.add_argument("--post-sync", action="store_true",

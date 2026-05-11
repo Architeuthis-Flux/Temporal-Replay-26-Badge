@@ -6,8 +6,7 @@
 //
 // Schema v2 (registry/community_apps.json) supports two entry kinds:
 // single files (`kind: "file"`) and multi-file app bundles
-// (`kind: "app"`). The on-badge install path currently implements
-// kind:"file"; kind:"app" handling is a follow-up.
+// (`kind: "app"`). Both kinds are installed through registry::install.
 //
 //   {
 //     "schema_version": 2,
@@ -65,16 +64,40 @@ constexpr size_t kAssetPathMax = 64;
 constexpr size_t kAssetSha256Max = 72;  // hex chars, NUL
 constexpr size_t kAssetDescMax = 96;
 
+enum class AssetKind : uint8_t {
+  kFile,   // single file at dest_path; url + sha256 on the entry
+  kApp,    // multi-file bundle under dest_path (treated as dest_dir);
+           // per-file metadata lives in the parallel files[] pool
+};
+
+// One sub-file inside a kind=app bundle. Path is relative to the
+// owning AssetEntry::dest_path (which is the bundle's dest_dir for
+// apps). The pool of these is allocated from PSRAM during refresh —
+// see registry internals.
+struct AssetFileEntry {
+  char path[kAssetPathMax];
+  char url[kAssetUrlMax];
+  char sha256[kAssetSha256Max];
+  uint32_t size;
+};
+
 struct AssetEntry {
   char id[kAssetIdMax];
   char name[kAssetNameMax];
   char version[kAssetVersionMax];
+  // For kind=file: the source URL. For kind=app: empty (per-file URLs
+  // live in the AssetFileEntry pool).
   char url[kAssetUrlMax];
-  char sha256[kAssetSha256Max];   // empty if not provided
+  char sha256[kAssetSha256Max];   // empty if not provided / kind=app
+  // For kind=file: target file path (e.g. "/doom1.wad").
+  // For kind=app:  target directory (e.g. "/apps/zigmoji").
   char dest_path[kAssetPathMax];
   char description[kAssetDescMax];
-  uint32_t size;                  // 0 if registry omitted it
+  uint32_t size;                  // file: byte count; app: total bytes
   uint32_t min_free_bytes;        // 0 if not specified
+  AssetKind kind;
+  uint16_t firstFileIdx;          // app: index into the file pool
+  uint16_t fileCount;             // app: number of files in this bundle
 };
 
 enum class AssetStatus : uint8_t {
@@ -130,6 +153,25 @@ const char* installedVersionOf(const AssetEntry& entry);
 
 bool install(const AssetEntry& entry, AssetProgressCb cb, void* user);
 bool remove(const AssetEntry& entry);
+
+// Walks every registered asset and installs each one whose status is
+// kNotInstalled or kUpdateAvailable. Already-installed assets are
+// skipped. The callback is invoked per-file (file kind) or per-sub-
+// file (app kind) as the install progresses; betweenAssetCb fires
+// once per asset boundary so the UI can swap headlines.
+using AssetBatchHeadlineCb =
+    void (*)(const AssetEntry& entry, size_t indexInBatch,
+             size_t totalInBatch, void* user);
+
+struct InstallAllResult {
+  size_t total;        // assets considered for install (excluding already-OK)
+  size_t succeeded;
+  size_t failed;
+};
+
+InstallAllResult installAll(AssetBatchHeadlineCb headlineCb,
+                            AssetProgressCb progressCb,
+                            void* user);
 
 const char* lastErrorMessage();
 time_t lastRefreshEpoch();

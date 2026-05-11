@@ -39,8 +39,11 @@ class AssetLibraryScreen : public ListMenuScreen {
   // call; without this cache, formatItem() (called every frame per row)
   // pushes the GUI service over its 33ms frame budget. Rebuilt by
   // refreshStatusCache() on enter and after each install/remove.
-  static constexpr uint8_t kStatusCacheCap = 16;
+  static constexpr uint8_t kStatusCacheCap = 64;
   mutable ota::AssetStatus statusCache_[kStatusCacheCap] = {};
+  // Number of registry assets whose status is not kInstalled. Drives
+  // the synthetic "Install all updates" row at index 0.
+  uint8_t pendingCount_ = 0;
   void doRefresh(bool ignoreCooldown);
   void refreshStatusCache();
 };

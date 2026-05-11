@@ -356,7 +356,17 @@ def generate_community_apps(files: list[dict], data_dir: Path,
             continue
         head = parts[0]
         if head == 'apps' and len(parts) >= 3:
+            # apps/<name>/<file...> — bundle entry.
             apps.setdefault(parts[1], []).append(f)
+        elif head == 'apps' and len(parts) == 2:
+            # apps/<file> — single-file standalone app like hello.py
+            # or ir_loopback_test.py. Install as kind:"file" so it
+            # lands directly in /apps/ alongside the bundled-app
+            # subdirectories. Skip the apps/README.md — it's
+            # internal author docs, not a runnable app.
+            if parts[1].lower() == 'readme.md':
+                continue
+            file_entries.append(f)
         elif head in LOOSE_FILE_DIRS or (
                 len(parts) == 1 and parts[0] in LOOSE_ROOT_FILES):
             file_entries.append(f)

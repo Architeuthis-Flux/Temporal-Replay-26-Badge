@@ -423,16 +423,88 @@
       ]
     },
     {
-      "id": "API_REFERENCE-md",
+      "id": "apps-api_test-py",
       "kind": "file",
-      "name": "API_REFERENCE.md",
-      "version": "f3d868cbcea8",
-      "dest_path": "/API_REFERENCE.md",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/API_REFERENCE.md",
-      "sha256": "f3d868cbcea89c95d53c79d1d8cc11a6dc24dcf1f4e3fbcd12e2e82cf6a31088",
-      "size": 150,
-      "min_free_bytes": 1174,
-      "description": "Optional asset (/API_REFERENCE.md)"
+      "name": "api_test.py",
+      "version": "980f103488d6",
+      "dest_path": "/apps/api_test.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/api_test.py",
+      "sha256": "980f103488d6885524b9f130df162013965ec95f0bd502d8d24e7aa5da70115a",
+      "size": 12775,
+      "min_free_bytes": 13799,
+      "description": "Optional asset (/apps/api_test.py)"
+    },
+    {
+      "id": "apps-font_demo-py",
+      "kind": "file",
+      "name": "font_demo.py",
+      "version": "a5e71b9d3731",
+      "dest_path": "/apps/font_demo.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/font_demo.py",
+      "sha256": "a5e71b9d3731889ac7ac5f8e9d1ceeb838cd45dfcb0b7f95613118b5d74efbf8",
+      "size": 1450,
+      "min_free_bytes": 2474,
+      "description": "Optional asset (/apps/font_demo.py)"
+    },
+    {
+      "id": "apps-hello-py",
+      "kind": "file",
+      "name": "hello.py",
+      "version": "7cf686b7f7e6",
+      "dest_path": "/apps/hello.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/hello.py",
+      "sha256": "7cf686b7f7e61250eec05393824124ed5da01a7886eb5b711fd8ccd38400e9cf",
+      "size": 934,
+      "min_free_bytes": 1958,
+      "description": "Optional asset (/apps/hello.py)"
+    },
+    {
+      "id": "apps-ir_loopback_test-py",
+      "kind": "file",
+      "name": "ir_loopback_test.py",
+      "version": "7779d7073df1",
+      "dest_path": "/apps/ir_loopback_test.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/ir_loopback_test.py",
+      "sha256": "7779d7073df10754e57654385994208cd7df30f05a76831b85b226e929f0cee2",
+      "size": 6196,
+      "min_free_bytes": 7220,
+      "description": "Optional asset (/apps/ir_loopback_test.py)"
+    },
+    {
+      "id": "apps-tilt_ball-py",
+      "kind": "file",
+      "name": "tilt_ball.py",
+      "version": "c2e41ec8e3dc",
+      "dest_path": "/apps/tilt_ball.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tilt_ball.py",
+      "sha256": "c2e41ec8e3dc7b24ebffbce342bf094ebad7cefad65a2e4cc6ae8ba91dee3235",
+      "size": 1447,
+      "min_free_bytes": 2471,
+      "description": "Optional asset (/apps/tilt_ball.py)"
+    },
+    {
+      "id": "apps-viperide_reinit-py",
+      "kind": "file",
+      "name": "viperide_reinit.py",
+      "version": "2b33701064ec",
+      "dest_path": "/apps/viperide_reinit.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/viperide_reinit.py",
+      "sha256": "2b33701064ec05f6057a7f45a0bcf35d01c355b3a815a72ab9800988cef3eaee",
+      "size": 936,
+      "min_free_bytes": 1960,
+      "description": "Optional asset (/apps/viperide_reinit.py)"
+    },
+    {
+      "id": "apps-zigmoji-py",
+      "kind": "file",
+      "name": "zigmoji.py",
+      "version": "6ca84be05bfd",
+      "dest_path": "/apps/zigmoji.py",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/zigmoji.py",
+      "sha256": "6ca84be05bfd5b89b78ccbe16abf578046cf892f85e43141c0432a909c67ae33",
+      "size": 4156,
+      "min_free_bytes": 5180,
+      "description": "Optional asset (/apps/zigmoji.py)"
     },
     {
       "id": "docs-API_REFERENCE-md",
@@ -469,18 +541,6 @@
       "size": 509,
       "min_free_bytes": 1533,
       "description": "Optional asset (/docs/README.md)"
-    },
-    {
-      "id": "messages-json",
-      "kind": "file",
-      "name": "messages.json",
-      "version": "11dc8420933e",
-      "dest_path": "/messages.json",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/messages.json",
-      "sha256": "11dc8420933e9af9aa093b236a0db295492d07e1deed1d70053ac3adbe5c5c46",
-      "size": 61,
-      "min_free_bytes": 1085,
-      "description": "Optional asset (/messages.json)"
     }
   ]
 }
