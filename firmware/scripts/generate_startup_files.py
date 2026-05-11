@@ -335,13 +335,20 @@ def generate_full_manifest(files: list[dict], raw_base: str) -> str:
 
 
 def generate_community_apps(files: list[dict], data_dir: Path,
-                            raw_base: str) -> str:
+                            raw_base: str,
+                            curated_registry: Path = None) -> str:
     """Emit registry/community_apps.json.
 
     Sources:
       - apps/<name>/  → kind:"app", dest_dir=/apps/<name>, files: [...]
+      - apps/<file>   → kind:"file" (loose top-level scripts like hello.py)
       - docs/, images/, messages/  → kind:"file"
       - data/ root files in LOOSE_ROOT_FILES → kind:"file"
+      - curated_registry (registry/registry.json schema v1) → kind:"file"
+        Used for big assets that don't ship in initial_filesystem/
+        and instead live as GitHub release attachments — doom1.wad
+        is the canonical example. This lets the badge see the full
+        asset catalog from one HTTP fetch.
 
     For app entries the per-file list (path/sha256/size/url) is
     inlined directly rather than referenced through a per-app
@@ -438,6 +445,46 @@ def generate_community_apps(files: list[dict], data_dir: Path,
             "description": f"Optional asset ({f['rel_path']})",
         })
 
+    # Curated big-file assets from registry/registry.json. These are
+    # files too large to live in initial_filesystem/ (gitignored,
+    # shipped as GitHub release attachments). doom1.wad is the
+    # canonical example — ~4 MB WAD installed via the
+    # /releases/latest/download/<name> URL pattern. We dedup on
+    # dest_path so a hand-curated entry can't shadow a generated one.
+    existing_dests = {a.get("dest_path") for a in assets if "dest_path" in a}
+    if curated_registry and curated_registry.exists():
+        try:
+            curated = json.loads(curated_registry.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"[generate_startup_files] WARNING: {curated_registry} "
+                  f"unparseable: {exc}; skipping curated merge")
+            curated = None
+        if curated:
+            for entry in curated.get("assets", []) or []:
+                dp = entry.get("dest_path")
+                if not dp:
+                    continue  # curated apps would need kind:"app" + files[]
+                if dp in existing_dests:
+                    continue
+                # registry.json schema v1 lacks the explicit `kind`
+                # field; everything in there is a single file today.
+                merged = {
+                    "id": entry.get("id", dp.lstrip("/").replace("/", "-")[:32]),
+                    "kind": "file",
+                    "name": entry.get("name", dp.rsplit("/", 1)[-1]),
+                    "version": entry.get("version", "1"),
+                    "dest_path": dp,
+                    "url": entry["url"],
+                    "size": entry.get("size", 0),
+                    "min_free_bytes": entry.get("min_free_bytes",
+                                                int(entry.get("size", 0)) + 4096),
+                    "description": entry.get("description", ""),
+                }
+                if entry.get("sha256"):
+                    merged["sha256"] = entry["sha256"]
+                assets.append(merged)
+                existing_dests.add(dp)
+
     return json.dumps({
         "schema_version": 2,
         "generator": "generate_startup_files.py",
@@ -459,6 +506,10 @@ def generate(project_dir: Path, script_file: Path = None):
     # off the repo root is friendlier for forks / external CDNs).
     repo_root = project_dir.parent if project_dir.name == 'firmware' else project_dir
     registry_file = repo_root / 'registry' / 'community_apps.json'
+    # Hand-curated big-file assets (release attachments like doom1.wad).
+    # Merged into community_apps.json so the badge sees the full
+    # catalog from one fetch.
+    curated_registry_file = repo_root / 'registry' / 'registry.json'
 
     if not src_dir.exists():
         print(f"[generate_startup_files] WARNING: {src_dir} not found, generating empty header")
@@ -517,8 +568,10 @@ def generate(project_dir: Path, script_file: Path = None):
             if stale.is_file():
                 stale.unlink()
 
-    # 3) registry/community_apps.json (with inlined per-app file lists).
-    registry_text = generate_community_apps(files, src_dir, raw_base)
+    # 3) registry/community_apps.json (with inlined per-app file lists,
+    #    plus any curated big-file assets merged from registry.json).
+    registry_text = generate_community_apps(files, src_dir, raw_base,
+                                            curated_registry_file)
     if write_if_changed(registry_file, registry_text):
         try:
             display = registry_file.relative_to(project_dir)

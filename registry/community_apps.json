@@ -541,6 +541,18 @@
       "size": 509,
       "min_free_bytes": 1533,
       "description": "Optional asset (/docs/README.md)"
+    },
+    {
+      "id": "doom1-shareware",
+      "kind": "file",
+      "name": "DOOM 1 Shareware",
+      "version": "1.9",
+      "dest_path": "/doom1.wad",
+      "url": "https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/releases/latest/download/doom1.wad",
+      "size": 4196020,
+      "min_free_bytes": 4500000,
+      "description": "Original 1993 shareware episode. Required for the DOOM tile.",
+      "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771"
     }
   ]
 }
