@@ -296,6 +296,78 @@ esp_err_t nec_tx_send_nowait(nec_tx_context_t *ctx,
 }
 
 
+esp_err_t nec_tx_send_symbols(nec_tx_context_t       *ctx,
+                               rmt_encoder_handle_t   encoder,
+                               const rmt_symbol_word_t *symbols,
+                               size_t                  symbol_count,
+                               int32_t                 timeout_ms)
+{
+    if ((ctx == NULL) || (encoder == NULL) ||
+        (symbols == NULL) || (symbol_count == 0U))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ctx->ask_to_notify == NULL || ctx->chan == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    bool wait_forever = (timeout_ms < 0);
+    uint32_t timeout_to_use_ms = (timeout_ms > 0) ? (uint32_t)timeout_ms : 7000U;
+    TickType_t ticks_to_wait = wait_forever
+        ? portMAX_DELAY
+        : pdMS_TO_TICKS(timeout_to_use_ms);
+
+    if (ulTaskNotifyTake(pdTRUE, ticks_to_wait) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "send_symbols: notify timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ctx->is_transmitting = true;
+    esp_err_t ret = rmt_transmit(ctx->chan,
+                                  encoder,
+                                  symbols,
+                                  symbol_count * sizeof(rmt_symbol_word_t),
+                                  &s_tx_cfg);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "send_symbols rmt_transmit: %s", esp_err_to_name(ret));
+        ctx->is_transmitting = false;
+        (void)xTaskNotifyGive(ctx->ask_to_notify);
+    }
+    return ret;
+}
+
+esp_err_t nec_tx_set_carrier_freq(nec_tx_context_t *ctx,
+                                   uint32_t          frequency_hz,
+                                   float             duty)
+{
+    if ((ctx == NULL) || (ctx->chan == NULL))
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((duty <= 0.0f) || (duty >= 1.0f))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((frequency_hz < 1000U) || (frequency_hz > 1000000U))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ctx->is_transmitting)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    rmt_carrier_config_t cc = {0};
+    cc.frequency_hz              = frequency_hz;
+    cc.duty_cycle                = duty;
+    cc.flags.polarity_active_low = 0U;
+    cc.flags.always_on           = 0U;
+    return rmt_apply_carrier(ctx->chan, &cc);
+}
+
 esp_err_t nec_tx_set_carrier_duty(nec_tx_context_t *ctx, float duty)
 {
     if ((ctx == NULL) || (ctx->chan == NULL))

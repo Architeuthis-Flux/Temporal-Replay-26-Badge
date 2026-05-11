@@ -111,6 +111,34 @@ esp_err_t nec_tx_wait(nec_tx_context_t *ctx, uint32_t timeout_ms);
 esp_err_t nec_tx_deinit(nec_tx_context_t *ctx);
 
 /*
+ * Transmit a pre-built array of raw RMT symbols using a caller-supplied
+ * encoder (typically a copy encoder from rmt_new_copy_encoder()). Used by
+ * the IR Playground for consumer NEC frames and arbitrary captured remote
+ * codes that do not fit the badge's multi-word + CRC dialect.
+ *
+ * Acquires the same task-notify guard as nec_tx_send so it serializes
+ * cleanly with badge-mode traffic. Caller is responsible for keeping
+ * `symbols` valid until nec_tx_wait() returns.
+ *
+ * Must be called from the same FreeRTOS task that owns the context.
+ */
+esp_err_t nec_tx_send_symbols(nec_tx_context_t       *ctx,
+                               rmt_encoder_handle_t   encoder,
+                               const rmt_symbol_word_t *symbols,
+                               size_t                  symbol_count,
+                               int32_t                 timeout_ms);
+
+/*
+ * Reapply the carrier with a custom frequency. Default boot config is
+ * 38 kHz; some captured remotes (Sony/RC5/RC6) want 36–40 kHz, and the
+ * raw API exposes a wider 30–60 kHz range. duty stays at the current
+ * cached value. Safe only between transmissions.
+ */
+esp_err_t nec_tx_set_carrier_freq(nec_tx_context_t *ctx,
+                                   uint32_t          frequency_hz,
+                                   float             duty);
+
+/*
  * Change the 38 kHz carrier duty cycle at runtime.  Lower duty = lower
  * effective LED drive current = shorter IR range.  Useful for testing
  * self-loopback where a full-duty LED overwhelms even a covered sensor.

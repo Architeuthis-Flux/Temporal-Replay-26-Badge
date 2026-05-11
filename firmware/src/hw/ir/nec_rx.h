@@ -38,11 +38,25 @@ extern "C" {
 typedef void (*nec_rx_frame_cb_t)(const nec_mw_result_t *result,
                                    void                  *user_data);
 
+/*
+ * Raw symbol callback — invoked on every burst the RMT receiver decodes,
+ * BEFORE the multi-word NEC decoder runs. Lets BadgeIR feed the raw
+ * symbol stream into MicroPython for consumer NEC / arbitrary-protocol
+ * decoding without losing back-compat with the badge's own dialect.
+ *
+ * Callback runs from decode_task. Symbols pointer is owned by the IDF
+ * RMT driver and only valid for the duration of the call.
+ */
+typedef void (*nec_rx_raw_cb_t)(const rmt_symbol_word_t *symbols,
+                                 size_t                   symbol_count,
+                                 void                    *user_data);
+
 typedef struct {
     rmt_channel_handle_t  chan;
     QueueHandle_t         queue;
     TaskHandle_t          task;
     nec_rx_frame_cb_t     frame_cb;
+    nec_rx_raw_cb_t       raw_cb;     /* optional, may be NULL */
     void                 *user_data;
     rmt_symbol_word_t     symbols[NEC_RX_SYMBOL_COUNT];
 } nec_rx_context_t;
@@ -54,6 +68,12 @@ esp_err_t nec_rx_init(nec_rx_context_t *ctx,
                        void             *user_data);
 
 esp_err_t nec_rx_deinit(nec_rx_context_t *ctx);
+
+/* Optional raw-symbol callback. Pass NULL to disable. Safe to call at any
+ * point after nec_rx_init(). The callback fires on every received burst
+ * before the multi-word decoder runs. */
+void nec_rx_set_raw_cb(nec_rx_context_t *ctx,
+                        nec_rx_raw_cb_t   raw_cb);
 
 #ifdef __cplusplus
 }

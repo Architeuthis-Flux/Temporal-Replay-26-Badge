@@ -120,6 +120,19 @@ int temporalbadge_hal_ir_read_words(uint32_t *out, size_t max_words,
 void temporalbadge_hal_ir_flush(void);
 int  temporalbadge_hal_ir_tx_power(int percent);
 
+// IR Playground
+int         temporalbadge_hal_ir_set_mode(const char *name);
+const char *temporalbadge_hal_ir_get_mode(void);
+int temporalbadge_hal_ir_nec_send(int addr, int cmd, int repeats);
+int temporalbadge_hal_ir_nec_read(int *addr_out,
+                                   int *cmd_out,
+                                   int *repeat_out);
+int temporalbadge_hal_ir_raw_capture(uint16_t *out_pairs,
+                                      size_t   max_pairs);
+int temporalbadge_hal_ir_raw_send(const uint16_t *pairs,
+                                   size_t          pair_count,
+                                   uint32_t        carrier_hz);
+
 // Badge identity / boops
 const char *temporalbadge_hal_my_uuid(void);
 const char *temporalbadge_hal_boops(void);

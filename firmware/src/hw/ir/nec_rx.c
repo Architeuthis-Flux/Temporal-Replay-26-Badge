@@ -134,6 +134,15 @@ static void decode_task(void *arg)
         }
 #endif
 
+        /* Always forward the raw symbol stream to BadgeIR's mode router
+         * before running the multi-word decoder. The router decides
+         * whether to ignore it (badge mode), parse it as consumer NEC,
+         * or hand the raw symbols to MicroPython. */
+        if (ctx->raw_cb != NULL)
+        {
+            ctx->raw_cb(ev.received_symbols, ev.num_symbols, ctx->user_data);
+        }
+
         if (nec_mw_decode_frame(ev.received_symbols, ev.num_symbols, &res))
         {
             frames_seen++;
@@ -259,6 +268,15 @@ esp_err_t nec_rx_init(nec_rx_context_t *ctx,
 cleanup:
     (void)nec_rx_deinit(ctx);
     return ret;
+}
+
+void nec_rx_set_raw_cb(nec_rx_context_t *ctx,
+                        nec_rx_raw_cb_t   raw_cb)
+{
+    if (ctx != NULL)
+    {
+        ctx->raw_cb = raw_cb;
+    }
 }
 
 esp_err_t nec_rx_deinit(nec_rx_context_t *ctx)

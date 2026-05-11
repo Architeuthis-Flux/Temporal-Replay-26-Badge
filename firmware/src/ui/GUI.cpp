@@ -172,6 +172,10 @@ static void launchIRBlockBattle(GUIManager& gui) {
   launchPythonApp(gui, "/apps/ir_block_battle/main.py", "IR Block Battle");
 }
 
+static void launchIRPlayground(GUIManager& gui) {
+  launchPythonApp(gui, "/apps/ir_remote/main.py", "IR Playground");
+}
+
 static void launchBreakSnake(GUIManager& gui) {
   launchPythonApp(gui, "/apps/breaksnake/main.py", "BreakSnake");
 }
@@ -241,6 +245,8 @@ static const GridMenuItem kCuratedMenuItems[] = {
 
     {"IR BLOCK", "Clear lines and send garbage over IR",
      AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle, nullptr, nullptr},
+    {"IR PLAY", "Universal remote, sniffer, TV-B-Gone, and IR mini-games",
+     AppIcons::irPlayground, kScreenNone, launchIRPlayground, nullptr, nullptr},
     {"BREAKSNAKE",  "Play Breakout and Snake together",
      AppIcons::breaksnake, kScreenNone,       launchBreakSnake, nullptr, nullptr},
     {"FLAPPY", "Play Asteroids and Flappy Bird together",

@@ -123,6 +123,12 @@ without needing the `badge.` prefix.
 * `ir_read_words()` — Read a received multi-word NEC frame as a tuple
 * `ir_flush()` — Drop every pending RX frame
 * `ir_tx_power([percent])` — Get/set IR carrier duty (1–50%)
+* `ir_set_mode(name)` — Switch routing: `"badge"`, `"nec"`, or `"raw"`
+* `ir_get_mode()` — Returns the active mode name
+* `ir_nec_send(addr, cmd, repeats=0)` — Send a consumer NEC frame
+* `ir_nec_read()` — Returns `(addr, cmd, is_repeat)` or `None`
+* `ir_raw_capture()` — Returns captured `bytes` of `(mark_us, space_us)` pairs
+* `ir_raw_send(buf, carrier_hz=38000)` — Replay arbitrary IR symbols
 
 [Badge Identity & Boops](#badge-identity--boops):
 
@@ -1153,6 +1159,46 @@ ir_start()
 print("Default duty:", ir_tx_power())   # 50
 ir_tx_power(10)                          # throttle down for self-loopback
 ```
+
+### IR Playground modes (consumer NEC + raw symbols)
+
+`ir_set_mode(name)` swaps the alternate-routing for the same RMT channel.
+The legacy multi-word path keeps decoding badge frames in the background;
+`ir_set_mode` only changes which alternate stream MicroPython sees.
+
+| Mode    | Outbound API                  | Inbound API           |
+|---------|-------------------------------|-----------------------|
+| `badge` | `ir_send_words(words)`        | `ir_read_words()`     |
+| `nec`   | `ir_nec_send(addr, cmd, n=0)` | `ir_nec_read()`       |
+| `raw`   | `ir_raw_send(buf, carrier=…)` | `ir_raw_capture()`    |
+
+* `ir_set_mode(name)` raises `ValueError` if `name` is not one of those three
+  strings, or if a Boop is currently in flight (refuse to leave `"badge"`
+  mid-pairing). On `ir_stop()` the mode resets to `"badge"`.
+* `ir_get_mode()` returns the current mode name.
+
+#### `ir_nec_send(addr, cmd, repeats=0)`
+
+Transmit a canonical 32-bit consumer NEC frame
+(`addr | ~addr | cmd | ~cmd`). `repeats` schedules that many leader-only
+"button-held" frames at the standard ~110 ms interval.
+
+#### `ir_nec_read()`
+
+Returns `(addr, cmd, is_repeat)` or `None`. On a repeat frame `addr` and
+`cmd` are carried forward from the previous full frame.
+
+#### `ir_raw_capture()`
+
+Returns a `bytes` object of `(mark_us, space_us)` pairs (4 bytes per pair,
+little-endian `uint16`), or `None` if no frame is queued. Use this for
+non-NEC protocols or to inspect raw timings.
+
+#### `ir_raw_send(buf, carrier_hz=38000)`
+
+Replay an arbitrary symbol buffer at the given carrier frequency
+(3000–60000 Hz). Use the same shape `ir_raw_capture()` returns, or build
+one from `struct.pack("<HH", mark, space)` pairs.
 
 ---
 

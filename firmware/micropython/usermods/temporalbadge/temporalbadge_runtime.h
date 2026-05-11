@@ -129,6 +129,19 @@ void temporalbadge_runtime_ir_flush(void);
 // Returns the resulting power level, or -1 on error.
 int temporalbadge_runtime_ir_tx_power(int percent);
 
+// IR Playground (consumer NEC + raw symbol modes)
+int         temporalbadge_runtime_ir_set_mode(const char *name);
+const char *temporalbadge_runtime_ir_get_mode(void);
+int temporalbadge_runtime_ir_nec_send(int addr, int cmd, int repeats);
+int temporalbadge_runtime_ir_nec_read(int *addr_out,
+                                       int *cmd_out,
+                                       int *repeat_out);
+int temporalbadge_runtime_ir_raw_capture(uint16_t *out_pairs,
+                                          size_t   max_pairs);
+int temporalbadge_runtime_ir_raw_send(const uint16_t *pairs,
+                                       size_t          pair_count,
+                                       uint32_t        carrier_hz);
+
 // Badge identity / boops
 const char *temporalbadge_runtime_my_uuid(void);
 const char *temporalbadge_runtime_boops(void);

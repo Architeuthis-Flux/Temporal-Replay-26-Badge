@@ -334,6 +334,34 @@ int temporalbadge_hal_ir_tx_power(int percent) {
     return temporalbadge_runtime_ir_tx_power(percent);
 }
 
+// IR Playground
+
+int temporalbadge_hal_ir_set_mode(const char *name) {
+    return temporalbadge_runtime_ir_set_mode(name);
+}
+
+const char *temporalbadge_hal_ir_get_mode(void) {
+    return temporalbadge_runtime_ir_get_mode();
+}
+
+int temporalbadge_hal_ir_nec_send(int addr, int cmd, int repeats) {
+    return temporalbadge_runtime_ir_nec_send(addr, cmd, repeats);
+}
+
+int temporalbadge_hal_ir_nec_read(int *addr_out, int *cmd_out, int *repeat_out) {
+    return temporalbadge_runtime_ir_nec_read(addr_out, cmd_out, repeat_out);
+}
+
+int temporalbadge_hal_ir_raw_capture(uint16_t *out_pairs, size_t max_pairs) {
+    return temporalbadge_runtime_ir_raw_capture(out_pairs, max_pairs);
+}
+
+int temporalbadge_hal_ir_raw_send(const uint16_t *pairs,
+                                   size_t          pair_count,
+                                   uint32_t        carrier_hz) {
+    return temporalbadge_runtime_ir_raw_send(pairs, pair_count, carrier_hz);
+}
+
 // Badge identity / boops
 
 const char *temporalbadge_hal_my_uuid(void) {

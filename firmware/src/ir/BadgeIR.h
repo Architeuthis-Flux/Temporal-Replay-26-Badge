@@ -287,6 +287,60 @@ int irSetTxPower(int percent);
 // (1..50).  Returns 0 if the hardware is down.
 int irGetTxPower();
 
+// ─── IR Playground mode router ──────────────────────────────────────────────
+// Three mutually exclusive interpretations of the same RMT hardware:
+//   - BADGE_MW       : the legacy multi-word + CRC32 dialect used by Boop
+//                      and badge↔badge apps (ir_send_words / ir_read_words).
+//   - CONSUMER_NEC   : standard 32-bit NEC (TVs, audio, AC remotes).
+//   - RAW_SYMBOL     : arbitrary RMT mark/space pairs — Sony, RC5, RC6,
+//                      anything captureable as raw timings.
+//
+// Mode is a *queue routing* flag; the RMT hardware stays up the whole time.
+// Switching is instant and does not tear down the channel. While
+// CONSUMER_NEC or RAW_SYMBOL is active the badge multi-word RX path keeps
+// pumping its own queue (Boop is gated separately by phase=IDLE), but
+// MicroPython sees the alternate stream.
+//
+// Setting mode != BADGE_MW while a Boop is in flight is rejected.
+
+enum IrMode : uint8_t {
+    IR_MODE_BADGE_MW     = 0,
+    IR_MODE_CONSUMER_NEC = 1,
+    IR_MODE_RAW_SYMBOL   = 2,
+};
+
+// Returns 0 on success, -1 if the requested mode is invalid or the boop
+// state machine is not idle. Always succeeds for IR_MODE_BADGE_MW.
+int irSetMode(int mode);
+int irGetMode();
+
+// Consumer NEC path. Both calls fall through (return -1) unless the
+// active mode is IR_MODE_CONSUMER_NEC. ir_nec_send queues a frame for
+// transmission; repeats > 0 schedules that many leader-only "button-held"
+// repeat frames ~110 ms apart.
+int irNecSend(uint8_t addr, uint8_t cmd, uint8_t repeats);
+
+// Returns 0 and writes (*addr_out, *cmd_out, *repeat_out) on success.
+// repeat_out=1 means the frame was a NEC repeat code; addr/cmd are
+// passed through from the most recent full frame the badge has seen.
+int irNecRead(uint8_t* addr_out, uint8_t* cmd_out, uint8_t* repeat_out);
+
+// Raw symbol path. mark_us / space_us pairs, packed little-endian as a
+// `uint16_t[2*n]` byte buffer for MicroPython.
+//
+// irRawCapture: returns the number of mark/space *pairs* copied into
+// out_pairs, or 0 if no frame is queued. max_pairs is the buffer capacity
+// (2 bytes * 2 = 4 bytes per pair).
+int irRawCapture(uint16_t* out_pairs, size_t max_pairs);
+
+// irRawSend: emits the supplied mark/space pairs at the requested
+// carrier frequency (3000–60000 Hz). carrier_hz=0 keeps the cached
+// 38 kHz default.
+int irRawSend(const uint16_t* pairs, size_t pair_count, uint32_t carrier_hz);
+
+// Drop every frame queued in the active alternate-mode RX path.
+void irDrainAltRx();
+
 // ─── FreeRTOS task (Core 0) ─────────────────────────────────────────────────
 
 // Launch via: xTaskCreatePinnedToCore(irTask, "IR", 8192, NULL, 1, NULL, 0);

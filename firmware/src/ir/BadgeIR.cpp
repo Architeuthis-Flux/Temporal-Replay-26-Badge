@@ -23,7 +23,9 @@
 #include "../hardware/HardwareConfig.h"
 #include "hw/ir/nec_tx.h"
 #include "hw/ir/nec_rx.h"
+#include "hw/ir/nec_consumer.h"
 
+#include "driver/rmt_encoder.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
@@ -42,6 +44,12 @@ volatile int     irPythonQueueHead     = 0;
 volatile int     irPythonQueueTail     = 0;
 portMUX_TYPE     irPythonQueueMux      = portMUX_INITIALIZER_UNLOCKED;
 
+// ─── Forward declarations ───────────────────────────────────────────────────
+
+static void on_raw_symbols(const rmt_symbol_word_t* symbols,
+                            size_t                   symbol_count,
+                            void*                    user_data);
+
 // ─── Module-level state ─────────────────────────────────────────────────────
 
 static nec_tx_context_t* s_tx_ctx = nullptr;
@@ -51,6 +59,57 @@ static QueueHandle_t    s_python_tx_queue         = nullptr;
 static QueueHandle_t    s_python_rx_words_queue   = nullptr;
 static bool             s_hw_up                   = false;
 static int              s_tx_power_percent        = 10;
+
+// ─── IR Playground state ────────────────────────────────────────────────────
+
+static volatile uint8_t      s_ir_mode             = IR_MODE_BADGE_MW;
+static rmt_encoder_handle_t  s_copy_encoder        = nullptr;
+
+// Consumer NEC RX queue: simple ring of (addr, cmd, is_repeat) decoded by
+// nec_consumer_decode() in the raw-symbol callback context. Lives on Core 0
+// (decode_task), drained from Core 1 by Python via irNecRead().
+struct IrNecRxFrame {
+    uint8_t addr;
+    uint8_t cmd;
+    uint8_t is_repeat;
+};
+#define IR_NEC_RX_QUEUE_SIZE 8
+static IrNecRxFrame      s_nec_rx_queue[IR_NEC_RX_QUEUE_SIZE] = {};
+static volatile int      s_nec_rx_head = 0;
+static volatile int      s_nec_rx_tail = 0;
+static portMUX_TYPE      s_nec_rx_mux  = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t           s_nec_last_addr = 0;
+static uint8_t           s_nec_last_cmd  = 0;
+
+// Raw symbol RX: at most one frame buffered. Symbol bursts can be large
+// (AC remotes hit 200+ pairs), so a ring of two would mean ~16 KB; one
+// slot keeps memory bounded and matches Python's "consume promptly"
+// expectation. Stored as packed mark/space uint16 pairs — exactly what
+// the public C API surfaces to MicroPython.
+#define IR_RAW_MAX_PAIRS 512U
+struct IrRawRxFrame {
+    uint16_t pairs[IR_RAW_MAX_PAIRS * 2U];  // [mark0, space0, mark1, space1, ...]
+    size_t   pair_count;
+    bool     ready;
+};
+static IrRawRxFrame      s_raw_rx               = {};
+static portMUX_TYPE      s_raw_rx_mux           = portMUX_INITIALIZER_UNLOCKED;
+
+// Pending consumer NEC TX (queued from Python, drained on irTask).
+struct IrNecTxRequest {
+    uint8_t addr;
+    uint8_t cmd;
+    uint8_t repeats;
+};
+static QueueHandle_t s_nec_tx_queue = nullptr;
+
+// Pending raw symbol TX (queued from Python, drained on irTask).
+struct IrRawTxRequest {
+    uint16_t pairs[IR_RAW_MAX_PAIRS * 2U];
+    size_t   pair_count;
+    uint32_t carrier_hz;  // 0 = leave at default
+};
+static QueueHandle_t s_raw_tx_queue = nullptr;
 
 static void irLogHeap(const char* phase) {
     Serial.printf("[%s] heap %s largest=%u free=%u\n",
@@ -263,6 +322,14 @@ static void irDeleteQueues() {
         vQueueDelete(s_python_rx_words_queue);
         s_python_rx_words_queue = nullptr;
     }
+    if (s_nec_tx_queue) {
+        vQueueDelete(s_nec_tx_queue);
+        s_nec_tx_queue = nullptr;
+    }
+    if (s_raw_tx_queue) {
+        vQueueDelete(s_raw_tx_queue);
+        s_raw_tx_queue = nullptr;
+    }
 }
 
 static bool irHwInit() {
@@ -274,7 +341,10 @@ static bool irHwInit() {
     s_frame_queue            = xQueueCreate(4, sizeof(nec_mw_result_t));
     s_python_tx_queue        = xQueueCreate(4, sizeof(ir_tx_request_t));
     s_python_rx_words_queue  = xQueueCreate(2, sizeof(nec_mw_result_t));
-    if (!s_frame_queue || !s_python_tx_queue || !s_python_rx_words_queue) {
+    if (!s_nec_tx_queue) s_nec_tx_queue = xQueueCreate(4, sizeof(IrNecTxRequest));
+    if (!s_raw_tx_queue) s_raw_tx_queue = xQueueCreate(2, sizeof(IrRawTxRequest));
+    if (!s_frame_queue || !s_python_tx_queue || !s_python_rx_words_queue ||
+        !s_nec_tx_queue || !s_raw_tx_queue) {
         ESP_LOGE(TAG, "queue create failed");
         irDeleteQueues();
         irReleaseContexts();
@@ -302,6 +372,22 @@ static bool irHwInit() {
         irReleaseContexts();
         return false;
     }
+    // Hook the IR Playground mode router into every received burst so
+    // consumer NEC and raw-symbol modes see the stream alongside the
+    // legacy multi-word + CRC decoder.
+    nec_rx_set_raw_cb(s_rx_ctx, on_raw_symbols);
+
+    // Copy encoder for raw symbol arrays (consumer NEC + raw playback).
+    if (s_copy_encoder == nullptr) {
+        rmt_copy_encoder_config_t cfg = {};
+        esp_err_t cret = rmt_new_copy_encoder(&cfg, &s_copy_encoder);
+        if (cret != ESP_OK) {
+            ESP_LOGE(TAG, "rmt_new_copy_encoder failed: %s",
+                     esp_err_to_name(cret));
+            // Non-fatal — Playground modes will fail their own way.
+            s_copy_encoder = nullptr;
+        }
+    }
 
     s_hw_up = true;
 
@@ -326,12 +412,160 @@ static void irHwDeinit() {
         if (s_rx_ctx) nec_rx_deinit(s_rx_ctx);
         if (s_tx_ctx) nec_tx_deinit(s_tx_ctx);
     }
+    if (s_copy_encoder != nullptr) {
+        rmt_del_encoder(s_copy_encoder);
+        s_copy_encoder = nullptr;
+    }
+    s_ir_mode = IR_MODE_BADGE_MW;
+    irDrainAltRx();
 
     irDeleteQueues();
     s_hw_up = false;
     irReleaseContexts();
     Serial.printf("[%s] RMT hardware deinitialized\n", TAG);
     irLogHeap("after deinit");
+}
+
+// ─── IR Playground: raw symbol callback (runs on Core 0 decode_task) ────────
+// Fires on every burst the RMT receiver reconstructs, regardless of whether
+// the multi-word + CRC path likes it. We route based on the current mode.
+
+static void on_raw_symbols(const rmt_symbol_word_t* symbols,
+                            size_t                   symbol_count,
+                            void* /*user_data*/) {
+    if (symbols == nullptr || symbol_count == 0U) return;
+
+    const uint8_t mode = s_ir_mode;
+    if (mode == IR_MODE_CONSUMER_NEC) {
+        uint8_t addr = 0, cmd = 0;
+        bool is_repeat = false;
+        if (nec_consumer_decode(symbols, symbol_count, &addr, &cmd, &is_repeat)) {
+            IrNecRxFrame f = {};
+            if (is_repeat) {
+                f.addr      = s_nec_last_addr;
+                f.cmd       = s_nec_last_cmd;
+                f.is_repeat = 1;
+            } else {
+                s_nec_last_addr = addr;
+                s_nec_last_cmd  = cmd;
+                f.addr      = addr;
+                f.cmd       = cmd;
+                f.is_repeat = 0;
+            }
+            portENTER_CRITICAL(&s_nec_rx_mux);
+            int next = (s_nec_rx_tail + 1) % IR_NEC_RX_QUEUE_SIZE;
+            if (next != s_nec_rx_head) {
+                s_nec_rx_queue[s_nec_rx_tail] = f;
+                s_nec_rx_tail = next;
+            }
+            portEXIT_CRITICAL(&s_nec_rx_mux);
+        }
+    } else if (mode == IR_MODE_RAW_SYMBOL) {
+        // Cap at IR_RAW_MAX_PAIRS pairs (each rmt_symbol_word_t = one pair).
+        size_t pairs = symbol_count;
+        if (pairs > IR_RAW_MAX_PAIRS) pairs = IR_RAW_MAX_PAIRS;
+        portENTER_CRITICAL(&s_raw_rx_mux);
+        if (!s_raw_rx.ready) {
+            for (size_t i = 0U; i < pairs; i++) {
+                s_raw_rx.pairs[i * 2U]      = symbols[i].duration0;
+                s_raw_rx.pairs[i * 2U + 1U] = symbols[i].duration1;
+            }
+            s_raw_rx.pair_count = pairs;
+            s_raw_rx.ready      = true;
+        }
+        portEXIT_CRITICAL(&s_raw_rx_mux);
+    }
+    // BADGE_MW: ignore — the multi-word decoder will (or won't) push the
+    // frame onto s_frame_queue via on_frame_rx, same as before.
+}
+
+// ─── IR Playground: mode router public API ──────────────────────────────────
+
+int irGetMode() {
+    return (int)s_ir_mode;
+}
+
+int irSetMode(int mode) {
+    if (mode < 0 || mode > IR_MODE_RAW_SYMBOL) return -1;
+    if (mode != IR_MODE_BADGE_MW &&
+        BadgeBoops::boopStatus.phase != BadgeBoops::BOOP_PHASE_IDLE) {
+        // Refuse to leave badge mode mid-pairing.
+        return -1;
+    }
+    s_ir_mode = (uint8_t)mode;
+    irDrainAltRx();
+    Serial.printf("[%s] mode -> %d\n", TAG, mode);
+    return 0;
+}
+
+void irDrainAltRx() {
+    portENTER_CRITICAL(&s_nec_rx_mux);
+    s_nec_rx_head = 0;
+    s_nec_rx_tail = 0;
+    portEXIT_CRITICAL(&s_nec_rx_mux);
+    portENTER_CRITICAL(&s_raw_rx_mux);
+    s_raw_rx.ready      = false;
+    s_raw_rx.pair_count = 0;
+    portEXIT_CRITICAL(&s_raw_rx_mux);
+}
+
+int irNecSend(uint8_t addr, uint8_t cmd, uint8_t repeats) {
+    if (s_ir_mode != IR_MODE_CONSUMER_NEC) return -1;
+    if (s_nec_tx_queue == nullptr) return -1;
+    IrNecTxRequest req = {addr, cmd, repeats};
+    return (xQueueSend(s_nec_tx_queue, &req, pdMS_TO_TICKS(200)) == pdPASS) ? 0 : -1;
+}
+
+int irNecRead(uint8_t* addr_out, uint8_t* cmd_out, uint8_t* repeat_out) {
+    if (s_ir_mode != IR_MODE_CONSUMER_NEC) return -1;
+    portENTER_CRITICAL(&s_nec_rx_mux);
+    if (s_nec_rx_head == s_nec_rx_tail) {
+        portEXIT_CRITICAL(&s_nec_rx_mux);
+        return -1;
+    }
+    IrNecRxFrame f = s_nec_rx_queue[s_nec_rx_head];
+    s_nec_rx_head = (s_nec_rx_head + 1) % IR_NEC_RX_QUEUE_SIZE;
+    portEXIT_CRITICAL(&s_nec_rx_mux);
+    if (addr_out)   *addr_out   = f.addr;
+    if (cmd_out)    *cmd_out    = f.cmd;
+    if (repeat_out) *repeat_out = f.is_repeat;
+    return 0;
+}
+
+int irRawCapture(uint16_t* out_pairs, size_t max_pairs) {
+    if (s_ir_mode != IR_MODE_RAW_SYMBOL) return 0;
+    if (out_pairs == nullptr || max_pairs == 0U) return 0;
+    portENTER_CRITICAL(&s_raw_rx_mux);
+    if (!s_raw_rx.ready) {
+        portEXIT_CRITICAL(&s_raw_rx_mux);
+        return 0;
+    }
+    size_t n = s_raw_rx.pair_count;
+    if (n > max_pairs) n = max_pairs;
+    memcpy(out_pairs, s_raw_rx.pairs, n * 2U * sizeof(uint16_t));
+    s_raw_rx.ready      = false;
+    s_raw_rx.pair_count = 0;
+    portEXIT_CRITICAL(&s_raw_rx_mux);
+    return (int)n;
+}
+
+int irRawSend(const uint16_t* pairs, size_t pair_count, uint32_t carrier_hz) {
+    if (s_ir_mode != IR_MODE_RAW_SYMBOL) return -1;
+    if (s_raw_tx_queue == nullptr) return -1;
+    if (pairs == nullptr || pair_count == 0U || pair_count > IR_RAW_MAX_PAIRS) {
+        return -1;
+    }
+    if (carrier_hz != 0U && (carrier_hz < 3000U || carrier_hz > 60000U)) {
+        return -1;
+    }
+    IrRawTxRequest req = {};
+    for (size_t i = 0U; i < pair_count; i++) {
+        req.pairs[i * 2U]      = pairs[i * 2U];
+        req.pairs[i * 2U + 1U] = pairs[i * 2U + 1U];
+    }
+    req.pair_count = pair_count;
+    req.carrier_hz = carrier_hz;
+    return (xQueueSend(s_raw_tx_queue, &req, pdMS_TO_TICKS(500)) == pdPASS) ? 0 : -1;
 }
 
 // ─── Python queue feed ──────────────────────────────────────────────────────
@@ -372,6 +606,76 @@ static void servicePythonTx() {
     ir_tx_request_t req;
     while (xQueueReceive(s_python_tx_queue, &req, 0) == pdPASS) {
         BadgeIR::sendFrame(req.words, req.count);
+    }
+}
+
+// ─── IR Playground TX servicing (Core 0) ────────────────────────────────────
+
+static void serviceConsumerNecTx() {
+    if (!s_hw_up || s_nec_tx_queue == nullptr || s_copy_encoder == nullptr) return;
+
+    IrNecTxRequest req;
+    while (xQueueReceive(s_nec_tx_queue, &req, 0) == pdPASS) {
+        rmt_symbol_word_t syms[NEC_CONSUMER_FRAME_SYMBOLS];
+        size_t n = nec_consumer_encode(req.addr, req.cmd, syms,
+                                        NEC_CONSUMER_FRAME_SYMBOLS);
+        if (n == 0U) continue;
+        if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, syms, n, 1500)
+                == ESP_OK) {
+            nec_tx_wait(s_tx_ctx, 1500);
+        }
+
+        // Held-button repeats: ~110 ms gap between each leader-only burst.
+        rmt_symbol_word_t rep[NEC_CONSUMER_REPEAT_SYMBOLS];
+        size_t rn = nec_consumer_encode_repeat(rep, NEC_CONSUMER_REPEAT_SYMBOLS);
+        for (uint8_t r = 0; r < req.repeats && rn > 0U; r++) {
+            vTaskDelay(pdMS_TO_TICKS(110));
+            if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, rep, rn, 1500)
+                    == ESP_OK) {
+                nec_tx_wait(s_tx_ctx, 1500);
+            }
+        }
+    }
+}
+
+static void serviceRawTx() {
+    if (!s_hw_up || s_raw_tx_queue == nullptr || s_copy_encoder == nullptr) return;
+
+    IrRawTxRequest req;
+    while (xQueueReceive(s_raw_tx_queue, &req, 0) == pdPASS) {
+        if (req.pair_count == 0U) continue;
+
+        // Carrier override (37–40 kHz NEC, 36 kHz Sony, 36 kHz RC5/RC6, etc.)
+        // float duty mirrors the cached TX power so users still see a
+        // sensible LED drive level.
+        if (req.carrier_hz != 0U) {
+            float duty = (float)s_tx_power_percent / 100.0f;
+            (void)nec_tx_set_carrier_freq(s_tx_ctx, req.carrier_hz, duty);
+        }
+
+        // Convert (mark_us, space_us) pairs into RMT symbols on a stack
+        // buffer. IR_RAW_MAX_PAIRS * sizeof(rmt_symbol_word_t) = 2048 B —
+        // safe for the 8 KB irTask stack.
+        rmt_symbol_word_t syms[IR_RAW_MAX_PAIRS];
+        size_t n = req.pair_count;
+        if (n > IR_RAW_MAX_PAIRS) n = IR_RAW_MAX_PAIRS;
+        for (size_t i = 0U; i < n; i++) {
+            syms[i].level0    = 1U;
+            syms[i].duration0 = req.pairs[i * 2U];
+            syms[i].level1    = 0U;
+            syms[i].duration1 = req.pairs[i * 2U + 1U];
+        }
+        if (nec_tx_send_symbols(s_tx_ctx, s_copy_encoder, syms, n, 3000)
+                == ESP_OK) {
+            nec_tx_wait(s_tx_ctx, 3000);
+        }
+
+        // Restore the default 38 kHz carrier so any subsequent badge-mode
+        // traffic is unaffected.
+        if (req.carrier_hz != 0U) {
+            float duty = (float)s_tx_power_percent / 100.0f;
+            (void)nec_tx_set_carrier_freq(s_tx_ctx, 38000U, duty);
+        }
     }
 }
 
@@ -475,6 +779,8 @@ void irTask(void* /*pvParameters*/) {
 
             feedPythonQueue();
             servicePythonTx();
+            serviceConsumerNecTx();
+            serviceRawTx();
             vTaskDelay(pdMS_TO_TICKS(10));
         }
 

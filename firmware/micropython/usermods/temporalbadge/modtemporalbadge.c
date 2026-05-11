@@ -786,6 +786,97 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ir_tx_power_obj,
                                             0, 1,
                                             temporalbadge_ir_tx_power);
 
+// ── IR Playground (consumer NEC + raw symbols) ──────────────────────────────
+
+static mp_obj_t temporalbadge_ir_set_mode(mp_obj_t name_obj) {
+    const char *name = mp_obj_str_get_str(name_obj);
+    int rc = temporalbadge_hal_ir_set_mode(name);
+    if (rc != 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT(
+            "ir_set_mode: expects 'badge'|'nec'|'raw' (or boop in flight)"));
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(temporalbadge_ir_set_mode_obj,
+                                  temporalbadge_ir_set_mode);
+
+static mp_obj_t temporalbadge_ir_get_mode(void) {
+    const char *name = temporalbadge_hal_ir_get_mode();
+    return mp_obj_new_str(name, strlen(name));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_ir_get_mode_obj,
+                                  temporalbadge_ir_get_mode);
+
+static mp_obj_t temporalbadge_ir_nec_send(size_t n_args,
+                                           const mp_obj_t *args) {
+    int addr    = mp_obj_get_int(args[0]);
+    int cmd     = mp_obj_get_int(args[1]);
+    int repeats = (n_args > 2) ? mp_obj_get_int(args[2]) : 0;
+    int rc = temporalbadge_hal_ir_nec_send(addr, cmd, repeats);
+    if (rc != 0) {
+        mp_raise_OSError(1);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ir_nec_send_obj,
+                                            2, 3,
+                                            temporalbadge_ir_nec_send);
+
+static mp_obj_t temporalbadge_ir_nec_read(void) {
+    int addr = 0, cmd = 0, repeat = 0;
+    int rc = temporalbadge_hal_ir_nec_read(&addr, &cmd, &repeat);
+    if (rc != 0) {
+        return mp_const_none;
+    }
+    mp_obj_t items[3] = {
+        mp_obj_new_int(addr),
+        mp_obj_new_int(cmd),
+        mp_obj_new_bool(repeat),
+    };
+    return mp_obj_new_tuple(3, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_ir_nec_read_obj,
+                                  temporalbadge_ir_nec_read);
+
+#define IR_RAW_PY_MAX_PAIRS 512U
+
+static mp_obj_t temporalbadge_ir_raw_capture(void) {
+    static uint16_t buf[IR_RAW_PY_MAX_PAIRS * 2U];
+    int n = temporalbadge_hal_ir_raw_capture(buf, IR_RAW_PY_MAX_PAIRS);
+    if (n <= 0) {
+        return mp_const_none;
+    }
+    return mp_obj_new_bytes((const byte *)buf,
+                             (size_t)n * 2U * sizeof(uint16_t));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_ir_raw_capture_obj,
+                                  temporalbadge_ir_raw_capture);
+
+static mp_obj_t temporalbadge_ir_raw_send(size_t n_args,
+                                           const mp_obj_t *args) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[0], &bufinfo, MP_BUFFER_READ);
+    if ((bufinfo.len % (2U * sizeof(uint16_t))) != 0U) {
+        mp_raise_ValueError(MP_ERROR_TEXT(
+            "ir_raw_send: buffer length must be a multiple of 4 bytes"));
+    }
+    size_t pair_count = bufinfo.len / (2U * sizeof(uint16_t));
+    if (pair_count == 0U || pair_count > IR_RAW_PY_MAX_PAIRS) {
+        mp_raise_ValueError(MP_ERROR_TEXT(
+            "ir_raw_send: 1..512 mark/space pairs"));
+    }
+    uint32_t carrier_hz = (n_args > 1) ? (uint32_t)mp_obj_get_int(args[1]) : 0U;
+    int rc = temporalbadge_hal_ir_raw_send(
+        (const uint16_t *)bufinfo.buf, pair_count, carrier_hz);
+    if (rc != 0) {
+        mp_raise_OSError(1);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(temporalbadge_ir_raw_send_obj,
+                                            1, 2,
+                                            temporalbadge_ir_raw_send);
+
 // ── Badge identity / boops ──────────────────────────────────────────────────
 
 static mp_obj_t temporalbadge_my_uuid(void) {
@@ -1435,6 +1526,14 @@ static const mp_rom_map_elem_t temporalbadge_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_ir_read_words), MP_ROM_PTR(&temporalbadge_ir_read_words_obj) },
     { MP_ROM_QSTR(MP_QSTR_ir_flush),      MP_ROM_PTR(&temporalbadge_ir_flush_obj) },
     { MP_ROM_QSTR(MP_QSTR_ir_tx_power),   MP_ROM_PTR(&temporalbadge_ir_tx_power_obj) },
+
+    // IR Playground (consumer NEC + raw symbol modes)
+    { MP_ROM_QSTR(MP_QSTR_ir_set_mode),    MP_ROM_PTR(&temporalbadge_ir_set_mode_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_get_mode),    MP_ROM_PTR(&temporalbadge_ir_get_mode_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_nec_send),    MP_ROM_PTR(&temporalbadge_ir_nec_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_nec_read),    MP_ROM_PTR(&temporalbadge_ir_nec_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_raw_capture), MP_ROM_PTR(&temporalbadge_ir_raw_capture_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ir_raw_send),    MP_ROM_PTR(&temporalbadge_ir_raw_send_obj) },
 
     // Badge identity / boops
     { MP_ROM_QSTR(MP_QSTR_my_uuid), MP_ROM_PTR(&temporalbadge_my_uuid_obj) },
