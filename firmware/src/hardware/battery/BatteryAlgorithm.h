@@ -3,7 +3,8 @@
  * @brief Pure (no I/O) battery monitoring algorithm
  *
  * Using median-of-N sampling, integer IIR with BAT_IIR_SHIFT,
- * deadband on percent, active CE slope probe classification,
+ * interpolated ADC discharge curve (EMA+gated percent display),
+ * active CE slope probe classification,
  * and snapshot heuristics + asymmetric debounce
  * as backup. All math lives here; each port supplies its own ~60-line HAL
  * adapter for ADC reads, GPIO toggles, and microsecond delays.
@@ -19,6 +20,17 @@
  * picks its own service interval (500 ms ULP wake, ~variable main-CPU
  * service rate) — the absolute period is `service_interval * kProbePeriodTicks`.
  *
+ * ── Charging / VBUS-present sampling contract ─────────────────────────────────
+ * When external power is up (Echo: CHG_GOOD / PGOOD), the resistor divider sits
+ * on the charger-managed node — **continuous** ADC reads are not Open-Circuit /
+ * rested cell volts. Adapters MUST pause charging for the probe burst, gather
+ * `BAT_PROBE_SAMPLES` while paused, release charge, optionally wait for resettling,
+ * then run `bat_classify_probe` so `have_probe_sample` + `probe_verdict` drive
+ * `bat_sample_trustworthy`. Echo fulfills this via `digitalWrite(CE_PIN, HIGH)`
+ * during `kProbeSampling` in `BatteryGauge::service()` (Power.cpp): CE high =
+ * BQ24079 disabled, charger off for tens of microseconds of burst + 2 ms
+ * settle; idle CE low = charger enabled.
+ *
  * ── Pointer / null contract ─────────────────────────────────────────────────
  * All functions in this header assume their pointer arguments are non-NULL
  * and (where applicable) that buffer arguments point to at least the
@@ -26,14 +38,14 @@
  * pointers — callers (the HAL adapters) are responsible. This keeps the
  * ULP build small.
  *
- * ── bat_mv vs bat_pct consistency ───────────────────────────────────────────
- * `bat_filter_state_t::bat_mv` is computed from the **instantaneous** raw
- * sample on every update, while `bat_pct` is computed from the **smoothed**
- * IIR output and gated by a deadband. The two values therefore describe
- * different points on the discharge curve and will not be mathematically
- * consistent during transients (e.g. computing implied internal resistance
- * from the pair will produce garbage under load). This is intentional:
- * `bat_mv` is meant for instrumentation/logging, `bat_pct` for UI display.
+ * ── bat_mv vs bat_pct consistency ────────────────────────────────────────────
+ * `bat_mv` is from the instantaneous raw each tick (not IIR-filtered ADC).
+ * `bat_pct` is an EMA of the discharge curve keyed off that raw, gated so when
+ * the curve says SOC > 0 we never render below the instantaneous curve at the
+ * same sample (`max(ema, instant)` — avoids bogus 0% while the divider still
+ * reads full). With instant at a true curve 0% we decay on EMA-only so short
+ * glitches above empty do not linger. Monotonic charging/discharging clamps
+ * live in BatteryGauge::service() once `last_reported_pct` is seeded.
  */
 #ifndef BADGE_BATTERY_ALGORITHM_H
 #define BADGE_BATTERY_ALGORITHM_H
@@ -52,7 +64,6 @@ extern "C" {
 enum {
     BAT_SAMPLE_N            = 10,   // must be even (median pair average)
     BAT_RAW_MIN             = 500,
-    BAT_DEADBAND            = 2,
     BAT_PROBE_PERIOD_TICKS  = 5,
     BAT_PROBE_WINDOW_US     = 50000,
     BAT_PROBE_SAMPLES       = 4,    // must be even (median pair average)
@@ -63,7 +74,14 @@ enum {
     BAT_STAT_HISTORY_BITS   = 8,
     BAT_STAT_HICCUP_FLIPS   = 2,
     BAT_DEBOUNCE_ABSENT     = 3,
-    BAT_DEBOUNCE_PRESENT    = 10
+    BAT_DEBOUNCE_PRESENT    = 10,
+
+    /* Integer EMA on displayed percent (same recurrence as BAT_IIR on raw ADC).
+       Higher shift = smoother / slower. */
+    BAT_PCT_EMA_SHIFT       = 4,
+    /* After filter reset / boot: snap pct to instantaneous curve this many
+       trustworthy ticks so gauge never flashes 00 while display EMA settles. */
+    BAT_PCT_BOOTSTRAP_TICKS = 8
 };
 
 // Compile-time guard: median-pair averaging requires an even sample count.
@@ -101,7 +119,12 @@ static inline uint32_t bat_adc_to_mv(uint32_t raw) {
         return ((raw * 1739) / 1000) + 36;
 }
 
-// Discharge curve
+// Discharge curve (percentage vs ADC via bat_adc_to_mv). Lower knots unchanged.
+// LR 523450 / 523450-class 1000 mAh pouch: datasheets cite nominal 3.7 V and CCCV to
+// 4.2 V; on this badge rested "full" is often ~4.05–4.12 V depending on charger
+// termination and divider — calibrated here to ~4.09 V rested for 100% SOC so the gauge
+// can reach full without assuming 4.20 V terminal.
+//
 //   3.00 -> r: 1697-1705 f: 1703-1705    0%
 //   3.40 -> r: 1928-1941 f: 1933-1935   10%
 //   3.55 -> r: 2013-2020 f: 2018-2020   20%
@@ -111,22 +134,31 @@ static inline uint32_t bat_adc_to_mv(uint32_t raw) {
 //   3.80 -> r: 2153-2182 f: 2163-2165   60%
 //   3.85 -> r: 2189-2197 f: 2193-2195   70%
 //   3.95 -> r: 2244-2253 f: 2250-2252   80%
-//   4.05 -> r: 2304-2311 f: 2309-2311   90%
-//   4.20 -> r: 2387-2395 f: 2393-2395  100%
-
+//  ~4.02 -> adc ~2289 (bat_adc_to_mv)   90%   rested OCV bracket below cell "full"
+//  ~4.09 -> adc ~2331 (bat_adc_to_mv)  100%   match field rested max on LR 523450
 
 static inline uint32_t bat_raw_to_pct(uint32_t adc_value) {
     static const uint32_t curve_filter[11] = {
-        1705, 1933, 2018, 2077, 2105, 2133, 2163, 2193, 2250, 2309, 2393
+        1705, 1933, 2018, 2077, 2105, 2133, 2163, 2193, 2250, 2289, 2331
     };
     static const uint32_t curve_pct[11] = {
         0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
     };
     if (adc_value <= curve_filter[0])  return 0;
     if (adc_value >= curve_filter[10]) return 100;
-    for (uint32_t i = 1; i < 11; i++) {
+    for (uint32_t i = 1u; i < 11u; i++) {
         if (adc_value <= curve_filter[i]) {
-            return curve_pct[i];
+            uint32_t lo  = curve_filter[i - 1u];
+            uint32_t hi  = curve_filter[i];
+            uint32_t pcl = curve_pct[i - 1u];
+            uint32_t pch = curve_pct[i];
+            uint32_t span = hi - lo;
+            if (span == 0u) return pch;
+            // Linear pct in [pcl, pch]; round nearest.
+            uint64_t delta = (uint64_t)(adc_value - lo) *
+                             (uint64_t)(pch - pcl);
+            delta += (uint64_t)span / 2ULL;
+            return pcl + (uint32_t)(delta / (uint64_t)span);
         }
     }
     return 100;  // unreachable
@@ -178,20 +210,24 @@ static inline int8_t bat_classify_probe(uint32_t *samples,
     return -1;
 }
 
-// ── Filter state machine (IIR + deadband) ───────────────────────────────────
+// ── Filter state machine (IIR on raw ADC; EMA+gated pct for display/UI) ─
 
 typedef struct {
     uint32_t adc_raw;
     uint32_t filtered_raw;  // stored << BAT_IIR_SHIFT; 0 == bootstrap-armed
+    uint32_t pct_smooth;    // stored << BAT_PCT_EMA_SHIFT; 0 == pct EMA bootstrap
     uint32_t bat_mv;
     uint32_t bat_pct;
+    uint8_t  pct_boot_ticks;  // BAT_PCT_BOOTSTRAP_TICKS until normal EMA
 } bat_filter_state_t;
 
 static inline void bat_filter_zero(bat_filter_state_t *s) {
-    s->adc_raw      = 0;
-    s->filtered_raw = 0;  // also re-arms the IIR bootstrap sentinel
-    s->bat_mv       = 0;
-    s->bat_pct      = 0;
+    s->adc_raw        = 0;
+    s->filtered_raw   = 0;  // also re-arms the IIR bootstrap sentinel
+    s->pct_smooth     = 0;  // pct EMA bootstrap
+    s->bat_mv         = 0;
+    s->bat_pct        = 0;
+    s->pct_boot_ticks = (uint8_t)BAT_PCT_BOOTSTRAP_TICKS;
 }
 
 // Feed a TRUSTWORTHY raw sample. Caller decides trustworthiness via
@@ -219,15 +255,39 @@ static inline void bat_filter_update(bat_filter_state_t *s, uint32_t raw) {
                           raw;
     }
 
-    uint32_t smoothed = s->filtered_raw >> BAT_IIR_SHIFT;
-    uint32_t new_pct  = bat_raw_to_pct(smoothed);
-    uint32_t diff     = (new_pct > s->bat_pct) ? (new_pct - s->bat_pct)
-                                               : (s->bat_pct - new_pct);
-    if (diff >= (uint32_t)BAT_DEADBAND) {
-        s->bat_pct = new_pct;
+    uint32_t pct_inst = bat_raw_to_pct(raw);
+    if (pct_inst > 100u) pct_inst = 100u;
+
+    if (s->pct_boot_ticks > 0u) {
+        s->pct_boot_ticks = (uint8_t)(s->pct_boot_ticks - 1u);
+        s->bat_pct        = pct_inst;
+        s->pct_smooth     = pct_inst << BAT_PCT_EMA_SHIFT;
+        s->bat_mv         = bat_adc_to_mv(s->adc_raw);
+        return;
     }
-    // Instantaneous millivolts — see file-level note on bat_mv vs bat_pct
-    // consistency. This is *not* the smoothed value.
+
+    if (s->pct_smooth == 0) {
+        s->pct_smooth = pct_inst << BAT_PCT_EMA_SHIFT;
+    } else {
+        s->pct_smooth =
+            s->pct_smooth -
+            (s->pct_smooth >> BAT_PCT_EMA_SHIFT) +
+            pct_inst;
+    }
+    uint32_t pct_ema = s->pct_smooth >> BAT_PCT_EMA_SHIFT;
+    if (pct_ema > 100u) pct_ema = 100u;
+
+    // When the curve thinks there is measurable charge (>0%), never show lower
+    // than this sample's instantaneous reading (guards sluggish EMA + bad
+    // interaction with downstream monotonic clamps). True empty: pct_inst==0 —
+    // let EMA trail down alone so noisy highs do not plaster "full".
+    if (pct_inst != 0u) {
+        s->bat_pct = (pct_ema > pct_inst) ? pct_ema : pct_inst;
+    } else {
+        s->bat_pct = pct_ema;
+    }
+
+    // Instantaneous millivolts — not the IIR-filtered ADC.
     s->bat_mv = bat_adc_to_mv(s->adc_raw);
 }
 
@@ -371,8 +431,11 @@ static inline void bat_presence_update(bat_presence_state_t *p,
 // Same rule as the ULP source: only feed the IIR with cell-voltage samples.
 //   1. !pgood path: BQ passes the cell straight through, the regular
 //      median-of-N raw IS the cell voltage. Gate on target_present.
-//   2.  pgood path: only the probe's median (under verdict==1) is the
-//      true cell voltage; everything else reads BQ regulation artifacts.
+//   2.  pgood path: only the probe's median (under verdict==1) is the true
+//      cell voltage. Those ADC samples MUST be taken while the host has
+//      disabled charging / charger IC paused (Echo: CE high during burst).
+//      Never widen this predicate to unconditional divider reads — you will
+//      lie about SOC while plugged in.
 static inline bool bat_sample_trustworthy(bool pgood,
                                           bool have_raw,
                                           bool have_probe_sample,

@@ -451,6 +451,14 @@ bool BatteryGauge::begin() {
 
   ready_ = true;
   service();
+  // begin() fires service() once: with USB attached that usually arms kProbeSampling
+  // with CE asserted. We are not registered on the cooperative scheduler yet, so crank
+  // the probe FSM to kProbeIdle here (bounded); otherwise charger stays gated and the
+  // first open-circuit sample waits until many main-loop iterations (~sch_low divisor).
+  for (unsigned k = 0; k < 64u && probePhase_ != kProbeIdle; ++k) {
+    service();
+  }
+  chargerPgoodPrev_ = (digitalRead(CHG_GOOD_PIN) == LOW);
   return true;
 }
 
@@ -496,6 +504,18 @@ void BatteryGauge::service() {
   const bool pgood    = digitalRead(CHG_GOOD_PIN) == LOW;
   const bool stat_raw = digitalRead(CHG_STAT_PIN) == LOW;
   const bool stat_low = pgood && stat_raw;
+
+  // First open-circuit sample after VBUS attaches: can't wait sch_low divisor
+  // ticks—the probe burst would dribble across many main-loop passes. Bump
+  // counter and finish the CE-high FSM in this call chain (recursive, bounded).
+  bool usb_charge_rise = false;
+  if (!inUsbProbeDrainBurst_) {
+    usb_charge_rise = (pgood && !chargerPgoodPrev_);
+    if (usb_charge_rise) {
+      probeTickCounter_ = 0;
+    }
+    chargerPgoodPrev_ = pgood;
+  }
 
   // ── Active probe schedule (only meaningful with USB present) ──
   // Phase machine driven by micros() deadlines. service() takes at most
@@ -626,6 +646,8 @@ void BatteryGauge::service() {
 
   if (!pgood) {
     // BQ passes the cell straight through; analogRead IS cell voltage.
+    // On USB (below: pgood) do NOT substitute this path — SOC must come from
+    // the CE-high probe burst (charger paused while sampling).
     uint32_t samples[BAT_SAMPLE_N];
     collectMedianWindow(samples);
     bat_sort_small(samples, BAT_SAMPLE_N);
@@ -658,6 +680,7 @@ void BatteryGauge::service() {
   // indicating they're meaningless.
   if (out.edge_present_to_absent) {
     bat_filter_zero(&filter_);
+    last_reported_pct_ = UINT32_MAX;
   }
 
   // ── IIR + pct update (only on trustworthy samples) ──
@@ -670,10 +693,15 @@ void BatteryGauge::service() {
     updateAdcStats(raw);
 
     uint32_t raw_pct = filter_.bat_pct;
-    if (pgood && /* ce enabled */ raw_pct < last_reported_pct_) {
-        filter_.bat_pct = last_reported_pct_;          // charging: don't drop
-    } else if (!pgood && raw_pct > last_reported_pct_) {
-        filter_.bat_pct = last_reported_pct_;          // discharging: don't rise
+    const bool clamp_seeded = (last_reported_pct_ != UINT32_MAX);
+    // Monotonic display while charging / on battery — only after at least one
+    // prior trustworthy frame (pre-seed last was UINT32_MAX): otherwise the
+    // discharging branch falsely pins to 0 on first good reading.
+    if (clamp_seeded && pgood && raw_pct < last_reported_pct_) {
+      filter_.bat_pct = last_reported_pct_;  // charging: don't drop
+    } else if (clamp_seeded && !pgood &&
+               raw_pct > last_reported_pct_) {
+      filter_.bat_pct = last_reported_pct_;  // discharging: don't rise
     }
     last_reported_pct_ = filter_.bat_pct;
   }
@@ -705,6 +733,14 @@ void BatteryGauge::service() {
   Power::logChargerTelemetryIfDue();
 // #endif
 // #endif
+
+  if (usb_charge_rise) {
+    inUsbProbeDrainBurst_ = true;
+    for (unsigned k = 0; k < 64u && probePhase_ != kProbeIdle; ++k) {
+      service();
+    }
+    inUsbProbeDrainBurst_ = false;
+  }
 }
 
 void BatteryGauge::updateAdcStats(uint32_t raw) {
@@ -770,6 +806,13 @@ bool wifiAllowed() {
   // SOC, so the brownout-on-association concern goes away.
   initChargerTelemetryPins();
   if (digitalRead(CHG_GOOD_PIN) == LOW) return true;  // active-low pgood
+
+  // Until the IIR leaves the bootstrap sentinel (filtered_raw == 0),
+  // bat_pct stays 0 and would classify as SUB — not a reliable "empty"
+  // reading (USB / probe / presence debounce can delay the first sample).
+  // Only gate once we have a settled estimate; SUB still means <10% SOC.
+  if (batteryGauge.filteredRawAdc() == 0) return true;
+
   return batteryGauge.threshold() != BAT_THRESH_SUB;
 }
 }  // namespace Power

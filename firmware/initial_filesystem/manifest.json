@@ -60,38 +60,6 @@
       "baked": false
     },
     {
-      "path": "/apps/breaksnake/tardigotchi/engine.py",
-      "size": 24793,
-      "sha256": "600dd71c54274749c92d6cf9e5090b7b1df319c882d434bb04f97395a431219f",
-      "fnv1a32": "0x7E27C230",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/engine.py",
-      "baked": false
-    },
-    {
-      "path": "/apps/breaksnake/tardigotchi/icon.py",
-      "size": 9551,
-      "sha256": "98f51d607fad32ff52b1e026a169b15d116c0408c9043f8beb4dc273a4a76e90",
-      "fnv1a32": "0xF0AD7DEF",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/icon.py",
-      "baked": false
-    },
-    {
-      "path": "/apps/breaksnake/tardigotchi/main.py",
-      "size": 187,
-      "sha256": "171be364d063b14dcae88066b03a3f9d5b580496be023a9181621d27e4b849a4",
-      "fnv1a32": "0x700ADC98",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/main.py",
-      "baked": false
-    },
-    {
-      "path": "/apps/breaksnake/tardigotchi/sprites.py",
-      "size": 31592,
-      "sha256": "69bbe5034119462d5d558e692284a6da9b97fdebeec3fb5e2f44bae6c1ade57d",
-      "fnv1a32": "0xA9BD6BB0",
-      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/sprites.py",
-      "baked": false
-    },
-    {
       "path": "/apps/flappy_asteroids/fa_data.py",
       "size": 6616,
       "sha256": "19c1c035c6887ba4d8a4d7f8816c27b3a2a6e17bdcc4d4764c1b1e48f7bf6af4",
@@ -321,6 +289,38 @@
       "sha256": "2cd0dbc4113253704cc01113a466c9cc53c0bf381b66dde1962283250c4e6da9",
       "fnv1a32": "0xA6620D0C",
       "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/synth/main.py",
+      "baked": false
+    },
+    {
+      "path": "/apps/tardigotchi/engine.py",
+      "size": 24793,
+      "sha256": "600dd71c54274749c92d6cf9e5090b7b1df319c882d434bb04f97395a431219f",
+      "fnv1a32": "0x7E27C230",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/engine.py",
+      "baked": false
+    },
+    {
+      "path": "/apps/tardigotchi/icon.py",
+      "size": 9551,
+      "sha256": "98f51d607fad32ff52b1e026a169b15d116c0408c9043f8beb4dc273a4a76e90",
+      "fnv1a32": "0xF0AD7DEF",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/icon.py",
+      "baked": false
+    },
+    {
+      "path": "/apps/tardigotchi/main.py",
+      "size": 187,
+      "sha256": "171be364d063b14dcae88066b03a3f9d5b580496be023a9181621d27e4b849a4",
+      "fnv1a32": "0x700ADC98",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/main.py",
+      "baked": false
+    },
+    {
+      "path": "/apps/tardigotchi/sprites.py",
+      "size": 31592,
+      "sha256": "69bbe5034119462d5d558e692284a6da9b97fdebeec3fb5e2f44bae6c1ade57d",
+      "fnv1a32": "0xA9BD6BB0",
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/sprites.py",
       "baked": false
     },
     {
@@ -701,9 +701,9 @@
     },
     {
       "path": "/manifest.json",
-      "size": 33088,
-      "sha256": "fd3d48290e0267a5737ace4a17f5efa5fe2f094fe616d95d67c50e58408e681d",
-      "fnv1a32": "0xFD55E913",
+      "size": 33000,
+      "sha256": "e2302138a20030768b9806d8b19d2e042bfc47e2f5a344aaa6fd638c9876e8ec",
+      "fnv1a32": "0xE26E788F",
       "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/manifest.json",
       "baked": false
     },

@@ -35,9 +35,14 @@ class WiFiService : public IService {
   // attempt walks through start → attempt → auth → got-ip / fail.
   bool connectToSlotAsync(uint8_t slot);
 
+  // Like connect() slot iteration, but async with the same Phase/overlay
+  // updates as connectToSlotAsync (for WiFi screen "Connect Now").
+  bool connectSavedNetworksAsync();
+
   // Worker entry; do not call directly from UI code. Public only so
   // the FreeRTOS task entry point in the .cpp can forward to it.
   void runSlotConnect(uint8_t slot);
+  void runSavedNetworksConnect();
 
   Phase phase() const { return phase_; }
   // Human-readable single-line status (e.g. "Connecting to MyAP",
@@ -57,7 +62,9 @@ class WiFiService : public IService {
   void dismissPhase();
 
   bool networkIndicatorActive() const { return networkIndicatorActive_; }
-  bool hasEverConnected() const { return lastNetworkOkMs_ != 0 || clockEverReady_; }
+  bool hasEverConnected() const {
+    return lastNetworkOkMs_ != 0 || clockEverReady_;
+  }
   bool clockReady() const;
   bool currentTime(time_t* out) const;
   bool isAutoSyncInProgress() const { return false; }
@@ -118,6 +125,8 @@ class WiFiService : public IService {
   char phaseStatusText_[64] = {};
   void setPhase(Phase p);
   void setPhaseStatus(const char* s);
+  bool pollStaAssociation(uint32_t timeoutMs, const char* ssid,
+                          const char* pass);
 };
 
 extern WiFiService wifiService;

@@ -135,6 +135,7 @@ void drawBleScanIcon(oled& d, int x, int y, bool hasFix) {
 // shows one of:
 //
 //   • warning chevrons      — battery missing, gauge unready, or < 5 %
+//     (unplugged only; never while USB/charger status is active)
 //   • charging bolt         — USB power present + active charge
 //   • solid full            — USB power present, charge complete
 //   • two-digit pixel font  — 5..99 % on battery (tens / divider / units)
@@ -180,11 +181,33 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
   constexpr uint32_t kGlyphHoldMs   = 900;
   const bool showGlyph = (millis() % kCyclePeriodMs) < kGlyphHoldMs;
 
+  const bool charging = batteryGauge.isCharging();
+  const bool usb      = batteryGauge.usbPresent();
+
+  // External power / charge FSM from the gauge — show bolt or full-charge
+  // glyph on the clock phase even before the first open-circuit probe lands
+  // (ready/pct may still be indeterminate).
+  if (charging || usb) {
+    const bool pctKnown = pct > 0.f;
+    if (pctKnown && !showGlyph) {
+      drawPercentDigits();
+      return;
+    }
+    // Unknown or still-reading 0%: never alternate to "00" — keep bolt/full.
+    if (charging) {
+      d.drawXBM(fillX, fillY,
+                BatteryIcons::kChargingW, BatteryIcons::kChargingH,
+                BatteryIcons::kChargingBits);
+    } else {
+      d.drawXBM(fillX, fillY,
+                BatteryIcons::kFullW, BatteryIcons::kFullH,
+                BatteryIcons::kFullBits);
+    }
+    return;
+  }
+
   if (!ready || pct <= 0.f) {
-    // Gauge unready, OR ready but no trustworthy probe sample has
-    // landed yet so bat_pct is still at its post-zero default of 0.
-    // Hold the warning glyph instead of flashing "00", which reads
-    // as a dead battery and would be misleading while charging.
+    // Gauge unready, OR ready but no trustworthy sample yet (unplugged).
     drawExclamation();
     return;
   }
@@ -195,30 +218,6 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
     // ("3 %" vs "1 %" matters), without losing the at-a-glance alert.
     if (showGlyph) drawExclamation();
     else           drawPercentDigits();
-    return;
-  }
-
-  const bool charging = batteryGauge.isCharging();
-  const bool usb      = batteryGauge.usbPresent();
-
-  // When external power is present (charging bolt or full-charge solid),
-  // alternate between the power glyph and the numeric percent so the
-  // user can still read the level while plugged in.
-  if (charging || usb) {
-    if (showGlyph) {
-      if (charging) {
-        d.drawXBM(fillX, fillY,
-                  BatteryIcons::kChargingW, BatteryIcons::kChargingH,
-                  BatteryIcons::kChargingBits);
-      } else {
-        // USB present + charge complete (PGOOD low, CHG high) → solid fill.
-        d.drawXBM(fillX, fillY,
-                  BatteryIcons::kFullW, BatteryIcons::kFullH,
-                  BatteryIcons::kFullBits);
-      }
-    } else {
-      drawPercentDigits();
-    }
     return;
   }
 

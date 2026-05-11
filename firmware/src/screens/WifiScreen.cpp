@@ -22,6 +22,7 @@ constexpr uint8_t kContentY = OLEDLayout::kContentTopY;
 constexpr int kValueRightX = 119;
 constexpr int kRowIndentX = 16;
 constexpr int kHeaderIndentX = 4;
+constexpr int kDiagValX = 50;
 constexpr uint16_t kJoyDeadband = 600;
 constexpr uint32_t kRampStartMs = 350;
 constexpr uint32_t kRampMinMs = 100;
@@ -34,6 +35,14 @@ constexpr uint8_t kChevronW = 5;
 constexpr uint8_t kChevronH = 5;
 const uint8_t kChevronDownBits[] PROGMEM = {0x00, 0x1F, 0x0E, 0x04, 0x00};
 const uint8_t kChevronRightBits[] PROGMEM = {0x01, 0x03, 0x07, 0x03, 0x01};
+
+inline bool savedSlotMatchesLiveWifi(uint8_t slot) {
+  if (!wifiService.isConnected()) return false;
+  const char* sv = badgeConfig.wifiSsidAt(slot);
+  if (!sv || !sv[0]) return false;
+  const String live = WiFi.SSID();
+  return live.length() > 0 && live == sv;
+}
 
 void wifiTextSubmitTrampoline(const char* text, void* user) {
   if (auto* self = static_cast<WifiScreen*>(user)) {
@@ -116,8 +125,15 @@ void WifiScreen::onResume(GUIManager& gui) {
 
 void WifiScreen::rebuildRows() {
   rowCount_ = 0;
-  // Master enable toggle pinned to the top — a quick way to disable
-  // auto-connect on boot without forgetting every saved network.
+  for (uint8_t line = 0; line < kDiagnosticRowCount && rowCount_ < kMaxRows;
+       ++line) {
+    Row& dr = rows_[rowCount_++];
+    dr.kind = RowKind::kDiagnostics;
+    dr.slot = line;
+    dr.action = Action::kConnect;
+  }
+  // Master enable toggle — quick way to disable auto-connect on boot
+  // without forgetting every saved network.
   {
     Row& r = rows_[rowCount_++];
     r.kind = RowKind::kEnableToggle;
@@ -237,7 +253,7 @@ void WifiScreen::onTextSubmit(const char* text) {
       pendingSsid_[0] = '\0';
       pendingInput_ = PendingInput::kNone;
       if (slot >= 0) {
-        cursor_ = static_cast<uint8_t>(slot) + 1;  // +1 for the toggle row
+        cursor_ = static_cast<uint8_t>(slot) + 1 + kDiagnosticRowCount;
       }
       break;
     }
@@ -268,7 +284,7 @@ void WifiScreen::onTextSubmit(const char* text) {
         const int8_t slot = badgeConfig.addWifiNetwork(pendingSsid_, text);
         pendingSsid_[0] = '\0';
         if (slot >= 0) {
-          cursor_ = static_cast<uint8_t>(slot) + 1;
+          cursor_ = static_cast<uint8_t>(slot) + 1 + kDiagnosticRowCount;
         }
       }
       break;
@@ -278,7 +294,7 @@ void WifiScreen::onTextSubmit(const char* text) {
 bool WifiScreen::tryConnect(GUIManager& gui) {
   (void)gui;
   lastConnectAttemptMs_ = millis();
-  return wifiService.connect();
+  return wifiService.connectSavedNetworksAsync();
 }
 
 bool WifiScreen::tryConnectToSlot(GUIManager& gui, uint8_t slot) {
@@ -425,6 +441,50 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
     char right[24] = {};
 
     switch (r.kind) {
+      case RowKind::kDiagnostics: {
+        const DiagnosticLine line = static_cast<DiagnosticLine>(r.slot);
+        const char* tag = "?";
+        char valBuf[40] = {};
+        switch (line) {
+          case DiagnosticLine::kLinkState:
+            tag = "Link";
+            snprintf(valBuf, sizeof(valBuf), "%s",
+                     online ? "Connected" : "Not connected");
+            break;
+          case DiagnosticLine::kNetworkName:
+            tag = "Network";
+            if (online) {
+              const String nw = WiFi.SSID();
+              snprintf(valBuf, sizeof(valBuf), "%.31s", nw.c_str());
+            }
+            if (valBuf[0] == '\0') strncpy(valBuf, "---", sizeof(valBuf));
+            valBuf[sizeof(valBuf) - 1] = '\0';
+            break;
+          case DiagnosticLine::kIpAddr:
+            tag = "IP";
+            if (online) {
+              const String ipStr = WiFi.localIP().toString();
+              snprintf(valBuf, sizeof(valBuf), "%.31s", ipStr.c_str());
+            }
+            if (valBuf[0] == '\0') strncpy(valBuf, "---", sizeof(valBuf));
+            valBuf[sizeof(valBuf) - 1] = '\0';
+            break;
+          case DiagnosticLine::kRssi:
+            tag = "RSSI";
+            if (online) {
+              const int dbm = wifiService.rssi();
+              if (dbm != 0) snprintf(valBuf, sizeof(valBuf), "%d dBm", dbm);
+              else strncpy(valBuf, "...", sizeof(valBuf));
+            } else strncpy(valBuf, "---", sizeof(valBuf));
+            valBuf[sizeof(valBuf) - 1] = '\0';
+            break;
+        }
+        d.drawStr(kHeaderIndentX, baseline, tag);
+        OLEDLayout::fitText(d, valBuf, sizeof(valBuf),
+                            kValueRightX - kDiagValX + 4);
+        d.drawStr(kDiagValX, baseline, valBuf);
+        break;
+      }
       case RowKind::kEnableToggle: {
         const bool on = badgeConfig.get(kWifiEnabled) != 0;
         d.drawStr(kHeaderIndentX, baseline, "Auto-connect");
@@ -466,14 +526,24 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
         break;
       }
       case RowKind::kSlotAction: {
-        snprintf(left, sizeof(left), "%s", labelForAction(r.action));
+        if (r.action == Action::kConnect) {
+          snprintf(left, sizeof(left), "%s",
+                   savedSlotMatchesLiveWifi(r.slot) ? "Disconnect"
+                                                    : labelForAction(
+                                                          Action::kConnect));
+        } else {
+          snprintf(left, sizeof(left), "%s", labelForAction(r.action));
+        }
         d.drawStr(kRowIndentX + 6, baseline, left);
-        // Right-side hint glyph so the row looks "actionable".
         const char* hint = "go";
         if (r.action == Action::kForget) hint = "x";
         if (r.action == Action::kEditPassword) hint = "edit";
         if (r.action == Action::kMoveUp || r.action == Action::kMoveDown) {
           hint = r.action == Action::kMoveUp ? "up" : "dn";
+        }
+        if (r.action == Action::kConnect &&
+            savedSlotMatchesLiveWifi(r.slot)) {
+          hint = "disc";
         }
         const int hw = d.getStrWidth(hint);
         d.drawStr(kValueRightX - hw, baseline, hint);
@@ -483,8 +553,12 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
         d.drawStr(kHeaderIndentX, baseline, "+ Add Network");
         break;
       case RowKind::kConnectNow: {
-        d.drawStr(kHeaderIndentX, baseline, "Connect Now");
-        const char* status = online ? "online" : "go";
+        if (online) {
+          d.drawStr(kHeaderIndentX, baseline, "Disconnect");
+        } else {
+          d.drawStr(kHeaderIndentX, baseline, "Connect Now");
+        }
+        const char* status = online ? "disc" : "go";
         const int sw = d.getStrWidth(status);
         d.drawStr(kValueRightX - sw, baseline, status);
         break;
@@ -498,6 +572,25 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
   const char* footer = nullptr;
   const char* action = "select";
   switch (cur.kind) {
+    case RowKind::kDiagnostics: {
+      const DiagnosticLine line = static_cast<DiagnosticLine>(cur.slot);
+      switch (line) {
+        case DiagnosticLine::kLinkState:
+          footer = "WiFi association status";
+          break;
+        case DiagnosticLine::kNetworkName:
+          footer = "Current network name";
+          break;
+        case DiagnosticLine::kIpAddr:
+          footer = "Local IP address";
+          break;
+        case DiagnosticLine::kRssi:
+          footer = "Signal strength estimate";
+          break;
+      }
+      action = "";
+      break;
+    }
     case RowKind::kEnableToggle:
       footer = (badgeConfig.get(kWifiEnabled) != 0)
                    ? "Auto-connect on boot is on"
@@ -517,15 +610,24 @@ void WifiScreen::render(oled& d, GUIManager& /*gui*/) {
       break;
     }
     case RowKind::kSlotAction:
-      footer = labelForAction(cur.action);
-      action = "go";
+      if (cur.action == Action::kConnect &&
+          savedSlotMatchesLiveWifi(cur.slot)) {
+        footer = "Disconnect from this WiFi";
+      } else {
+        footer = labelForAction(cur.action);
+      }
+      action =
+          (cur.action == Action::kConnect &&
+           savedSlotMatchesLiveWifi(cur.slot))
+              ? "select"
+              : "go";
       break;
     case RowKind::kAddNetwork:
       footer = "Add a saved network";
       action = "go";
       break;
     case RowKind::kConnectNow:
-      footer = online ? "Already online — re-check" : "Connect now";
+      footer = online ? "Disconnect radio" : "Try saved networks in order";
       action = "go";
       break;
   }
@@ -566,8 +668,11 @@ void WifiScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
   }
 
   if (e.confirmPressed && cursor_ < rowCount_) {
+    const bool online = wifiService.isConnected();
     const Row& r = rows_[cursor_];
     switch (r.kind) {
+      case RowKind::kDiagnostics:
+        return;
       case RowKind::kEnableToggle: {
         const int32_t now = badgeConfig.get(kWifiEnabled);
         badgeConfig.set(kWifiEnabled, now != 0 ? 0 : 1);
@@ -591,14 +696,12 @@ void WifiScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
       case RowKind::kSlotAction: {
         switch (r.action) {
           case Action::kConnect:
-            // Per-slot Connect targets exactly the network the user
-            // picked. Never fall back to the iterating
-            // `wifiService.connect()` here — that walks slot 0 first
-            // and would silently land the user on a different AP than
-            // the one they highlighted. If the worker refuses to
-            // start (already in flight / power blocked), the service
-            // already exposes the reason via phase + status text and
-            // the popup overlay will surface it.
+            if (savedSlotMatchesLiveWifi(r.slot)) {
+              wifiService.disconnect();
+              wifiService.dismissPhase();
+              gui.requestRender();
+              return;
+            }
             tryConnectToSlot(gui, r.slot);
             return;
           case Action::kForget:
@@ -633,6 +736,12 @@ void WifiScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
         pushSsidEditor(gui);
         return;
       case RowKind::kConnectNow:
+        if (online) {
+          wifiService.disconnect();
+          wifiService.dismissPhase();
+          gui.requestRender();
+          return;
+        }
         tryConnect(gui);
         return;
     }

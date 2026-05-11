@@ -352,11 +352,9 @@ void WiFiService::setPhaseStatus(const char* s) {
   phaseStatusText_[sizeof(phaseStatusText_) - 1] = '\0';
 }
 
-namespace {
-// Translate a wl_status_t into a single-line user-facing string. We
-// keep these short so the popup line wraps cleanly at the OLED's
-// ~21-char width.
-const char* phaseStatusForWl(wl_status_t st) {
+// File-scope so WiFiService::pollStaAssociation (outside unnamed namespace)
+// can share wording with worker tasks inside the TU.
+static const char* wifiPhaseLabelForWl(wl_status_t st) {
   switch (st) {
     case WL_IDLE_STATUS:      return "Radio idle";
     case WL_NO_SSID_AVAIL:    return "Network not found";
@@ -369,6 +367,8 @@ const char* phaseStatusForWl(wl_status_t st) {
     default:                  return "Working...";
   }
 }
+
+namespace {
 
 struct AsyncConnectArgs {
   WiFiService* svc;
@@ -383,7 +383,65 @@ void wifiSlotConnectTask(void* arg) {
   if (svc) svc->runSlotConnect(slot);
   vTaskDelete(nullptr);
 }
+
+struct SavedIterateArgs {
+  WiFiService* svc;
+};
+
+void wifiSavedIterateTask(void* arg) {
+  auto* args = static_cast<SavedIterateArgs*>(arg);
+  WiFiService* svc = args->svc;
+  delete args;
+  if (svc) svc->runSavedNetworksConnect();
+  vTaskDelete(nullptr);
+}
 }  // namespace
+
+bool WiFiService::pollStaAssociation(uint32_t timeoutMs, const char* ssid,
+                                   const char* pass) {
+  const char* pwd = pass ? pass : "";
+  const uint32_t startMs = millis();
+  uint32_t lastKickMs = startMs;
+  bool sawAuth = false;
+  bool sawNonIdle = false;
+  uint8_t kicks = 0;
+  constexpr uint8_t kMaxKicks = 2;
+
+  while (millis() - startMs < timeoutMs) {
+    const wl_status_t st = WiFi.status();
+    if (st == WL_CONNECTED ||
+        static_cast<uint32_t>(WiFi.localIP()) != 0) {
+      return true;
+    }
+    if (!sawAuth && st != WL_IDLE_STATUS && st != WL_DISCONNECTED &&
+        st != WL_NO_SHIELD) {
+      sawAuth = true;
+      setPhaseStatus(wifiPhaseLabelForWl(st));
+      setPhase(Phase::kAuthenticating);
+    }
+    if (!sawNonIdle && st != WL_IDLE_STATUS && st != WL_NO_SHIELD) {
+      sawNonIdle = true;
+    }
+    if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
+      setPhaseStatus(wifiPhaseLabelForWl(st));
+      setPhase(Phase::kFailed);
+      return false;
+    }
+    if (!sawNonIdle && kicks < kMaxKicks &&
+        (millis() - lastKickMs) > 3000) {
+      Serial.printf("[WiFi] async stuck-idle kick %u/%u status=%d\n",
+                    static_cast<unsigned>(kicks + 1),
+                    static_cast<unsigned>(kMaxKicks), static_cast<int>(st));
+      WiFi.disconnect(false, false);
+      delay(100);
+      WiFi.begin(ssid, pwd);
+      lastKickMs = millis();
+      ++kicks;
+    }
+    delay(150);
+  }
+  return false;
+}
 
 bool WiFiService::connectToSlotAsync(uint8_t slot) {
   if (asyncConnectInFlight_) return false;
@@ -416,6 +474,38 @@ bool WiFiService::connectToSlotAsync(uint8_t slot) {
   return true;
 }
 
+bool WiFiService::connectSavedNetworksAsync() {
+  if (asyncConnectInFlight_) return false;
+  if (!Power::wifiAllowed()) {
+    setPhaseStatus("Blocked by power policy");
+    setPhase(Phase::kFailed);
+    return false;
+  }
+  const uint8_t netCount = badgeConfig.wifiNetworkCount();
+  if (netCount == 0) {
+    setPhaseStatus("No saved networks");
+    setPhase(Phase::kFailed);
+    return false;
+  }
+
+  asyncConnectInFlight_ = true;
+  phaseSsid_[0] = '\0';
+  setPhaseStatus("Starting...");
+  setPhase(Phase::kStarting);
+
+  auto* args = new SavedIterateArgs{this};
+  if (xTaskCreatePinnedToCore(wifiSavedIterateTask, "wifi_scan", 8192, args,
+                              tskIDLE_PRIORITY + 1, nullptr,
+                              0) != pdPASS) {
+    delete args;
+    asyncConnectInFlight_ = false;
+    setPhaseStatus("Out of memory");
+    setPhase(Phase::kFailed);
+    return false;
+  }
+  return true;
+}
+
 void WiFiService::runSlotConnect(uint8_t slot) {
   const char* ssid = badgeConfig.wifiSsidAt(slot);
   const char* pass = badgeConfig.wifiPassAt(slot);
@@ -437,12 +527,6 @@ void WiFiService::runSlotConnect(uint8_t slot) {
     else if (prevMhz < 160) setCpuFrequencyMhz(prevMhz);
   };
 
-  // Inspect the radio's current state before tearing it down. If we
-  // happen to already be associated with the SSID the user picked,
-  // skip the disconnect/reconnect cycle entirely and report
-  // "Already connected" — saves several seconds of UI churn and
-  // avoids dropping a working link just because the user double-
-  // confirmed a row.
   const bool wasConnected =
       (WiFi.status() == WL_CONNECTED) ||
       (static_cast<uint32_t>(WiFi.localIP()) != 0);
@@ -461,9 +545,6 @@ void WiFiService::runSlotConnect(uint8_t slot) {
     return;
   }
 
-  // If we're currently on a different network, surface that as an
-  // explicit "Disconnecting <oldSSID>" step so the user knows we
-  // tore down the old link before bringing up the new one.
   if (wasConnected && currentSsid.length() > 0) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "Disconnecting %.20s",
@@ -476,13 +557,10 @@ void WiFiService::runSlotConnect(uint8_t slot) {
 
   primeRadioForConnectCycle();
 
-  // Hostname must be set after the driver is up (WIFI_STA) but before
-  // begin(); otherwise it gets ignored on the first DHCP exchange.
   char hostname[32];
   snprintf(hostname, sizeof(hostname), "badge-%s", uid_hex);
   WiFi.setHostname(hostname);
 
-  // Wipe stale association/config without deiniting the driver.
   WiFi.disconnect(false, true);
   delay(50);
 
@@ -497,54 +575,10 @@ void WiFiService::runSlotConnect(uint8_t slot) {
                 static_cast<unsigned>(strlen(pass ? pass : "")));
   WiFi.begin(ssid, pass ? pass : "");
 
-  const uint32_t startMs = millis();
-  uint32_t lastKickMs = startMs;
-  bool ok = false;
-  bool sawAuth = false;
-  bool sawNonIdle = false;
-  uint8_t kicks = 0;
-  constexpr uint8_t kMaxKicks = 2;
-  while (millis() - startMs < WIFI_TIMEOUT_MS) {
-    const wl_status_t st = WiFi.status();
-    if (st == WL_CONNECTED ||
-        static_cast<uint32_t>(WiFi.localIP()) != 0) {
-      ok = true;
-      break;
-    }
-    // Once we leave the initial idle/disconnected state we know the
-    // radio has at least *seen* the AP — surface that as an
-    // "Authenticating" step so the user doesn't think we're stuck.
-    if (!sawAuth && st != WL_IDLE_STATUS && st != WL_DISCONNECTED &&
-        st != WL_NO_SHIELD) {
-      sawAuth = true;
-      setPhaseStatus(phaseStatusForWl(st));
-      setPhase(Phase::kAuthenticating);
-    }
-    if (!sawNonIdle && st != WL_IDLE_STATUS && st != WL_NO_SHIELD) {
-      sawNonIdle = true;
-    }
-    if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
-      setPhaseStatus(phaseStatusForWl(st));
-      break;
-    }
-    // begin() raced STA_START → kick it. See tryConnectOnce for the
-    // full explanation; the async path uses the same protection.
-    if (!sawNonIdle && kicks < kMaxKicks &&
-        (millis() - lastKickMs) > 3000) {
-      Serial.printf("[WiFi] async stuck-idle kick %u/%u status=%d\n",
-                    static_cast<unsigned>(kicks + 1),
-                    static_cast<unsigned>(kMaxKicks), st);
-      WiFi.disconnect(false, false);
-      delay(100);
-      WiFi.begin(ssid, pass ? pass : "");
-      lastKickMs = millis();
-      ++kicks;
-    }
-    delay(150);
-  }
+  const bool ok =
+      pollStaAssociation(WIFI_TIMEOUT_MS, ssid, pass ? pass : "");
 
   if (ok) {
-    // Modem-sleep saves ~50 mA average on an associated link.
     WiFi.setSleep(true);
     configureClockOnce();
     noteConnectionOk();
@@ -559,12 +593,85 @@ void WiFiService::runSlotConnect(uint8_t slot) {
     shutDownRadio();
     noteConnectionFailed();
     if (phase_ != Phase::kFailed) {
-      // We didn't get a hard-fail status — must have been a timeout.
       setPhaseStatus("Timed out");
     }
     setPhase(Phase::kFailed);
     Serial.printf("[WiFi] async slot %u failed — radio off\n",
                   static_cast<unsigned>(slot));
+  }
+
+  restoreCpu();
+  asyncConnectInFlight_ = false;
+}
+
+void WiFiService::runSavedNetworksConnect() {
+  const uint32_t prevMhz = getCpuFrequencyMhz();
+  if (s_wifiPmLock) {
+    esp_pm_lock_acquire(s_wifiPmLock);
+  } else if (prevMhz < 160) {
+    setCpuFrequencyMhz(160);
+  }
+  auto restoreCpu = [&]() {
+    if (s_wifiPmLock) esp_pm_lock_release(s_wifiPmLock);
+    else if (prevMhz < 160) setCpuFrequencyMhz(prevMhz);
+  };
+
+  primeRadioForConnectCycle();
+
+  char hostname[32];
+  snprintf(hostname, sizeof(hostname), "badge-%s", uid_hex);
+  WiFi.setHostname(hostname);
+
+  bool ok = false;
+  uint8_t attempted = 0;
+  const uint8_t total = badgeConfig.wifiNetworkCount();
+
+  for (uint8_t i = 0; i < Config::kMaxWifiNetworks && !ok; ++i) {
+    const char* ssid = badgeConfig.wifiSsidAt(i);
+    const char* pass = badgeConfig.wifiPassAt(i);
+    if (!ssid || !ssid[0]) continue;
+    ++attempted;
+    const uint32_t timeoutMs =
+        (attempted >= total) ? WIFI_TIMEOUT_MS : kPerAttemptTimeoutMs;
+
+    std::strncpy(phaseSsid_, ssid, sizeof(phaseSsid_) - 1);
+    phaseSsid_[sizeof(phaseSsid_) - 1] = '\0';
+
+    char line[64];
+    snprintf(line, sizeof(line), "Connecting to %.20s", ssid);
+    setPhaseStatus(line);
+    setPhase(Phase::kAttempting);
+
+    WiFi.disconnect(false, true);
+    delay(50);
+    WiFi.begin(ssid, pass ? pass : "");
+
+    Serial.printf(
+        "[WiFi] async iterate slot %u ssid='%s' timeout=%u ms\n",
+        static_cast<unsigned>(i), ssid,
+        static_cast<unsigned>(timeoutMs));
+    ok = pollStaAssociation(timeoutMs, ssid, pass ? pass : "");
+  }
+
+  if (ok) {
+    WiFi.setSleep(true);
+    configureClockOnce();
+    noteConnectionOk();
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Got IP %s",
+                  WiFi.localIP().toString().c_str());
+    setPhaseStatus(buf);
+    setPhase(Phase::kConnected);
+    Serial.printf("[WiFi] iterate ok ip=%s\n",
+                  WiFi.localIP().toString().c_str());
+  } else {
+    shutDownRadio();
+    noteConnectionFailed();
+    if (phase_ != Phase::kFailed) {
+      setPhaseStatus("Timed out");
+    }
+    setPhase(Phase::kFailed);
+    Serial.printf("[WiFi] iterate failed — radio off\n");
   }
 
   restoreCpu();

@@ -9,7 +9,8 @@
 // actually got online.
 //
 // Cursor model:
-//   • One row per saved network (slot-order, slot 0 first).
+//   • Non-interactive status lines at the top: link, SSID, IP, RSSI.
+//   • Auto-connect toggle, then slot list (expanded actions under one slot).
 //   • One trailing "Add Network" row when at least one slot is free.
 //   • One "Connect" action row at the bottom that re-runs the
 //     iterating `WiFiService::connect()`.
@@ -84,19 +85,24 @@ class WifiScreen : public Screen {
   // and dismiss" first.
   bool overlayActive() const;
 
-  // Static helpers that need access to the private `Action` enum.
   static const char* labelForAction(Action a);
   static Action actionAt(uint8_t indexInList);
 
   // Number of expanded inline action rows under the focused slot.
   static constexpr uint8_t kActionsPerSlot = 5;
 
-  // Total cap: 1 master-toggle + kMaxWifiNetworks slot headers +
-  // their action rows (only one expanded at a time) + "Add Network"
-  // + "Connect Now".
-  static constexpr uint8_t kMaxRows = 14;
+  // Non-interactive diagnostics at the top of the list (link / SSID / IP /
+  // signal). `Row::slot` stores `DiagnosticLine` as uint8_t.
+  static constexpr uint8_t kDiagnosticRowCount = 4;
+  enum class DiagnosticLine : uint8_t {
+    kLinkState = 0,
+    kNetworkName,
+    kIpAddr,
+    kRssi
+  };
 
   enum class RowKind : uint8_t {
+    kDiagnostics,
     kEnableToggle,
     kSlot,
     kSlotAction,
@@ -106,9 +112,16 @@ class WifiScreen : public Screen {
 
   struct Row {
     RowKind kind;
-    uint8_t slot;     // valid for kSlot / kSlotAction
-    Action  action;   // valid for kSlotAction
+    uint8_t slot;      // diagnostics: DiagnosticLine; else wifi slot index
+    Action  action;    // valid for kSlotAction
   };
+
+  // Worst-case: all diagnostic rows + toggle + max slot headers +
+  // one fully expanded actions group + trailing utility rows (+ slack).
+  // Must stay in sync with `Config::kMaxWifiNetworks` (four slots today).
+  static constexpr uint8_t kMaxWifiSlotLimit = 4;
+  static constexpr uint8_t kMaxRows =
+      kDiagnosticRowCount + 1 + kMaxWifiSlotLimit + kActionsPerSlot + 2 + 2;
 
   Row rows_[kMaxRows];
   uint8_t rowCount_ = 0;

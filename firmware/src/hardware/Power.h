@@ -246,12 +246,14 @@ class BatteryGauge : public IService {
   bat_presence_state_t presence_{};
   uint32_t flags_ = 0;
   uint8_t probeTickCounter_ = 0;
+  bool chargerPgoodPrev_         = false;
+  bool inUsbProbeDrainBurst_     = false;
   bool ready_ = false;
   uint32_t rawAdcMin_ = UINT32_MAX;
   uint32_t rawAdcMax_ = 0;
   uint32_t sampleCount_ = 0;
   uint32_t lastAdcTelemetryLogMs_ = 0;
-  uint32_t last_reported_pct_ = 0;
+  uint32_t last_reported_pct_ = UINT32_MAX;
   battery_threshold_t cached_threshold_ = BAT_THRESH_NORMIE;
 };
 

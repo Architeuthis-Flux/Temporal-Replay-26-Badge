@@ -6,10 +6,10 @@
       "id": "breaksnake",
       "kind": "app",
       "name": "Breaksnake",
-      "version": "0491e3b322ba",
+      "version": "2c1284b8be9d",
       "dest_dir": "/apps/breaksnake",
-      "size": 81514,
-      "min_free_bytes": 85610,
+      "size": 15391,
+      "min_free_bytes": 19487,
       "description": " import sys ",
       "files": [
         {
@@ -41,30 +41,6 @@
           "size": 224,
           "sha256": "3bd9cf9e776128b1111c88948ffef24d1369e78caecfab2029290c35e6a3e006",
           "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/main.py"
-        },
-        {
-          "path": "/tardigotchi/engine.py",
-          "size": 24793,
-          "sha256": "600dd71c54274749c92d6cf9e5090b7b1df319c882d434bb04f97395a431219f",
-          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/engine.py"
-        },
-        {
-          "path": "/tardigotchi/icon.py",
-          "size": 9551,
-          "sha256": "98f51d607fad32ff52b1e026a169b15d116c0408c9043f8beb4dc273a4a76e90",
-          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/icon.py"
-        },
-        {
-          "path": "/tardigotchi/main.py",
-          "size": 187,
-          "sha256": "171be364d063b14dcae88066b03a3f9d5b580496be023a9181621d27e4b849a4",
-          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/main.py"
-        },
-        {
-          "path": "/tardigotchi/sprites.py",
-          "size": 31592,
-          "sha256": "69bbe5034119462d5d558e692284a6da9b97fdebeec3fb5e2f44bae6c1ade57d",
-          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/breaksnake/tardigotchi/sprites.py"
         }
       ]
     },
@@ -269,6 +245,42 @@
           "size": 15000,
           "sha256": "2cd0dbc4113253704cc01113a466c9cc53c0bf381b66dde1962283250c4e6da9",
           "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/synth/main.py"
+        }
+      ]
+    },
+    {
+      "id": "tardigotchi",
+      "kind": "app",
+      "name": "Tardigotchi",
+      "version": "7fbb0435b7ea",
+      "dest_dir": "/apps/tardigotchi",
+      "size": 66123,
+      "min_free_bytes": 70219,
+      "description": "Tardigotchi",
+      "files": [
+        {
+          "path": "/engine.py",
+          "size": 24793,
+          "sha256": "600dd71c54274749c92d6cf9e5090b7b1df319c882d434bb04f97395a431219f",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/engine.py"
+        },
+        {
+          "path": "/icon.py",
+          "size": 9551,
+          "sha256": "98f51d607fad32ff52b1e026a169b15d116c0408c9043f8beb4dc273a4a76e90",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/icon.py"
+        },
+        {
+          "path": "/main.py",
+          "size": 187,
+          "sha256": "171be364d063b14dcae88066b03a3f9d5b580496be023a9181621d27e4b849a4",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/main.py"
+        },
+        {
+          "path": "/sprites.py",
+          "size": 31592,
+          "sha256": "69bbe5034119462d5d558e692284a6da9b97fdebeec3fb5e2f44bae6c1ade57d",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/apps/tardigotchi/sprites.py"
         }
       ]
     },
