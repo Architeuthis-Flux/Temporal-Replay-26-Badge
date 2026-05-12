@@ -683,36 +683,44 @@ void BatteryGauge::service() {
     last_reported_pct_ = UINT32_MAX;
   }
 
-  // ── IIR + pct update (only on trustworthy samples) ──
-  if (bat_sample_trustworthy(pgood,
-                             have_raw,
-                             have_probe_sample,
-                             out.target_present,
-                             probe_verdict)) {
+  const bool trustworthy_tick = bat_sample_trustworthy(pgood,
+                                                         have_raw,
+                                                         have_probe_sample,
+                                                         out.target_present,
+                                                         probe_verdict);
+
+  // ── IIR + pct update (trustworthy samples refine gauge state) ────────────
+  if (trustworthy_tick) {
     bat_filter_update(&filter_, raw);
     updateAdcStats(raw);
 
     uint32_t raw_pct = filter_.bat_pct;
     const bool clamp_seeded = (last_reported_pct_ != UINT32_MAX);
-    // Monotonic display while charging / on battery — only after at least one
-    // prior trustworthy frame (pre-seed last was UINT32_MAX): otherwise the
-    // discharging branch falsely pins to 0 on first good reading.
     if (clamp_seeded && pgood && raw_pct < last_reported_pct_) {
       filter_.bat_pct = last_reported_pct_;  // charging: don't drop
     } else if (clamp_seeded && !pgood &&
                raw_pct > last_reported_pct_) {
       filter_.bat_pct = last_reported_pct_;  // discharging: don't rise
     }
+  } else if (have_raw && raw >= (uint32_t)BAT_RAW_MIN) {
+    // Rough live estimate whenever we have a divider sample (USB: between
+    // probes; refine on next trustworthy CE-off burst).
+    filter_.adc_raw = raw;
+    filter_.bat_mv  = bat_adc_to_mv(raw);
+    uint32_t est    = bat_raw_to_pct(raw);
+    if (est > filter_.bat_pct) filter_.bat_pct = est;
+  }
+
+  bat_filter_apply_mv_soc_floor(&filter_);
+
+  if (trustworthy_tick) {
     last_reported_pct_ = filter_.bat_pct;
   }
 
   flags_ = bat_compose_flags(pgood, stat_raw, stat_low, out.latched);
 
-  // ── Threshold classification + WiFi power gate ──
-  // Power owns the radio kill: when the cell drops to SUB and USB is absent,
-  // disconnect WiFi to keep the rail above BOD on the next association burst.
-  // When USB shows up after a SUB shutdown, re-arm WiFi so the next service
-  // tick reconnects without a manual nudge.
+  // ── Threshold classification (telemetry / cached band) ────────────────────
+  // WiFi is not blocked on SUB; this state is retained for diagnostics.
   battery_threshold_t next = bat_classify_threshold(filter_.bat_pct);
   bool entering_sub_no_usb = (cached_threshold_ != BAT_THRESH_SUB &&
                               next == BAT_THRESH_SUB && !pgood);
@@ -802,18 +810,7 @@ extern BatteryGauge batteryGauge;
 
 namespace Power {
 bool wifiAllowed() {
-  // USB-present always wins — BQ24079 holds the 3V3 rail up regardless of
-  // SOC, so the brownout-on-association concern goes away.
-  initChargerTelemetryPins();
-  if (digitalRead(CHG_GOOD_PIN) == LOW) return true;  // active-low pgood
-
-  // Until the IIR leaves the bootstrap sentinel (filtered_raw == 0),
-  // bat_pct stays 0 and would classify as SUB — not a reliable "empty"
-  // reading (USB / probe / presence debounce can delay the first sample).
-  // Only gate once we have a settled estimate; SUB still means <10% SOC.
-  if (batteryGauge.filteredRawAdc() == 0) return true;
-
-  return batteryGauge.threshold() != BAT_THRESH_SUB;
+  return true;
 }
 }  // namespace Power
 

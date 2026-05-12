@@ -119,6 +119,15 @@ static inline uint32_t bat_adc_to_mv(uint32_t raw) {
         return ((raw * 1739) / 1000) + 36;
 }
 
+// Absolute minimum displayed SOC implied by observed terminal mV (coarse band).
+// Prevents "0 %" while the divider clearly reads mid/high pack; refined by the
+// discharge curve / EMA once trustworthy samples stream.
+static inline uint32_t bat_mv_min_display_pct(uint32_t mv) {
+    if (mv <= 3300u) return 0;
+    if (mv >= 4150u) return 100u;
+    return ((mv - 3300u) * 100u) / (4150u - 3300u);
+}
+
 // Discharge curve (percentage vs ADC via bat_adc_to_mv). Lower knots unchanged.
 // LR 523450 / 523450-class 1000 mAh pouch: datasheets cite nominal 3.7 V and CCCV to
 // 4.2 V; on this badge rested "full" is often ~4.05–4.12 V depending on charger
@@ -289,6 +298,17 @@ static inline void bat_filter_update(bat_filter_state_t *s, uint32_t raw) {
 
     // Instantaneous millivolts — not the IIR-filtered ADC.
     s->bat_mv = bat_adc_to_mv(s->adc_raw);
+}
+
+static inline void bat_filter_apply_mv_soc_floor(bat_filter_state_t *s) {
+    if (s->bat_mv == 0u) return;
+    uint32_t floor_pct = bat_mv_min_display_pct(s->bat_mv);
+    if (s->adc_raw >= (uint32_t)BAT_RAW_MIN) {
+        uint32_t crv = bat_raw_to_pct(s->adc_raw);
+        if (crv > floor_pct) floor_pct = crv;
+    }
+    if (s->bat_pct < floor_pct) s->bat_pct = floor_pct;
+    if (s->bat_pct > 100u) s->bat_pct = 100u;
 }
 
 // ── Presence state machine ──────────────────────────────────────────────────
@@ -468,10 +488,9 @@ static inline uint32_t bat_compose_flags(bool pgood,
 }
 
 // ── Threshold classifier ────────────────────────────────────────────────────
-// Three-band UI/radio gate. The classifier itself is pure pct→band; the
-// "USB present means radio is OK regardless of band" rule lives at the call
-// site (Power::wifiAllowed) — it is a rail-availability rule, not a battery
-// fact.
+// Three-band UI classifier (pct→band). WiFi association is no longer gated on
+// battery band — Power::wifiAllowed is unconditional — but thresholds remain
+// useful for telemetry / future UX.
 typedef enum {
     BAT_THRESH_NORMIE = 0,  // pct >= 20
     BAT_THRESH_DOM    = 1,  // 10 <= pct < 20

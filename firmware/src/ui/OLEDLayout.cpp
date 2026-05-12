@@ -234,7 +234,16 @@ void drawBatteryIcon(oled& d, int x, int y, bool ready, float pct) {
 // EMA, so we only add a featherweight follow-up filter to suppress
 // 200 Hz sample-to-sample noise without dampening the responsiveness
 // the artificial-horizon effect needs.
-void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
+//
+// When a glyph overlaps the pill bottom ornament row, paint a 1 px black
+// halo (8-neighbour offsets) in draw-color 0, then redraw all glyphs in
+// color 1. The halo pass runs for the *entire* string before any
+// foreground pass — otherwise a later glyph's outline would carve into
+// an earlier character's white pixels (smallsimple_tr is transparent
+// and shows up as streaks or missing bars inside the numerals).
+void drawHorizonText(oled& d, int baseX, int baseY, const char* text,
+                     int notchBottomY = -1, int pillFrameX = 0,
+                     int pillFrameW = 0) {
   if (!text || !text[0]) return;
   // User-toggleable in Settings → Clock → Horizon Clock. When off,
   // fall through to a flat draw (no IMU sampling, no per-glyph offsets,
@@ -264,10 +273,10 @@ void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
 
   // Map mg → pixels. ±1000 mg ≈ ±90° tilt; cap so glyphs don't drift
   // far enough to collide with the menu grid below the header.
-  constexpr float kPxPerG       = 4.0f;   // pitch translation
-  constexpr float kRollEdgePxG  = 4.0f;   // roll slope at left/right edge
-  constexpr int   kMaxOffsetUp   = 4;
-  constexpr int   kMaxOffsetDown = 3;
+  constexpr float kPxPerG       = 6.0f;   // pitch translation
+  constexpr float kRollEdgePxG  = 6.0f;   // roll slope at left/right edge
+  constexpr int   kMaxOffsetUp   = 3;
+  constexpr int   kMaxOffsetDown = 2;
 
   // Pitching the badge "back" (top toward the user) drops the horizon —
   // negate so the digits fall when the user looks down at the badge.
@@ -282,6 +291,18 @@ void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
   const float halfW  = totalW * 0.5f;
   const float midX   = baseX + halfW;
 
+  constexpr int kMaxHorizonStr = 16;
+  {
+    size_t len = 0;
+    while (text[len]) {
+      ++len;
+      if (len > kMaxHorizonStr) {
+        d.drawStr(baseX, baseY, text);
+        return;
+      }
+    }
+  }
+
   // Pull each glyph apart by 1 px so adjacent dashes in the unset
   // "--:--" placeholder read as four discrete horizon segments instead
   // of one continuous slanted bar. Same gap applies to the digit
@@ -290,6 +311,14 @@ void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
   constexpr int kGlyphGapPx = 1;
 
   char glyph[2] = {0, 0};
+  const int fontAsc = d.getAscent();
+  const int fontDesc = d.getDescent();
+
+  int  xs[kMaxHorizonStr];
+  int  baselines[kMaxHorizonStr];
+  bool stroked[kMaxHorizonStr];
+  size_t nGlyph = 0;
+
   int cursorX = baseX;
   for (size_t i = 0; text[i]; ++i) {
     glyph[0] = text[i];
@@ -301,9 +330,82 @@ void drawHorizonText(oled& d, int baseX, int baseY, const char* text) {
     int yOff = static_cast<int>(lroundf(pitchPx + rollOffset));
     if (yOff < -kMaxOffsetUp)   yOff = -kMaxOffsetUp;
     if (yOff >  kMaxOffsetDown) yOff =  kMaxOffsetDown;
-    d.drawStr(cursorX, baseY + yOff, glyph);
+    const int baselineAdj = baseY + yOff;
+
+    const int glyphTop = baselineAdj - fontAsc;
+    const int glyphBot = baselineAdj - fontDesc;
+    const bool spansChromeRow =
+        (notchBottomY >= 0 && pillFrameW > 6 && glyphTop <= notchBottomY &&
+         notchBottomY <= glyphBot);
+
+    xs[nGlyph]       = cursorX;
+    baselines[nGlyph] = baselineAdj;
+    stroked[nGlyph]   = spansChromeRow;
+    ++nGlyph;
+
     cursorX += gw + kGlyphGapPx;
   }
+
+  // If any glyph needs the bottom-row halo, stroke the whole string.
+  // Otherwise a stroked neighbor paints color-0 in another glyph's
+  // transparent margin; that glyph's WHITE pass does not touch those
+  // pixels (_tr keeps holes), which reads as random bright specks.
+  bool anyChrome = false;
+  for (size_t g = 0; g < nGlyph; ++g) {
+    if (stroked[g]) {
+      anyChrome = true;
+      break;
+    }
+  }
+  if (anyChrome) {
+    for (size_t g = 0; g < nGlyph; ++g) stroked[g] = true;
+  }
+
+  // Crop the sloshing glyphs (and halo offsets) to the time-pill interior
+  // so nothing paints past the frame or into the rounded corners / header
+  // rule region. Matches drawStatusHeaderImpl: top at y=0, bottom at the
+  // pill's bottom row, horizontal inset for the 1 px RFrame stroke.
+  constexpr int kTimePillClipTopY = 0;
+  bool clipPill = (pillFrameW > 6 && notchBottomY >= 0);
+  int clipL = 0;
+  int clipR = 0;
+  if (clipPill) {
+    clipL = pillFrameX + 1;
+    clipR = pillFrameX + pillFrameW - 2;
+    if (clipR < clipL) {
+      clipPill = false;
+    }
+  }
+  if (clipPill) {
+    d.setClipWindow(clipL, kTimePillClipTopY, clipR, notchBottomY);
+  }
+
+  // _tr fonts are defined for transparent mode; solid mode (0) can
+  // leave garbage pixels when compositing halo + glyphs.
+  d.setFontMode(1);
+
+  d.setDrawColor(0);
+  for (size_t g = 0; g < nGlyph; ++g) {
+    if (!stroked[g]) continue;
+    glyph[0] = text[g];
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        if (dx == 0 && dy == 0) continue;
+        d.drawStr(xs[g] + dx, baselines[g] + dy, glyph);
+      }
+    }
+  }
+
+  d.setDrawColor(1);
+  for (size_t g = 0; g < nGlyph; ++g) {
+    glyph[0] = text[g];
+    d.drawStr(xs[g], baselines[g], glyph);
+  }
+
+  if (clipPill) {
+    d.setMaxClipWindow();
+  }
+  d.setFontMode(0);
 }
 
 void copyHeaderText(char* out, size_t cap, const char* src) {
@@ -440,7 +542,8 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
   d.drawHLine(pillX + 1, kPillTopY, pillW - 2);
   d.setDrawColor(1);
 
-  drawHorizonText(d, pillX + kPillPadX, 6, timeBuf);
+  drawHorizonText(d, pillX + kPillPadX, 6, timeBuf, kPillBotY, pillX,
+                  pillW);
 
   // While a BLE scan is active, the venue-proximity glyph can stand in
   // for the network slot. Otherwise the offline firmware leaves this

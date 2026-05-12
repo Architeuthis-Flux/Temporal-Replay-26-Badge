@@ -702,8 +702,8 @@
     {
       "path": "/manifest.json",
       "size": 33000,
-      "sha256": "e2302138a20030768b9806d8b19d2e042bfc47e2f5a344aaa6fd638c9876e8ec",
-      "fnv1a32": "0xE26E788F",
+      "sha256": "fbcb6b8d3ded42fc909771dd6ac73b69dbb715c3020c76e7ad9ccb76b597cb83",
+      "fnv1a32": "0x15BDDE05",
       "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/manifest.json",
       "baked": false
     },

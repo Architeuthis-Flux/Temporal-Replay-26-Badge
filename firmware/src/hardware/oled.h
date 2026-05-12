@@ -231,7 +231,7 @@ class oled : public IService {
   uint8_t  fadeTarget_       = 0;
   uint16_t fadeTickCount_    = 0;    // ticks elapsed in current fade
   uint16_t fadeTotalTicks_   = 0;    // 0 = idle
-  static constexpr uint32_t kFadeTickMs = 16;
+  static constexpr uint32_t kFadeTickMs = 100;
 
   void writeContrastRegisters(uint8_t level);
 
