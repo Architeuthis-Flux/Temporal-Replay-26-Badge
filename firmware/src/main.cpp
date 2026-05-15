@@ -96,8 +96,9 @@ static void applyBadgeOrientation(BadgeOrientation orient) {
     badgeDisplay.setFlipped( false );
     inputs.setOrientation( BadgeOrientation::kUpright );
 #ifdef BADGE_HAS_LED_MATRIX
-    // Matrix never auto-flips on orientation change; Python apps can
-    // read the IMU and rotate themselves if they want.
+    // Matrix stays fixed (no IMU-driven flip). Lock the alternate hardware
+    // polarity so pixel coords match the mounted panel (see LEDmatrix::setFlipped).
+    badgeMatrix.setFlipped( true );
 #endif
 }
 #endif
@@ -286,6 +287,7 @@ void setup( ) {
 #ifdef BADGE_HAS_LED_MATRIX
     if ( badgeMatrix.init( LED_MATRIX_I2C_ADDRESS ) == 0 ) {
         badgeMatrix.setBrightness( Power::Policy::kLedMatrixDefaultBrightness );
+        badgeMatrix.setFlipped( true );
         badgeMatrix.clear( 0 );
         Serial.println( "LED matrix init OK (early, for splash sparkles)" );
     } else {
@@ -458,6 +460,7 @@ extern "C" void initDeferredPeripherals() {
         Serial.println( "LED matrix init failed (deferred)" );
     } else {
         badgeMatrix.setBrightness( Power::Policy::kLedMatrixDefaultBrightness );
+        badgeMatrix.setFlipped( true );
         badgeMatrix.clear( 0 );
         Serial.println( "LED matrix init OK (deferred)" );
     }

@@ -99,8 +99,7 @@ extern "C" void mpy_service_pump(void)
         badgeDisplay.setFlipped(false);
         inputs.setOrientation(BadgeOrientation::kUpright);
 #ifdef BADGE_HAS_LED_MATRIX
-        // Matrix never auto-flips; MicroPython apps can read the IMU
-        // and rotate themselves if they want orientation-aware rendering.
+        badgeMatrix.setFlipped( true );
 #endif
         // Keep the GUI's nametag-overlay state in sync even while MPY
         // owns the OLED (mpy_oled_hold suppresses the actual render)

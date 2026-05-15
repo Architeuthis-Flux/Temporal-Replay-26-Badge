@@ -1,10 +1,10 @@
-// OTAService.h — low-priority Scheduler service that drives BadgeOTA
-// and AssetRegistry daily polls.
+// OTAService.h — Scheduler service for BadgeOTA + AssetRegistry.
 //
-// Both modules guard themselves against the 24h cooldown internally,
-// so this just forwards `service()` ticks at a slow rate (~1 Hz is
-// fine — the work happens at most once a day). Also handles the
-// fresh-install rollback marker once the GUI has been alive for 30 s.
+// On each WiFi-up edge, defers an OTA check and a community-registry
+// refresh with a short gap between them so two TLS handshakes do not
+// overlap (avoids mbedTLS / internal-heap OOM on association). Also
+// latches the fresh-install rollback marker once the GUI has been
+// alive for 30 s.
 
 #pragma once
 

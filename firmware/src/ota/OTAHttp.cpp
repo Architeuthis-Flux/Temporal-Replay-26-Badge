@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <Stream.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -57,6 +58,60 @@ void applyCommonOptions(HTTPClient& http, uint32_t timeoutMs) {
   http.addHeader("Accept-Encoding", "identity");
 }
 
+// Accumulates HTTP response bytes into a single contiguous buffer allocated
+// with BadgeMemory::allocPreferPsram (PSRAM first). Avoids HTTPClient::getString()
+// / StreamString, which reserves the full body on internal heap and competes
+// with mbedTLS during HTTPS.
+class JsonBodySink : public ::Stream {
+ public:
+  explicit JsonBodySink(size_t capBytes) : cap_(capBytes) {
+    if (capBytes == 0) return;
+    buf_ = static_cast<char*>(BadgeMemory::allocPreferPsram(capBytes + 1));
+    if (!buf_) return;
+    buf_[0] = '\0';
+  }
+
+  ~JsonBodySink() override { std::free(buf_); }
+
+  JsonBodySink(const JsonBodySink&) = delete;
+  JsonBodySink& operator=(const JsonBodySink&) = delete;
+
+  bool ok() const { return buf_ != nullptr; }
+  size_t length() const { return len_; }
+  const char* c_str() const { return buf_ ? buf_ : ""; }
+
+  char* release() {
+    char* p = buf_;
+    buf_ = nullptr;
+    len_ = 0;
+    cap_ = 0;
+    return p;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+
+  size_t write(uint8_t c) override { return write(&c, 1); }
+
+  size_t write(const uint8_t* buffer, size_t size) override {
+    if (!buf_ || size == 0) return 0;
+    if (len_ >= cap_) return 0;
+    const size_t room = cap_ - len_;
+    const size_t n = (size < room) ? size : room;
+    std::memcpy(buf_ + len_, buffer, n);
+    len_ += n;
+    buf_[len_] = '\0';
+    if (n < size) return 0;
+    return size;
+  }
+
+ private:
+  size_t cap_{0};
+  size_t len_{0};
+  char* buf_{nullptr};
+};
+
 }  // namespace
 
 HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
@@ -105,15 +160,16 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     return result;
   }
   if (code != 200) {
-    // Drain a bit of the response body so the caller can see what the
-    // server actually said (e.g. raw.githubusercontent.com 400s
-    // sometimes include "Header Or Cookie Too Large" or similar — the
-    // bare status code alone tells us nothing useful).
-    String body = http.getString();
+    // Drain a bounded amount of error body without String/getString().
+    constexpr size_t kErrBodyCap = 512;
+    JsonBodySink errSink(kErrBodyCap);
+    if (errSink.ok()) {
+      (void)http.writeToStream(&errSink);
+    }
     Serial.printf("[ota-http] %d body[%u]: %.*s\n", code,
-                  (unsigned)body.length(),
-                  body.length() > 200 ? 200 : (int)body.length(),
-                  body.c_str());
+                  (unsigned)errSink.length(),
+                  errSink.length() > 200 ? 200 : (int)errSink.length(),
+                  errSink.c_str());
     std::snprintf(sError, sizeof(sError), "http status %d", code);
     http.end();
     wifiService.noteRequestFailed();
@@ -130,36 +186,27 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     return result;
   }
 
-  // Use HTTPClient::getString() so the library handles chunked
-  // transfer-encoding, content-length=-1, and connection-close edges
-  // for us. Reading raw from getStreamPtr() bypassed the chunked
-  // decoder, which on Cloudflare-fronted hosts (jsDelivr) interleaved
-  // chunk-size markers (`28d\r\n`...`\r\n0\r\n`) into the buffer and
-  // tripped ArduinoJson with InvalidInput.
-  String s = http.getString();
-  if (s.length() > maxBytes) {
-    std::snprintf(sError, sizeof(sError),
-                  "response too large (%u > %u)",
-                  (unsigned)s.length(), (unsigned)maxBytes);
-    http.end();
-    wifiService.noteRequestFailed();
-    return result;
-  }
-  // Body lands in PSRAM when available so a 50-100 KB JSON response
-  // doesn't gnaw at internal heap. allocPreferPsram falls back to
-  // internal malloc for tiny (<4 KB) buffers and for boards without
-  // PSRAM. Caller frees with std::free(), which is safe for both
-  // heap regions on ESP-IDF.
-  size_t pos = s.length();
-  char* buf = static_cast<char*>(BadgeMemory::allocPreferPsram(pos + 1));
-  if (!buf) {
+  // Stream via HTTPClient::writeToStream so chunked encoding and
+  // Content-Length=-1 are decoded by the library (same as getString),
+  // but the body buffer is one PSRAM-backed allocation — no
+  // StreamString reserve on internal heap.
+  JsonBodySink sink(maxBytes);
+  if (!sink.ok()) {
     std::snprintf(sError, sizeof(sError), "out of memory");
     http.end();
     wifiService.noteRequestFailed();
     return result;
   }
-  std::memcpy(buf, s.c_str(), pos);
-  buf[pos] = '\0';
+  const int wr = http.writeToStream(&sink);
+  if (wr < 0) {
+    std::snprintf(sError, sizeof(sError), "http read %d (%s)", wr,
+                  HTTPClient::errorToString(wr).c_str());
+    http.end();
+    wifiService.noteRequestFailed();
+    return result;
+  }
+  const size_t pos = sink.length();
+  char* buf = sink.release();
   http.end();
   wifiService.noteRequestOk();
 
