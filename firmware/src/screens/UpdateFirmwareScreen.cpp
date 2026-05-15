@@ -73,6 +73,10 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
     renderExpandConfirm(d, /*secondConfirm=*/true);
     return;
   }
+  if (phase_ == Phase::kReinstallConfirm) {
+    renderReinstallConfirm(d);
+    return;
+  }
 
   OLEDLayout::drawStatusHeader(d, "FW UPDATE");
   d.setFontPreset(FONT_TINY);
@@ -185,9 +189,17 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
   // substituted with the up/right glyphs (per UI conventions —
   // see firmware/src/ui/ButtonGlyphs.h). drawNavFooter handles the
   // chrome; we feed it the glyph-bearing string ourselves.
-  const char* hint =
-      ota::updateAvailable() ? "^ Check  > Install"
-                             : "^ Check";
+  // Right-press always offers an install path now: a strictly newer
+  // release runs straight through, otherwise the screen prompts the
+  // user to confirm a same-or-older reinstall before flashing.
+  const char* hint;
+  if (ota::updateAvailable()) {
+    hint = "^ Check  > Install";
+  } else if (tag[0] && ota::latestKnownAssetUrl()[0]) {
+    hint = "^ Check  > Reinstall";
+  } else {
+    hint = "^ Check";
+  }
   OLEDLayout::drawNavFooter(d);
   // drawNavFooter() with no text only paints chrome; render the
   // glyph hint directly afterwards on the footer baseline (y=63 is
@@ -218,6 +230,26 @@ void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
   d.drawStr(2, 42, "The badge will reboot");
   d.drawStr(2, 51, "after formatting.");
   OLEDLayout::drawActionFooter(d, "WIPE & EXPAND", "Wipe");
+}
+
+void UpdateFirmwareScreen::renderReinstallConfirm(oled& d) {
+  OLEDLayout::drawStatusHeader(d, "REINSTALL?");
+  d.setFontPreset(FONT_TINY);
+
+  const char* tag = ota::latestKnownTag();
+  char line[48];
+  std::snprintf(line, sizeof(line), "Current:  %s", FIRMWARE_VERSION);
+  d.drawStr(2, 18, line);
+  std::snprintf(line, sizeof(line), "Latest:   %s",
+                tag[0] ? tag : "(unknown)");
+  d.drawStr(2, 27, line);
+
+  // The user requested an install even though we're at-or-ahead of
+  // the published tag. Make the consequences explicit so a fat-fingered
+  // D-pad press doesn't trigger a multi-MB flash + reboot.
+  d.drawStr(2, 39, "Already at this version");
+  d.drawStr(2, 48, "or newer. Reinstall?");
+  OLEDLayout::drawActionFooter(d, "Reinstall", "Confirm");
 }
 
 void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
@@ -263,6 +295,17 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     return;
   }
 
+  if (phase_ == Phase::kReinstallConfirm) {
+    if (e.cancelPressed) { phase_ = Phase::kIdle; return; }
+    if (e.confirmPressed) {
+      Haptics::shortPulse();
+      Haptics::off();
+      delay(100);
+      runInstall();
+    }
+    return;
+  }
+
   if (e.cancelPressed) {
     Haptics::shortPulse();
     gui.popScreen();
@@ -288,11 +331,30 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     runCheck(true);
     return;
   }
-  if (e.rightPressed && ota::updateAvailable()) {
+  if (e.rightPressed) {
+    // Right-press always offers an install when we have an asset URL
+    // cached. If the published tag is strictly newer we go straight
+    // into runInstall (most common path); if we're already at-or-ahead
+    // of the published version we surface a reinstall confirmation
+    // first so the user knows they're flashing the same image.
+    const char* tag = ota::latestKnownTag();
+    if (!tag[0] || ota::latestKnownAssetUrl()[0] == '\0') {
+      // No cached asset — nothing to install. Bounce back to a check
+      // so the next press has something to flash.
+      Haptics::shortPulse();
+      Haptics::off();
+      delay(100);
+      runCheck(true);
+      return;
+    }
     Haptics::shortPulse();
-    Haptics::off();
-    delay(100);
-    runInstall();
+    if (ota::updateAvailable()) {
+      Haptics::off();
+      delay(100);
+      runInstall();
+    } else {
+      phase_ = Phase::kReinstallConfirm;
+    }
     return;
   }
 }

@@ -40,6 +40,7 @@ class UpdateFirmwareScreen : public Screen {
     kError,
     kExpandConfirm,    // first prompt: "really wipe and expand?"
     kExpandConfirm2,   // second prompt: "are you really sure?"
+    kReinstallConfirm, // "you're already on (or ahead of) latest — reinstall?"
   };
 
   Phase phase_ = Phase::kIdle;
@@ -54,6 +55,7 @@ class UpdateFirmwareScreen : public Screen {
   void runCheck(bool ignoreCooldown);
   void runInstall();
   void renderExpandConfirm(oled& d, bool secondConfirm);
+  void renderReinstallConfirm(oled& d);
   static void installProgressCb(const ota::InstallProgress& prog,
                                 void* user);
 };
