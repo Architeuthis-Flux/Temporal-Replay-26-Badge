@@ -144,30 +144,16 @@ void begin() {
 }
 
 void tick() {
-  if (!sBegun) return;
-  if (!wifiService.isConnected()) return;
-  if (!wifiService.clockReady()) return;
-  const time_t now = time(nullptr);
-  if (now <= 0) return;
-  if (sLastCheckEpoch != 0 &&
-      (uint32_t)(now - sLastCheckEpoch) < kCheckCooldownSec) {
-    return;
-  }
-  Serial.println("[ota] daily check fired");
-  checkNow(false);
+  // No-op since the cooldown was removed. OTAService now drives a
+  // one-shot check on each WiFi-up edge and the Update screen drives
+  // an explicit check on entry / D-pad Up. Kept as a stable symbol
+  // for any external callers that haven't been updated.
 }
 
 CheckResult checkNow(bool ignoreCooldown) {
+  (void)ignoreCooldown;
   if (!sBegun) begin();
   setError("");
-
-  if (!ignoreCooldown && sLastCheckEpoch != 0 &&
-      wifiService.clockReady()) {
-    const time_t now = time(nullptr);
-    if (now > 0 && (uint32_t)(now - sLastCheckEpoch) < kCheckCooldownSec) {
-      return CheckResult::kCooldownActive;
-    }
-  }
 
   char url[160];
   std::snprintf(url, sizeof(url),

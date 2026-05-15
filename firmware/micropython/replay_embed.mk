@@ -40,6 +40,10 @@ SRC_QSTR += \
     extmod/modbinascii.c \
     extmod/modrandom.c \
     extmod/modtime.c \
+    extmod/modselect.c \
+    extmod/modonewire.c \
+    extmod/machine_pulse.c \
+    ports/embed/port/replay_phase1_qstr.c \
     ports/embed/port/replay_bdev.c \
     $(USERMODS_DIR)/modtemporalbadge.c
 
@@ -100,6 +104,10 @@ micropython-embed-package-replay: micropython-embed-package
 		$(TOP)/extmod/machine_pinbase.c \
 	    $(TOP)/extmod/virtpin.h \
 	    $(TOP)/extmod/virtpin.c \
+	    $(TOP)/extmod/modselect.c \
+	    $(TOP)/extmod/modonewire.c \
+	    $(TOP)/extmod/machine_wdt.c \
+	    $(TOP)/extmod/machine_pulse.c \
 	    $(PACKAGE_DIR)/extmod/
 	@echo "- lib/oofatfs"
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/lib/oofatfs

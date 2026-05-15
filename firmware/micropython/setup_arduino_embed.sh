@@ -171,6 +171,16 @@ SDKCONFIG_VARIANT="${SDKCONFIG_VARIANT:-qio_qspi}"
 SDKCONFIG_INCLUDE_DIR="${ARDUINO_ESP32_ROOT}/${SDKCONFIG_VARIANT}/include"
 if [[ -f "${SDKCONFIG_INCLUDE_DIR}/sdkconfig.h" ]]; then
   IDF_INCLUDE_DIRS+=("${SDKCONFIG_INCLUDE_DIR}")
+
+# FreeRTOS config headers needed by host-side QSTR preprocessing of WDT/thread port files.
+FREERTOS_CFG_DIR="${ARDUINO_ESP32_ROOT}/include/freertos/config/include"
+if [[ -d "${FREERTOS_CFG_DIR}" ]]; then
+  IDF_INCLUDE_DIRS+=("${FREERTOS_CFG_DIR}")
+fi
+FREERTOS_CFG_ESP32S3_DIR="${ARDUINO_ESP32_ROOT}/include/freertos/config/xtensa/include"
+if [[ -d "${FREERTOS_CFG_ESP32S3_DIR}" ]]; then
+  IDF_INCLUDE_DIRS+=("${FREERTOS_CFG_ESP32S3_DIR}")
+fi
 else
   for d in "${ARDUINO_ESP32_ROOT}"/*/include; do
     if [[ -f "${d}/sdkconfig.h" ]]; then
@@ -267,6 +277,40 @@ text, n = re.subn(
     count=1,
 )
 assert n == 1, "expected to patch MICROPY_PY_MACHINE_BARE_METAL_FUNCS once"
+# Threading pulls in FreeRTOS via mpthreadport.h which the host gcc cannot resolve.
+# ESP-NOW and full network pull in WiFi/esp_now.h which also need IDF runtime headers.
+# Disable for the QSTR host pass; the firmware build uses the real mpconfigport.h.
+text, n = re.subn(
+    r"(#define\s+REPLAY_ENABLE_THREAD\s+)1",
+    r"\g<1>0",
+    text,
+    count=1,
+)
+text = re.sub(
+    r"(#define\s+REPLAY_ENABLE_ESPNOW\s+)1",
+    r"\g<1>0",
+    text,
+    count=1,
+)
+text = re.sub(
+    r"(#define\s+REPLAY_ENABLE_FULL_NETWORK\s+)1",
+    r"\g<1>0",
+    text,
+    count=1,
+)
+text = re.sub(
+    r"(#define\s+REPLAY_ENABLE_BLUETOOTH\s+)1",
+    r"\g<1>0",
+    text,
+    count=1,
+)
+# Also disable WDT for host pass (esp_task_wdt.h needs FreeRTOS)
+text, n2 = re.subn(
+    r"(#define\s+MICROPY_PY_MACHINE_WDT\s+)\(1\)",
+    r"\1(0)",
+    text,
+    count=1,
+)
 path.write_text(text)
 PY
 cp "${SCRIPT_DIR}/embed_config/mphalport.h" "${MP_DIR}/ports/embed/port/mphalport.h"
@@ -275,6 +319,7 @@ cp "${SCRIPT_DIR}/embed_config/replay_bdev.c" "${MP_DIR}/ports/embed/port/replay
 cp "${SCRIPT_DIR}/embed_config/replay_os_includefile.c" "${MP_DIR}/ports/embed/port/replay_os_includefile.c"
 cp "${SCRIPT_DIR}/embed_config/replay_machine_qstr.c" "${MP_DIR}/ports/embed/port/replay_machine_qstr.c"
 cp "${SCRIPT_DIR}/embed_config/replay_extra_rootpointers.c" "${MP_DIR}/ports/embed/port/replay_extra_rootpointers.c"
+cp "${SCRIPT_DIR}/embed_config/replay_phase1_qstr.c" "${MP_DIR}/ports/embed/port/replay_phase1_qstr.c"
 mkdir -p "${MP_DIR}/port"
 cp "${MODMACHINE_SRC}" "${MP_DIR}/port/modmachine_esp32_subset.c"
 
@@ -346,6 +391,20 @@ if p.is_file():
     ins = needle + '\n#include "esp_attr.h"'
     if needle in t and 'esp_attr.h' not in t:
         p.write_text(t.replace(needle, ins, 1))
+PY
+
+# Replay: fix -Werror=return-type in modespnow.c _get_singleton (upstream bug)
+python3 - <<PY
+from pathlib import Path
+lib = Path("${LIB_SRC_DIR}")
+p = lib / "ports" / "esp32" / "modespnow.c"
+if p.is_file():
+    t = p.read_text()
+    old = "static esp_espnow_obj_t *_get_singleton() {\n    return MP_STATE_PORT(espnow_singleton);\n}"
+    new = "static esp_espnow_obj_t *_get_singleton(void) {\n    return MP_STATE_PORT(espnow_singleton);\n}"
+    if old in t:
+        t = t.replace(old, new)
+        p.write_text(t)
 PY
 
 # MicroPython core includes these as angle-bracket headers.

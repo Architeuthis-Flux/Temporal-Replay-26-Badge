@@ -61,20 +61,30 @@ void AssetLibraryScreen::refreshStatusCache() {
 
 void AssetLibraryScreen::doRefresh(bool ignoreCooldown) {
   if (!wifiService.isConnected()) return;
+  // Kick off the registry fetch on a Core 0 task so the GUI loop
+  // keeps ticking. needsRender() returns true while isRefreshing()
+  // so the placeholder row animates / re-renders on every frame; the
+  // refreshing_ flag mirrors the registry state for formatItem.
+  if (!ota::registry::beginRefreshAsync(ignoreCooldown)) {
+    // Already running — nothing to do, the existing task will finish
+    // and our needsRender() polling will pick up the new state.
+    return;
+  }
   refreshing_ = true;
-  // Force a redraw so the placeholder row flips to "Refreshing..." while
-  // the synchronous HTTPS fetch holds the loop. The real refresh below
-  // can take a few seconds on first connect.
-  extern GUIManager guiManager;
-  oled& d = guiManager.oledDisplay();
-  d.clearBuffer();
-  ListMenuScreen::render(d, guiManager);
-  d.sendBuffer();
+}
 
-  ota::registry::refresh(ignoreCooldown);
-  cachedCount_ = static_cast<uint8_t>(ota::registry::count());
-  refreshStatusCache();
-  refreshing_ = false;
+void AssetLibraryScreen::onUpdate(GUIManager& /*gui*/) {
+  // Per-frame poll: when the background refresh task transitions from
+  // running to done, sync our local cached state. Cheap when nothing
+  // changed (single atomic load + bool compare).
+  const bool busy = ota::registry::isRefreshing();
+  if (refreshing_ && !busy) {
+    refreshing_ = false;
+    cachedCount_ = static_cast<uint8_t>(ota::registry::count());
+    refreshStatusCache();
+  } else if (busy) {
+    refreshing_ = true;
+  }
 }
 
 void AssetLibraryScreen::onEnter(GUIManager& gui) {

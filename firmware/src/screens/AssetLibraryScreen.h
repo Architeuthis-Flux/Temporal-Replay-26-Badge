@@ -21,6 +21,7 @@ class AssetLibraryScreen : public ListMenuScreen {
   bool navigableItems() const override { return true; }
   void onItemSelect(uint8_t index, GUIManager& gui) override;
   void onEnter(GUIManager& gui) override;
+  void onUpdate(GUIManager& gui) override;
   void handleInput(const Inputs& inputs, int16_t cursorX, int16_t cursorY,
                    GUIManager& gui) override;
   const char* hintText() const override { return "Confirm:Open  X:Refresh"; }

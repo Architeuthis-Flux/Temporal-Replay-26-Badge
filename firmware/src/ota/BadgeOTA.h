@@ -43,7 +43,6 @@ enum class CheckResult : uint8_t {
   kNoMatchingAsset,   // release exists but no `firmware-<env>.bin`
   kNetworkError,      // wifi / http failure
   kParseError,        // JSON malformed
-  kCooldownActive,    // 24h cooldown not elapsed and ignoreCooldown=false
 };
 
 enum class InstallResult : uint8_t {
@@ -70,10 +69,6 @@ using InstallProgressCb = void (*)(const InstallProgress&, void* user);
 // charger is plugged in. A bricked badge is the only real risk and a
 // dead battery mid-flash is the most likely cause.
 constexpr uint8_t kMinBatteryPct = 30;
-
-// Cooldown between automatic API checks. Manual "Check now" from the
-// Update screen passes ignoreCooldown=true.
-constexpr uint32_t kCheckCooldownSec = 24 * 60 * 60;
 
 // Initialise from NVS cache. Call after Preferences is usable
 // (post-nvs_flash_init in setup()).

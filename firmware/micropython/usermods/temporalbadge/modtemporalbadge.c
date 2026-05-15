@@ -949,9 +949,9 @@ static MP_DEFINE_CONST_FUN_OBJ_0(temporalbadge_boops_obj,
 
 // ── Background matrix app host ──────────────────────────────────────────────
 
-#define MATRIX_APP_DEFAULT_INTERVAL_MS 150u
+#define MATRIX_APP_DEFAULT_INTERVAL_MS 100u
 #define MATRIX_APP_DEFAULT_BRIGHTNESS  12u
-#define MATRIX_APP_MIN_INTERVAL_MS     5u
+#define MATRIX_APP_MIN_INTERVAL_MS     1u
 
 MP_REGISTER_ROOT_POINTER(mp_obj_t matrix_app_active_cb);
 

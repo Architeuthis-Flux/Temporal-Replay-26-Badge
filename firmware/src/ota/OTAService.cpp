@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "../api/WiFiService.h"
 #include "AssetRegistry.h"
 #include "BadgeOTA.h"
 
@@ -11,14 +12,18 @@ OTAService otaService;
 
 namespace {
 
-constexpr uint32_t kTickIntervalMs = 30000;        // 30 s
 constexpr uint32_t kHealthyBootMs = 30000;         // 30 s post-setup before
                                                    // we mark the running app
                                                    // valid (rollback gate)
 
-uint32_t sLastTickMs = 0;
 uint32_t sBootMs = 0;
 bool sRollbackHandled = false;
+// WiFi-up edge detector. The OTA + community-apps cooldowns are gone
+// (see plan): we now fire a check exactly once per WiFi-up edge so a
+// freshly-connected badge picks up new releases / registry entries
+// within seconds, and reconnect cycles re-trigger the check.
+bool sWifiWasConnected = false;
+bool sCheckedSinceConnect = false;
 
 }  // namespace
 
@@ -36,13 +41,27 @@ void OTAService::service() {
     sRollbackHandled = true;
   }
 
-  if (sLastTickMs != 0 && (now - sLastTickMs) < kTickIntervalMs) return;
-  sLastTickMs = now;
-
-  // Both ticks bail out early if WiFi is down or the cooldown hasn't
-  // elapsed; cheap to call.
-  ota::tick();
-  registry::tick();
+  // WiFi-up edge: rising edge arms a one-shot check; a disconnect
+  // re-arms it for the next reconnect.
+  const bool wifiUp = wifiService.isConnected();
+  if (!wifiUp) {
+    sWifiWasConnected = false;
+    sCheckedSinceConnect = false;
+    return;
+  }
+  if (!sWifiWasConnected) {
+    sWifiWasConnected = true;
+    sCheckedSinceConnect = false;
+  }
+  if (sCheckedSinceConnect) return;
+  // The clock isn't strictly required for either call (the cooldown
+  // gate that depended on it has been removed) but checkNow's HTTPS
+  // call to api.github.com needs working DNS+TLS, which is reliable
+  // by the time WiFiService reports connected. Fire once and latch.
+  Serial.println("[ota-svc] WiFi up — firing OTA check + registry refresh");
+  ota::checkNow(true);
+  registry::beginRefreshAsync(true);
+  sCheckedSinceConnect = true;
 }
 
 }  // namespace ota

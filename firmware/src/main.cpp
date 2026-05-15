@@ -95,9 +95,8 @@ static void applyBadgeOrientation(BadgeOrientation orient) {
     badgeDisplay.setFlipped( false );
     inputs.setOrientation( BadgeOrientation::kUpright );
 #ifdef BADGE_HAS_LED_MATRIX
-    // The LED matrix still has its own physical mounting transform.
-    const bool matrixNeedsRotation = ( orient == BadgeOrientation::kUpright );
-    badgeMatrix.setFlipped( matrixNeedsRotation );
+    // Matrix never auto-flips on orientation change; Python apps can
+    // read the IMU and rotate themselves if they want.
 #endif
 }
 #endif

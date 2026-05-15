@@ -40,6 +40,10 @@ extern const struct _mp_obj_module_t mp_module_random;
 #undef MODULE_DEF_RANDOM
 #define MODULE_DEF_RANDOM { MP_ROM_QSTR(MP_QSTR_random), MP_ROM_PTR(&mp_module_random) },
 
+extern const struct _mp_obj_module_t mp_module_select;
+#undef MODULE_DEF_SELECT
+#define MODULE_DEF_SELECT { MP_ROM_QSTR(MP_QSTR_select), MP_ROM_PTR(&mp_module_select) },
+
 extern const struct _mp_obj_module_t mp_module_struct;
 #undef MODULE_DEF_STRUCT
 #define MODULE_DEF_STRUCT { MP_ROM_QSTR(MP_QSTR_struct), MP_ROM_PTR(&mp_module_struct) },
@@ -102,7 +106,7 @@ extern const struct _mp_obj_module_t mp_module_vfs;
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 
-#define MICROPY_HAVE_REGISTERED_EXTENSIBLE_MODULES  12
+#define MICROPY_HAVE_REGISTERED_EXTENSIBLE_MODULES  13
 
 #define MICROPY_REGISTERED_EXTENSIBLE_MODULES \
     MODULE_DEF_ARRAY \
@@ -115,6 +119,7 @@ extern const struct _mp_obj_module_t mp_module_vfs;
     MODULE_DEF_MACHINE \
     MODULE_DEF_OS \
     MODULE_DEF_RANDOM \
+    MODULE_DEF_SELECT \
     MODULE_DEF_STRUCT \
     MODULE_DEF_TIME \
 // MICROPY_REGISTERED_EXTENSIBLE_MODULES

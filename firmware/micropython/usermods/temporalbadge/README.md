@@ -57,6 +57,36 @@ Prefer adding reusable UI behavior in C++ first:
 
 This keeps production C++ screens and MicroPython apps visually consistent.
 
+## Standard MicroPython Modules
+
+Beyond the `badge` module, the embed port provides the upstream MicroPython
+surface — users who connect via mpremote / ViperIDE / JumperIDE get a real
+REPL with:
+
+| Module | Notes |
+|--------|-------|
+| `machine.Pin`, `.ADC`, `.PWM`, `.Timer`, `.WDT`, `.SPI`, `.SoftI2C`, `.SoftSPI`, `.I2S`, `.UART`, `.RTC`, `.TouchPad` | Full `ports/esp32` implementation |
+| `network.WLAN`, `socket`, `ssl` | Shares WiFi with Arduino `BadgeAPI` — never re-inits `esp_wifi` |
+| `espnow.ESPNow` | Requires WiFi active (badge boots WiFi for `BadgeAPI`) |
+| `_thread` | FreeRTOS-backed; spawned threads pin to core 1 (`MP_TASK_COREID`) |
+| `select` | `poll()` / `ipoll()` for asyncio stream IO |
+| `os`, `time`, `json`, `binascii`, `math`, `cmath`, `random`, `heapq`, `uctypes`, `asyncio` | Standard library |
+
+### Gated modules (off by default)
+
+| Flag | Module | Why gated |
+|------|--------|-----------|
+| `REPLAY_ENABLE_BLUETOOTH=1` | `bluetooth` (NimBLE) | Arduino ships pre-compiled NimBLE without private headers. Requires vendoring full NimBLE source tree. |
+
+### WiFi coexistence rules
+
+Arduino's `WiFiService` calls `esp_wifi_init` + `esp_wifi_start` at boot for
+`BadgeAPI` HMAC calls. MicroPython's `network.WLAN` piggybacks on the existing
+WiFi driver — the `esp_initialise_wifi()` in `network_common.c` checks whether
+WiFi is already running before attempting init. Python code can call
+`network.WLAN(network.STA_IF).status()` to read RSSI without disrupting the
+badge's connection.
+
 ## Build Checks
 
 From `firmware/`:

@@ -44,12 +44,14 @@ void UpdateFirmwareScreen::onEnter(GUIManager& /*gui*/) {
   installDone_ = false;
   installBytes_ = 0;
   installTotal_ = 0;
-  // First time the user opens the screen after boot we offer to check
-  // automatically — reuses the cooldown so we don't hit the API on
-  // every re-entry.
-  if (firstEnter_) {
-    firstEnter_ = false;
+  // The OTA cooldown is gone: every screen entry triggers a fresh
+  // check so the user always sees the very latest release tag the
+  // moment they open the screen. Skipped if WiFi is down — the idle
+  // render surfaces the "WiFi off" warning in that case.
+  if (wifiService.isConnected()) {
+    runCheck(true);
   }
+  firstEnter_ = false;
 }
 
 bool UpdateFirmwareScreen::needsRender() {
@@ -178,14 +180,19 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
     ButtonGlyphs::drawInlineHint(d, 2, 45, szLine);
   }
 
-  // Action footer label depends on cached state.
-  const char* action = "Check now";
-  if (ota::updateAvailable()) {
-    action = "INSTALL UPDATE";
-  } else if (tag[0] && std::strcmp(tag, FIRMWARE_VERSION) == 0) {
-    action = "Recheck";
-  }
-  OLEDLayout::drawActionFooter(d, action, "Check");
+  // Footer: D-pad Up = Check, D-pad Right = Install. Drawn through
+  // ButtonGlyphs::drawInlineHint so the literal `^` and `>` are
+  // substituted with the up/right glyphs (per UI conventions —
+  // see firmware/src/ui/ButtonGlyphs.h). drawNavFooter handles the
+  // chrome; we feed it the glyph-bearing string ourselves.
+  const char* hint =
+      ota::updateAvailable() ? "^ Check  > Install"
+                             : "^ Check";
+  OLEDLayout::drawNavFooter(d);
+  // drawNavFooter() with no text only paints chrome; render the
+  // glyph hint directly afterwards on the footer baseline (y=63 is
+  // the project's standard hint baseline used elsewhere).
+  ButtonGlyphs::drawInlineHint(d, 2, 63, hint);
 }
 
 void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
@@ -270,15 +277,23 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     return;
   }
 
-  if (e.confirmPressed) {
+  // D-pad split: Up = Check, Right = Install. Confirm/Y are unused
+  // here so two adjacent presses can't accidentally double-fire the
+  // multi-megabyte install. Plan calls for explicit Up/Right rather
+  // than the previous toggle-on-Confirm behaviour.
+  if (e.upPressed) {
     Haptics::shortPulse();
     Haptics::off();
     delay(100);
-    if (ota::updateAvailable()) {
-      runInstall();
-    } else {
-      runCheck(true);
-    }
+    runCheck(true);
+    return;
+  }
+  if (e.rightPressed && ota::updateAvailable()) {
+    Haptics::shortPulse();
+    Haptics::off();
+    delay(100);
+    runInstall();
+    return;
   }
 }
 

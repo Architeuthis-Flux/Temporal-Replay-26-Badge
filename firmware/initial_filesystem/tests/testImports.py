@@ -25,6 +25,12 @@ MODULES = [
     "io",
     "micropython",
     "uctypes",
+    "select",
+    "machine",
+    "network",
+    "socket",
+    "ssl",
+    "espnow",
     "badge",
 ]
 

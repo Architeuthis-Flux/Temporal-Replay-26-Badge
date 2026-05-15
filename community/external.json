@@ -1,0 +1,5 @@
+{
+  "$schema": "../registry/community_apps.schema.json",
+  "_comment": "External-URL-only community app entries. Use this for apps you'd rather host yourself (your own GitHub repo, jsDelivr, your blog, etc.) instead of vending the source through this repo. Each entry is copied verbatim into registry/community_apps.json by scripts/regenerate_community_apps.py — fields must match the schema. To submit a PR'd in-repo app instead, drop your folder under community/<id>/ and the regenerator will pick it up automatically.",
+  "assets": []
+}

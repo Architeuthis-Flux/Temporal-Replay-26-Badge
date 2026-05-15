@@ -3,7 +3,10 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/sha256.h>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +48,19 @@ uint16_t sFileCap = 0;
 char sLastError[96] = "";
 time_t sLastRefreshEpoch = 0;
 bool sBegun = false;
+
+// Background refresh state. The flag is atomic so the GUI thread can
+// poll `isRefreshing()` without coordinating with the worker. The
+// pending-ignore-cooldown bool is read once at task entry; safe to
+// stash before the task starts because beginRefreshAsync() guards
+// against re-entry via the flag.
+std::atomic<bool> sRefreshing{false};
+bool sRefreshIgnoreCooldown = false;
+RegistryRefresh sLastRefreshResult = RegistryRefresh::kOk;
+
+// Forward — defined later in this TU; called once at the tail of
+// refresh() so we don't pay the FATFS-walk cost on every render.
+void adoptInstalledFromDisk();
 
 void setError(const char* msg) {
   if (!msg) msg = "";
@@ -303,6 +319,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
   const char* url = badgeConfig.communityAppsUrl();
   if (!url || !url[0]) {
     setError("community_apps_url not configured");
+    sLastRefreshResult = RegistryRefresh::kNotConfigured;
     return RegistryRefresh::kNotConfigured;
   }
 
@@ -310,6 +327,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
       wifiService.clockReady()) {
     const time_t now = time(nullptr);
     if (now > 0 && (uint32_t)(now - sLastRefreshEpoch) < kRefreshCooldownSec) {
+      sLastRefreshResult = RegistryRefresh::kCooldownActive;
       return RegistryRefresh::kCooldownActive;
     }
   }
@@ -324,6 +342,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
                   httpRes.httpCode, httpRes.error);
     setError(httpRes.error);
     if (body) std::free(body);
+    sLastRefreshResult = RegistryRefresh::kNetworkError;
     return RegistryRefresh::kNetworkError;
   }
 
@@ -355,6 +374,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "json parse: %s", err.c_str());
     setError(buf);
+    sLastRefreshResult = RegistryRefresh::kParseError;
     return RegistryRefresh::kParseError;
   }
 
@@ -428,8 +448,53 @@ RegistryRefresh refresh(bool ignoreCooldown) {
   persistRefreshEpoch(sLastRefreshEpoch);
   Serial.printf("[registry] parsed %u assets\n",
                 static_cast<unsigned>(sAssetCount));
+  // One-shot adoption of files already on disk. Centralising it here
+  // (instead of inside statusOf()) keeps every render-time call to
+  // statusOf() pure: no NVS writes, no FATFS walk for app bundles.
+  adoptInstalledFromDisk();
+  sLastRefreshResult = RegistryRefresh::kOk;
   return RegistryRefresh::kOk;
 }
+
+namespace {
+struct AsyncCtx {
+  bool ignoreCooldown;
+};
+
+void refreshTask(void* arg) {
+  AsyncCtx* ctx = static_cast<AsyncCtx*>(arg);
+  bool ignore = ctx ? ctx->ignoreCooldown : false;
+  delete ctx;
+  RegistryRefresh r = refresh(ignore);
+  sLastRefreshResult = r;
+  sRefreshing.store(false);
+  vTaskDelete(nullptr);
+}
+}  // namespace
+
+bool beginRefreshAsync(bool ignoreCooldown) {
+  if (!sBegun) begin();
+  bool expected = false;
+  if (!sRefreshing.compare_exchange_strong(expected, true)) {
+    return false;  // already running
+  }
+  AsyncCtx* ctx = new AsyncCtx{ignoreCooldown};
+  // 12 KB stack: HTTPClient + the 64 KB JsonDocument is PSRAM-backed
+  // (BadgeMemory::PsramJsonDocument), but the parse + WiFi stack
+  // frames still need a bit of internal RAM headroom. Core 0 keeps
+  // it off the GUI loop on Core 1. Priority 1 = same as Arduino loop.
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      &refreshTask, "registry_refresh", 12 * 1024, ctx, 1, nullptr, 0);
+  if (ok != pdPASS) {
+    delete ctx;
+    sRefreshing.store(false);
+    return false;
+  }
+  return true;
+}
+
+bool isRefreshing() { return sRefreshing.load(); }
+RegistryRefresh lastRefreshResult() { return sLastRefreshResult; }
 
 size_t count() { return sAssetCount; }
 
@@ -449,20 +514,11 @@ const AssetEntry* findById(const char* id) {
 AssetStatus statusOf(const AssetEntry& entry) {
   char installed[kAssetVersionMax] = "";
   loadInstalledVersion(entry.id, installed, sizeof(installed));
-  // No NVS record yet, but the bytes might already be on disk — e.g.
-  // DOOM's WAD landed via `pio run -t uploadfs`, JumperIDE sync, or
-  // an older firmware that didn't write `v_<id>`. Adopt the asset and
-  // persist the version so subsequent calls (and especially
-  // installAll) treat it as installed instead of queueing a 4.5 MB
-  // redownload that immediately fails the free-space gate because
-  // the existing copy is using most of the free space.
+  // Pure read: no NVS writes, no FATFS-walk for non-installed assets.
+  // The "adopt-from-disk" path (DOOM WAD landed via uploadfs, etc.)
+  // runs once at the end of refresh() via adoptInstalledFromDisk()
+  // so the GUI thread never pays for it on render.
   if (installed[0] == '\0') {
-    if (destFullyPresent(entry)) {
-      Serial.printf("[registry] adopt existing %s (id=%s, version=%s)\n",
-                    entry.dest_path, entry.id, entry.version);
-      persistInstalledVersion(entry.id, entry.version);
-      return AssetStatus::kInstalled;
-    }
     return AssetStatus::kNotInstalled;
   }
   // File on disk must also exist; otherwise treat as not-installed
@@ -475,6 +531,29 @@ AssetStatus statusOf(const AssetEntry& entry) {
   }
   return AssetStatus::kInstalled;
 }
+
+namespace {
+// Walk every parsed registry entry; for any entry without an NVS
+// installed-version record, check whether the bytes are already on
+// disk (uploadfs / badge_sync / older firmware) and persist the
+// version marker so subsequent statusOf() calls treat it as
+// kInstalled without doing the FATFS walk. Runs once at the end of
+// refresh() — the heavy lifting (per-file fileExists for kApp
+// bundles) happens off the GUI thread when called from the async
+// refresh task.
+void adoptInstalledFromDisk() {
+  for (uint8_t i = 0; i < sAssetCount; ++i) {
+    const AssetEntry& e = sAssets[i];
+    char installed[kAssetVersionMax] = "";
+    loadInstalledVersion(e.id, installed, sizeof(installed));
+    if (installed[0] != '\0') continue;
+    if (!destFullyPresent(e)) continue;
+    Serial.printf("[registry] adopt existing %s (id=%s, version=%s)\n",
+                  e.dest_path, e.id, e.version);
+    persistInstalledVersion(e.id, e.version);
+  }
+}
+}  // namespace
 
 const char* installedVersionOf(const AssetEntry& entry) {
   static char sBuf[kAssetVersionMax];

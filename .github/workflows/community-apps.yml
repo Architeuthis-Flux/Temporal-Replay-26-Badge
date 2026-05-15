@@ -1,0 +1,79 @@
+name: community-apps
+
+# Validates community-app submissions on PR and regenerates
+# registry/community_apps.json on merge to main. The badge fetches
+# that file once per WiFi-up edge so contributions land on devices
+# in the field within seconds of CI committing the new manifest.
+#
+# See community/README.md and firmware/docs/OTA-MAINTAINER.md § 2 for
+# the full contributor flow.
+
+on:
+  pull_request:
+    paths:
+      - "community/**"
+      - "firmware/initial_filesystem/apps/**"
+      - "registry/registry.json"
+      - "registry/community_apps.schema.json"
+      - "scripts/regenerate_community_apps.py"
+      - ".github/workflows/community-apps.yml"
+  push:
+    branches: [main]
+    paths:
+      - "community/**"
+      - "firmware/initial_filesystem/apps/**"
+      - "registry/registry.json"
+      - "registry/community_apps.schema.json"
+      - "scripts/regenerate_community_apps.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # only used on main; PR job runs read-only
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    name: Validate community app submission
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install jsonschema
+        run: python -m pip install jsonschema
+      - name: Verify regenerated registry matches checked-in copy
+        # `--check` exits non-zero if the on-disk
+        # registry/community_apps.json doesn't match what we'd produce
+        # from the current sources. Catches stale registries, schema
+        # violations, duplicate ids, and oversize / unparseable
+        # community submissions in one pass.
+        run: python3 scripts/regenerate_community_apps.py --check
+
+  regenerate:
+    if: github.event_name != 'pull_request'
+    name: Regenerate registry on main
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need write access to push the regenerated registry back.
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install jsonschema
+        run: python -m pip install jsonschema
+      - name: Regenerate registry/community_apps.json
+        run: python3 scripts/regenerate_community_apps.py
+      - name: Commit regenerated registry if changed
+        run: |
+          if [ -n "$(git status --porcelain registry/community_apps.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add registry/community_apps.json
+            git commit -m "chore(registry): regenerate community_apps.json [skip ci]"
+            git push
+          else
+            echo "registry/community_apps.json already up to date"
+          fi

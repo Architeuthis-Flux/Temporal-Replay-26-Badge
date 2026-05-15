@@ -144,6 +144,20 @@ void tick();
 // Manual refresh from the Asset Library screen. Synchronous.
 RegistryRefresh refresh(bool ignoreCooldown);
 
+// Spawn a one-shot Core 0 task that runs `refresh(ignoreCooldown)`
+// off the GUI thread. Returns false if a refresh is already running
+// (caller should poll `isRefreshing()`); true if the task launched
+// (or if it returned synchronously because no WiFi was available).
+// Safe to call repeatedly — coalesces while in flight.
+bool beginRefreshAsync(bool ignoreCooldown);
+
+// True while the background refresh task is running.
+bool isRefreshing();
+
+// Result of the most recent refresh (sync or async). Defaults to kOk
+// before the first call.
+RegistryRefresh lastRefreshResult();
+
 size_t count();
 const AssetEntry* at(size_t index);
 const AssetEntry* findById(const char* id);

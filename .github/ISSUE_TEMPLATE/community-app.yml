@@ -1,0 +1,82 @@
+name: Submit a community app (external URL)
+description: |
+  Add an externally-hosted MicroPython app to the badge's Community Apps
+  registry. Use this when your app is hosted on your own GitHub repo,
+  jsDelivr, an R2 bucket, etc. — for in-repo PR'd apps, drop a folder
+  under community/<id>/ instead.
+title: "[community-app] <your-app-name>"
+labels: ["community-app", "submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for submitting an app! A maintainer will copy the parsed
+        fields below into `community/external.json` and the next push to
+        `main` will publish the entry to badges in the field.
+        See [community/README.md](../../community/README.md) for the full
+        flow.
+  - type: input
+    id: app_id
+    attributes:
+      label: App id (lowercase, hyphens OK; 3–32 chars)
+      placeholder: my-cool-app
+    validations:
+      required: true
+  - type: input
+    id: app_name
+    attributes:
+      label: Display name (≤ 47 chars; shown on the OLED)
+      placeholder: My Cool App
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version string (any change vs installed flips entry to "Update available")
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: dest_dir
+    attributes:
+      label: Destination directory on FATFS (must start with /apps/)
+      placeholder: /apps/my-cool-app
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: File list (one per line, format `path|url|sha256|size`)
+      placeholder: |
+        /main.py|https://example.com/my_cool_app/main.py|<64-hex>|1234
+        /icon.py|https://example.com/my_cool_app/icon.py|<64-hex>|512
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: author
+    attributes:
+      label: Your handle / contact
+      placeholder: "@your-github-handle"
+  - type: input
+    id: min_firmware
+    attributes:
+      label: Minimum firmware version (optional)
+      placeholder: "0.2.2"
+  - type: textarea
+    id: description
+    attributes:
+      label: Short description (≤ 95 chars)
+    validations:
+      required: true
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Submitter checklist
+      options:
+        - label: I have permission to distribute every file linked above.
+          required: true
+        - label: The app does not request network credentials, spoof a UI element, or attempt to brick the badge.
+          required: true
+        - label: I understand the badge fetches files over HTTPS without certificate pinning and that SHA-256 is a corruption check, not a signature.
+          required: true

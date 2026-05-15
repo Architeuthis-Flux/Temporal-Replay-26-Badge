@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/registry/community_apps.schema.json",
+  "title": "Temporal Badge Community Apps Registry",
+  "description": "Schema v2 for the on-badge Community Apps registry. Validates both the generated registry/community_apps.json and any external-only entries declared in community/external.json.",
+  "type": "object",
+  "required": ["schema_version", "assets"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 2 },
+    "generator":      { "type": "string" },
+    "assets": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/asset" }
+    }
+  },
+  "definitions": {
+    "asset": {
+      "oneOf": [
+        { "$ref": "#/definitions/fileAsset" },
+        { "$ref": "#/definitions/appAsset" }
+      ]
+    },
+    "fileAsset": {
+      "type": "object",
+      "required": ["id", "kind", "name", "version", "dest_path", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "id":             { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_\\-]{0,30}[A-Za-z0-9]$" },
+        "kind":           { "type": "string", "const": "file" },
+        "name":           { "type": "string", "minLength": 1, "maxLength": 47 },
+        "version":        { "type": "string", "minLength": 1, "maxLength": 15 },
+        "description":    { "type": "string", "maxLength": 127 },
+        "author":         { "type": "string" },
+        "min_firmware":   { "type": "string" },
+        "dest_path":      { "type": "string", "pattern": "^/[A-Za-z0-9_./-]{1,62}$" },
+        "url":            { "type": "string", "format": "uri" },
+        "sha256":         { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "size":           { "type": "integer", "minimum": 0 },
+        "min_free_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "appAsset": {
+      "type": "object",
+      "required": ["id", "kind", "name", "version", "dest_dir", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "id":             { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_\\-]{0,30}[A-Za-z0-9]$" },
+        "kind":           { "type": "string", "const": "app" },
+        "name":           { "type": "string", "minLength": 1, "maxLength": 47 },
+        "version":        { "type": "string", "minLength": 1, "maxLength": 15 },
+        "description":    { "type": "string", "maxLength": 127 },
+        "author":         { "type": "string" },
+        "min_firmware":   { "type": "string" },
+        "dest_dir":       { "type": "string", "pattern": "^/[A-Za-z0-9_./-]{1,62}$" },
+        "size":           { "type": "integer", "minimum": 0 },
+        "min_free_bytes": { "type": "integer", "minimum": 0 },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["path", "url"],
+            "additionalProperties": false,
+            "properties": {
+              "path":   { "type": "string", "pattern": "^/?[A-Za-z0-9_./-]{1,62}$" },
+              "url":    { "type": "string", "format": "uri" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+              "size":   { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -17,6 +17,11 @@
 #pragma once
 
 #include <stdint.h>
+#include <limits.h>
+#include <sys/types.h>
+#ifndef SSIZE_MAX
+#define SSIZE_MAX 2147483647
+#endif
 
 #if defined(ARDUINO_ARCH_ESP32) || defined(ESP_PLATFORM)
 #include <esp_idf_version.h>
@@ -53,13 +58,13 @@ typedef long mp_off_t;
 // goal is to make the normal MicroPython surface available out of the box.
 
 #ifndef REPLAY_ENABLE_FULL_NETWORK
-#define REPLAY_ENABLE_FULL_NETWORK 0
+#define REPLAY_ENABLE_FULL_NETWORK 1
 #endif
 #ifndef REPLAY_ENABLE_BLUETOOTH
 #define REPLAY_ENABLE_BLUETOOTH 0
 #endif
 #ifndef REPLAY_ENABLE_ESPNOW
-#define REPLAY_ENABLE_ESPNOW 0
+#define REPLAY_ENABLE_ESPNOW 1
 #endif
 #ifndef REPLAY_ENABLE_THREAD
 #define REPLAY_ENABLE_THREAD 0
@@ -69,6 +74,9 @@ typedef long mp_off_t;
 #ifndef REPLAY_ENABLE_ESP32_MACHINE_WIRELESS
 #define REPLAY_ENABLE_ESP32_MACHINE_WIRELESS ( 1 )
 #endif
+
+// Stay at CORE level (embed default) and cherry-pick what we need.
+#define MICROPY_PY_BUILTINS_MEMORYVIEW (1)
 
 // ── Core runtime features ───────────────────────────────────────────────────
 #define MICROPY_ENABLE_GC ( 1 )
@@ -115,6 +123,7 @@ typedef long mp_off_t;
 #define MICROPY_PY_HEAPQ ( 1 )
 #define MICROPY_PY_JSON ( 1 )
 #define MICROPY_PY_BINASCII ( 1 )
+#define MICROPY_PY_BINASCII_CRC32 ( 0 )
 #define MICROPY_PY_RANDOM ( 1 )
 #define MICROPY_PY_RANDOM_EXTRA_FUNCS ( 1 )
 #define MICROPY_PY_TIME ( 1 )
@@ -123,6 +132,10 @@ typedef long mp_off_t;
 // path or the standard `_asyncio` extmod. The flag below pulls in the C
 // helper that makes `asyncio.run()` interop with the event loop.
 #define MICROPY_PY_ASYNCIO ( 1 )
+
+#define MICROPY_PY_SELECT ( 1 )
+#define MICROPY_PY_SELECT_SELECT ( 1 )
+#define MICROPY_PY_ONEWIRE ( 0 )
 
 // Standard `os` module — backed by VFS; provides listdir/stat/statvfs/uname.
 #define MICROPY_PY_OS ( 1 )
@@ -170,7 +183,7 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_PY_MACHINE_ADC_BLOCK_INCLUDEFILE "ports/esp32/machine_adc_block.c"
 #define MICROPY_PY_MACHINE_BITSTREAM (0)
 #define MICROPY_PY_MACHINE_DHT_READINTO (0)
-#define MICROPY_PY_MACHINE_PULSE (0)
+#define MICROPY_PY_MACHINE_PULSE (1)
 #define MICROPY_PY_MACHINE_PWM (1)
 #define MICROPY_PY_MACHINE_PWM_DUTY (1)
 #define MICROPY_PY_MACHINE_PWM_INCLUDEFILE "ports/esp32/machine_pwm.c"
@@ -196,7 +209,8 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE "ports/esp32/machine_uart.c"
 #define MICROPY_PY_MACHINE_UART_SENDBREAK (1)
 #define MICROPY_PY_MACHINE_UART_IRQ (1)
-#define MICROPY_PY_MACHINE_WDT (0)
+#define MICROPY_PY_MACHINE_WDT (1)
+#define MICROPY_PY_MACHINE_WDT_INCLUDEFILE "ports/esp32/machine_wdt.c"
 
 // ── network — requires vendored modnetwork path in `library.json` when enabled ──
 #define MICROPY_PY_NETWORK (REPLAY_ENABLE_FULL_NETWORK)
@@ -212,8 +226,7 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_SSL_MBEDTLS                 (1)
 #define MICROPY_PY_WEBSOCKET                (1)
 #define MICROPY_PY_WEBREPL                  (1)
-#define MICROPY_PY_USSL                     (1)
-#define MICROPY_PY_USSL_FINALISER           (1)
+#define MICROPY_PY_SSL_FINALISER            (1)
 #else
 #define MICROPY_PY_NETWORK_WLAN             (0)
 #define MICROPY_PY_SOCKET_EVENTS            (0)
@@ -239,6 +252,7 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING (1)
 #define MICROPY_BLUETOOTH_NIMBLE            (1)
 #define MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY (1)
+#define MICROPY_PY_BLUETOOTH_SYNC_EVENT_STACK_SIZE (1024)
 #else
 #define MICROPY_PY_BLUETOOTH                (0)
 #endif
@@ -343,6 +357,28 @@ uint32_t replay_random_seed_init(void);
 // OK, >, and \x04). Default MP_PLAT_PRINT_STRN uses mp_hal_stdout_tx_strn_cooked (\n -> \r\n),
 // which breaks mpremote / ViperIDE raw REPL framing between OK and the trailing EOF markers.
 #define MP_PLAT_PRINT_STRN( str, len ) mp_hal_stdout_tx_strn( ( str ), ( len ) )
+
+// ── Event poll hook (compat for modules that still use the old macro) ───────
+#if !defined(MICROPY_EVENT_POLL_HOOK)
+#if MICROPY_PY_THREAD && (defined(ARDUINO_ARCH_ESP32) || defined(ESP_PLATFORM))
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#define MICROPY_EVENT_POLL_HOOK \
+    do { \
+        extern void mp_handle_pending(bool); \
+        mp_handle_pending(true); \
+        MP_THREAD_GIL_EXIT(); \
+        ulTaskNotifyTake(pdFALSE, 1); \
+        MP_THREAD_GIL_ENTER(); \
+    } while (0);
+#else
+#define MICROPY_EVENT_POLL_HOOK \
+    do { \
+        extern void mp_handle_pending(bool); \
+        mp_handle_pending(true); \
+    } while (0);
+#endif
+#endif
 
 // NDEBUG is defined as a build flag in platformio.ini build_flags_common so
 // it's set before any TU sees <assert.h>. Defining it here was order-fragile

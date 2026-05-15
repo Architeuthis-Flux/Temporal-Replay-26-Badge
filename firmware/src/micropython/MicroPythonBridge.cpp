@@ -15,6 +15,10 @@ extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
 #include "py/stackctrl.h"
+#if MICROPY_PY_THREAD
+#include "py/mpthread.h"
+#include "mpthreadport.h"
+#endif
 #include "shared/runtime/interrupt_char.h"
 #include "shared/runtime/pyexec.h"
 int replay_vfs_mount_fat( void );
@@ -142,8 +146,6 @@ static uint32_t s_ignore_repl_until_ms = 0;
 static void mpy_collect_now( void ) {
 #if HAS_MICROPYTHON_EMBED
     if ( s_mp_ready ) {
-        // GC scans the C stack; refresh the top so calls after app exit don't
-        // reuse a stack pointer from a dead MicroPython execution frame.
         char stack_top;
         mp_stack_set_top( &stack_top );
         gc_collect( );
@@ -171,6 +173,12 @@ static void mp_init_and_mount( void* stack_top ) {
                        esp_ptr_external_ram( s_mp_heap ) ? "PSRAM" : "SRAM" );
     }
 
+#if MICROPY_PY_THREAD
+    static constexpr size_t kMainStackBytes = 24 * 1024;
+    mp_thread_init( pxTaskGetStackStart( NULL ),
+                    kMainStackBytes / sizeof( StackType_t ) );
+#endif
+
     mp_embed_init( s_mp_heap, kMicroPythonHeapSize, stack_top );
 
     // Mount FAT filesystem via MicroPython's built-in VFS layer.
@@ -191,6 +199,9 @@ static void mp_init_and_mount( void* stack_top ) {
 }
 
 static void mp_soft_reboot( void ) {
+#if MICROPY_PY_THREAD
+    mp_thread_deinit( );
+#endif
     mp_embed_deinit( );
     s_ignore_repl_until_ms = 0;
     char new_stack_top;

@@ -1,0 +1,4 @@
+name = "Hello Community"
+description = "Tiny example showing how to submit a community app"
+author = "your-handle"
+min_firmware = "0.2.2"
