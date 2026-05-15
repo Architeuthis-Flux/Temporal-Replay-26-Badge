@@ -143,6 +143,15 @@ static bool s_mp_ready = false;
 static uint32_t s_ignore_repl_until_ms = 0;
 } // namespace
 
+extern "C" bool mpy_raw_repl_active( void ) {
+#if HAS_MICROPYTHON_EMBED
+    extern pyexec_mode_kind_t pyexec_mode_kind;
+    return s_mp_ready && ( pyexec_mode_kind == PYEXEC_MODE_RAW_REPL );
+#else
+    return false;
+#endif
+}
+
 static void mpy_collect_now( void ) {
 #if HAS_MICROPYTHON_EMBED
     if ( s_mp_ready ) {

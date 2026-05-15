@@ -20,6 +20,7 @@
 #include <Arduino.h>
 
 #include "../infra/BadgeConfig.h"
+#include "../infra/DebugLog.h"
 #include "ui/GUI.h"
 #include "hardware/Inputs.h"
 #include "hardware/LEDmatrix.h"
@@ -108,10 +109,10 @@ extern "C" void mpy_service_pump(void)
         guiManager.setNametagMode(orient == BadgeOrientation::kInverted);
         imu.clearFlipChanged();
         const uint32_t doneAt = millis();
-        Serial.printf("[FLIP] mpy-pump consume dt=%lu ms apply dt=%lu ms (orient=%s)\n",
-                      static_cast<unsigned long>(consumeAt - flipAt),
-                      static_cast<unsigned long>(doneAt - consumeAt),
-                      orient == BadgeOrientation::kInverted ? "inverted" : "upright");
+        DBG("[FLIP] mpy-pump consume dt=%lu ms apply dt=%lu ms (orient=%s)\n",
+            static_cast<unsigned long>(consumeAt - flipAt),
+            static_cast<unsigned long>(doneAt - consumeAt),
+            orient == BadgeOrientation::kInverted ? "inverted" : "upright");
     }
 #endif
 #ifdef BADGE_HAS_LED_MATRIX

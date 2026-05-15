@@ -2,6 +2,7 @@
 
 #include "../identity/BadgeUID.h"
 #include "../infra/BadgeConfig.h"
+#include "../infra/DebugLog.h"
 #include "../hardware/Power.h"
 
 #include <WiFi.h>
@@ -56,7 +57,7 @@ void wifiAutoConnectTask(void* arg) {
   // Let setup() and the GUI settle before we monopolise the radio.
   vTaskDelay(pdMS_TO_TICKS(2500));
   if (svc != nullptr && badgeConfig.wifiEnabled()) {
-    Serial.println("[WiFi] boot auto-connect attempt");
+    DBG("[WiFi] boot auto-connect attempt\n");
     svc->connect();
   }
   vTaskDelete(nullptr);
@@ -71,11 +72,11 @@ void WiFiService::begin() {
     esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "wifi", &s_wifiPmLock);
   }
   if (badgeConfig.wifiEnabled()) {
-    Serial.println("[WiFi] credentials present; scheduling boot auto-connect");
+    DBG("[WiFi] credentials present; scheduling boot auto-connect\n");
     xTaskCreatePinnedToCore(wifiAutoConnectTask, "wifi_auto", 4096, this,
                             tskIDLE_PRIORITY + 1, nullptr, 0);
   } else {
-    Serial.println("[WiFi] explicit networking ready; auto-connect disabled");
+    DBG("[WiFi] explicit networking ready; auto-connect disabled\n");
   }
 }
 
@@ -123,7 +124,7 @@ void primeRadioForConnectCycle() {
     delay(20);
   }
   if (!s_staStarted) {
-    Serial.println("[WiFi] STA_START event missed; proceeding anyway");
+    DBG("[WiFi] STA_START event missed; proceeding anyway\n");
   }
 }
 
@@ -149,7 +150,7 @@ bool tryConnectOnce(const char* ssid, const char* pass, uint32_t timeoutMs) {
   WiFi.disconnect(false, true);
   delay(50);
 
-  Serial.printf("[WiFi] try ssid='%s' (len=%u, pwd_len=%u, timeout=%u ms)\n",
+  DBG("[WiFi] try ssid='%s' (len=%u, pwd_len=%u, timeout=%u ms)\n",
                 ssid,
                 static_cast<unsigned>(strlen(ssid)),
                 static_cast<unsigned>(strlen(pass)),
@@ -175,7 +176,7 @@ bool tryConnectOnce(const char* ssid, const char* pass, uint32_t timeoutMs) {
     // Hard-fail status codes — bail out early so the next saved
     // network gets a real chance instead of waiting the full timeout.
     if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
-      Serial.printf("[WiFi] short-circuit fail status=%d\n", st);
+      DBG("[WiFi] short-circuit fail status=%d\n", st);
       return false;
     }
 
@@ -185,7 +186,7 @@ bool tryConnectOnce(const char* ssid, const char* pass, uint32_t timeoutMs) {
     // truly dead radio doesn't loop forever inside this attempt.
     if (!sawNonIdle && kicks < kMaxKicks &&
         (millis() - lastKickMs) > 3000) {
-      Serial.printf("[WiFi] stuck-idle kick %u/%u status=%d\n",
+      DBG("[WiFi] stuck-idle kick %u/%u status=%d\n",
                     static_cast<unsigned>(kicks + 1),
                     static_cast<unsigned>(kMaxKicks), st);
       WiFi.disconnect(false, false);
@@ -197,7 +198,7 @@ bool tryConnectOnce(const char* ssid, const char* pass, uint32_t timeoutMs) {
 
     delay(100);
   }
-  Serial.printf("[WiFi] attempt timed out status=%d\n", WiFi.status());
+  DBG("[WiFi] attempt timed out status=%d\n", WiFi.status());
   return false;
 }
 }  // namespace
@@ -208,12 +209,12 @@ bool WiFiService::connect() {
     return true;
   }
   if (!badgeConfig.wifiEnabled()) {
-    Serial.println("[WiFi] disabled in settings or not configured; connect skipped");
+    DBG("[WiFi] disabled in settings or not configured; connect skipped\n");
     noteConnectionFailed();
     return false;
   }
   if (!Power::wifiAllowed()) {
-    Serial.println("[WiFi] blocked by power policy");
+    DBG("[WiFi] blocked by power policy\n");
     noteConnectionFailed();
     return false;
   }
@@ -236,7 +237,7 @@ bool WiFiService::connect() {
   // has been tried.
   const uint8_t total = badgeConfig.wifiNetworkCount();
   if (total == 0) {
-    Serial.println("[WiFi] no saved networks configured");
+    DBG("[WiFi] no saved networks configured\n");
     noteConnectionFailed();
     restoreCpu();
     return false;
@@ -262,7 +263,7 @@ bool WiFiService::connect() {
     // tried first.
     const uint32_t timeoutMs =
         (attempted >= total) ? WIFI_TIMEOUT_MS : kPerAttemptTimeoutMs;
-    Serial.printf("[WiFi] explicit connect to slot %u (timeout=%u ms)\n",
+    DBG("[WiFi] explicit connect to slot %u (timeout=%u ms)\n",
                   static_cast<unsigned>(i),
                   static_cast<unsigned>(timeoutMs));
     ok = tryConnectOnce(ssid, pass ? pass : "", timeoutMs);
@@ -276,12 +277,12 @@ bool WiFiService::connect() {
     WiFi.setSleep(true);
     configureClockOnce();
     noteConnectionOk();
-    Serial.printf("[WiFi] connected ip=%s\n",
+    DBG("[WiFi] connected ip=%s\n",
                   WiFi.localIP().toString().c_str());
   } else {
     shutDownRadio();
     noteConnectionFailed();
-    Serial.printf("[WiFi] connect failed after %u attempt%s — radio off\n",
+    DBG("[WiFi] connect failed after %u attempt%s — radio off\n",
                   static_cast<unsigned>(attempted),
                   attempted == 1 ? "" : "s");
   }
@@ -429,7 +430,7 @@ bool WiFiService::pollStaAssociation(uint32_t timeoutMs, const char* ssid,
     }
     if (!sawNonIdle && kicks < kMaxKicks &&
         (millis() - lastKickMs) > 3000) {
-      Serial.printf("[WiFi] async stuck-idle kick %u/%u status=%d\n",
+      DBG("[WiFi] async stuck-idle kick %u/%u status=%d\n",
                     static_cast<unsigned>(kicks + 1),
                     static_cast<unsigned>(kMaxKicks), static_cast<int>(st));
       WiFi.disconnect(false, false);
@@ -537,7 +538,7 @@ void WiFiService::runSlotConnect(uint8_t slot) {
                   WiFi.localIP().toString().c_str());
     setPhaseStatus(buf);
     setPhase(Phase::kConnected);
-    Serial.printf("[WiFi] async slot %u: already on '%s'\n",
+    DBG("[WiFi] async slot %u: already on '%s'\n",
                   static_cast<unsigned>(slot), ssid);
     noteConnectionOk();
     restoreCpu();
@@ -551,7 +552,7 @@ void WiFiService::runSlotConnect(uint8_t slot) {
                   currentSsid.c_str());
     setPhaseStatus(buf);
     setPhase(Phase::kStarting);
-    Serial.printf("[WiFi] switching from '%s' to '%s'\n",
+    DBG("[WiFi] switching from '%s' to '%s'\n",
                   currentSsid.c_str(), ssid);
   }
 
@@ -569,7 +570,7 @@ void WiFiService::runSlotConnect(uint8_t slot) {
                 phaseSsid_[0] ? phaseSsid_ : ssid);
   setPhaseStatus(line);
   setPhase(Phase::kAttempting);
-  Serial.printf("[WiFi] async slot %u ssid='%s' (len=%u, pwd_len=%u)\n",
+  DBG("[WiFi] async slot %u ssid='%s' (len=%u, pwd_len=%u)\n",
                 static_cast<unsigned>(slot), ssid,
                 static_cast<unsigned>(strlen(ssid)),
                 static_cast<unsigned>(strlen(pass ? pass : "")));
@@ -587,7 +588,7 @@ void WiFiService::runSlotConnect(uint8_t slot) {
                   WiFi.localIP().toString().c_str());
     setPhaseStatus(buf);
     setPhase(Phase::kConnected);
-    Serial.printf("[WiFi] connected ip=%s\n",
+    DBG("[WiFi] connected ip=%s\n",
                   WiFi.localIP().toString().c_str());
   } else {
     shutDownRadio();
@@ -596,7 +597,7 @@ void WiFiService::runSlotConnect(uint8_t slot) {
       setPhaseStatus("Timed out");
     }
     setPhase(Phase::kFailed);
-    Serial.printf("[WiFi] async slot %u failed — radio off\n",
+    DBG("[WiFi] async slot %u failed — radio off\n",
                   static_cast<unsigned>(slot));
   }
 
@@ -646,7 +647,7 @@ void WiFiService::runSavedNetworksConnect() {
     delay(50);
     WiFi.begin(ssid, pass ? pass : "");
 
-    Serial.printf(
+    DBG(
         "[WiFi] async iterate slot %u ssid='%s' timeout=%u ms\n",
         static_cast<unsigned>(i), ssid,
         static_cast<unsigned>(timeoutMs));
@@ -662,7 +663,7 @@ void WiFiService::runSavedNetworksConnect() {
                   WiFi.localIP().toString().c_str());
     setPhaseStatus(buf);
     setPhase(Phase::kConnected);
-    Serial.printf("[WiFi] iterate ok ip=%s\n",
+    DBG("[WiFi] iterate ok ip=%s\n",
                   WiFi.localIP().toString().c_str());
   } else {
     shutDownRadio();
@@ -671,7 +672,7 @@ void WiFiService::runSavedNetworksConnect() {
       setPhaseStatus("Timed out");
     }
     setPhase(Phase::kFailed);
-    Serial.printf("[WiFi] iterate failed — radio off\n");
+    DBG("[WiFi] iterate failed — radio off\n");
   }
 
   restoreCpu();

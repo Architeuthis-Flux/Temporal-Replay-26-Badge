@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "../api/WiFiService.h"
+#include "../infra/DebugLog.h"
 #include "AssetRegistry.h"
 #include "BadgeOTA.h"
 
@@ -58,7 +59,7 @@ void OTAService::service() {
   // gate that depended on it has been removed) but checkNow's HTTPS
   // call to api.github.com needs working DNS+TLS, which is reliable
   // by the time WiFiService reports connected. Fire once and latch.
-  Serial.println("[ota-svc] WiFi up — firing OTA check + registry refresh");
+  DBG("[ota-svc] WiFi up — firing OTA check + registry refresh\n");
   ota::checkNow(true);
   registry::beginRefreshAsync(true);
   sCheckedSinceConnect = true;

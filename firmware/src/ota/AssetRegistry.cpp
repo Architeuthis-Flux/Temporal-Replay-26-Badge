@@ -19,6 +19,7 @@ FATFS* replay_get_fatfs(void);
 #include "OTAHttp.h"
 #include "../api/WiFiService.h"
 #include "../infra/BadgeConfig.h"
+#include "../infra/DebugLog.h"
 #include "../infra/Filesystem.h"
 #include "../infra/PsramAllocator.h"
 
@@ -293,7 +294,7 @@ void begin() {
   if (sBegun) return;
   sBegun = true;
   loadRefreshEpoch();
-  Serial.printf("[registry] cache loaded: last_epoch=%lu\n",
+  DBG("[registry] cache loaded: last_epoch=%lu\n",
                 (unsigned long)sLastRefreshEpoch);
 }
 
@@ -308,7 +309,7 @@ void tick() {
       (uint32_t)(now - sLastRefreshEpoch) < kRefreshCooldownSec) {
     return;
   }
-  Serial.println("[registry] daily refresh fired");
+  DBG("[registry] daily refresh fired\n");
   refresh(false);
 }
 
@@ -332,13 +333,13 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     }
   }
 
-  Serial.printf("[registry] GET %s\n", url);
+  DBG("[registry] GET %s\n", url);
   char* body = nullptr;
   size_t bodyLen = 0;
   HttpResult httpRes =
       getJson(url, &body, &bodyLen, kRegistryJsonMax, 20000);
   if (!httpRes.ok) {
-    Serial.printf("[registry] refresh failed: code=%d %s\n",
+    DBG("[registry] refresh failed: code=%d %s\n",
                   httpRes.httpCode, httpRes.error);
     setError(httpRes.error);
     if (body) std::free(body);
@@ -346,22 +347,24 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     return RegistryRefresh::kNetworkError;
   }
 
-  Serial.printf("[registry] body len=%u\n", (unsigned)bodyLen);
-  auto dumpEscaped = [](const char* p, size_t n) {
-    for (size_t i = 0; i < n; ++i) {
-      char c = p[i];
-      if (c >= 0x20 && c < 0x7f) Serial.write(c);
-      else Serial.printf("\\x%02x", (uint8_t)c);
+  DBG("[registry] body len=%u\n", (unsigned)bodyLen);
+  if (_DBG_GATE()) {
+    auto dumpEscaped = [](const char* p, size_t n) {
+      for (size_t i = 0; i < n; ++i) {
+        char c = p[i];
+        if (c >= 0x20 && c < 0x7f) Serial.write(c);
+        else DBG("\\x%02x", (uint8_t)c);
+      }
+    };
+    DBG("[registry] first64=");
+    dumpEscaped(body, bodyLen < 64 ? bodyLen : 64);
+    DBG("\n");
+    if (bodyLen > 64) {
+      DBG("[registry] last64=");
+      const size_t off = bodyLen > 64 ? bodyLen - 64 : 0;
+      dumpEscaped(body + off, bodyLen - off);
+      DBG("\n");
     }
-  };
-  Serial.print("[registry] first64=");
-  dumpEscaped(body, bodyLen < 64 ? bodyLen : 64);
-  Serial.println();
-  if (bodyLen > 64) {
-    Serial.print("[registry] last64=");
-    const size_t off = bodyLen > 64 ? bodyLen - 64 : 0;
-    dumpEscaped(body + off, bodyLen - off);
-    Serial.println();
   }
 
   // Allocate the parser document from PSRAM — at 64 KB it would
@@ -418,7 +421,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
       uint16_t added = 0;
       for (JsonObject f : files) {
         if (!reserveFilePool(sFileCount + 1)) {
-          Serial.println("[registry] file pool alloc failed");
+          DBG("[registry] file pool alloc failed\n");
           break;
         }
         AssetFileEntry& fe = sFiles[sFileCount];
@@ -446,7 +449,7 @@ RegistryRefresh refresh(bool ignoreCooldown) {
 
   sLastRefreshEpoch = wifiService.clockReady() ? time(nullptr) : 1;
   persistRefreshEpoch(sLastRefreshEpoch);
-  Serial.printf("[registry] parsed %u assets\n",
+  DBG("[registry] parsed %u assets\n",
                 static_cast<unsigned>(sAssetCount));
   // One-shot adoption of files already on disk. Centralising it here
   // (instead of inside statusOf()) keeps every render-time call to
@@ -548,7 +551,7 @@ void adoptInstalledFromDisk() {
     loadInstalledVersion(e.id, installed, sizeof(installed));
     if (installed[0] != '\0') continue;
     if (!destFullyPresent(e)) continue;
-    Serial.printf("[registry] adopt existing %s (id=%s, version=%s)\n",
+    DBG("[registry] adopt existing %s (id=%s, version=%s)\n",
                   e.dest_path, e.id, e.version);
     persistInstalledVersion(e.id, e.version);
   }
@@ -598,7 +601,7 @@ AssetInstallResult installFileToPath(const char* url,
     return AssetInstallResult::kFsWriteError;
   }
 
-  Serial.printf("[registry] install GET %s -> %s\n", url, destPath);
+  DBG("[registry] install GET %s -> %s\n", url, destPath);
   // Hold the radio awake + CPU at 240 MHz for the whole download.
   // Without this, WiFi modem sleep + dynamic CPU scaling between
   // chunks easily collapses throughput from ~250 KB/s to ~30 KB/s
@@ -611,7 +614,7 @@ AssetInstallResult installFileToPath(const char* url,
   {
     Filesystem::IOLock dirLock;
     if (!ensureDirsForPath(fs, destPath)) {
-      Serial.printf("[registry] install fail: mkdir parents for %s\n",
+      DBG("[registry] install fail: mkdir parents for %s\n",
                     destPath);
       setError("mkdir parents failed");
       return AssetInstallResult::kFsWriteError;
@@ -621,7 +624,7 @@ AssetInstallResult installFileToPath(const char* url,
   ThroughputBoost boost;
   Stream s;
   if (!s.open(url, 30000)) {
-    Serial.printf("[registry] install fail: stream open %s: %s\n",
+    DBG("[registry] install fail: stream open %s: %s\n",
                   url, s.lastError());
     setError(s.lastError());
     return AssetInstallResult::kHttpError;
@@ -647,7 +650,7 @@ AssetInstallResult installFileToPath(const char* url,
     char buf[64];
     std::snprintf(buf, sizeof(buf), "open tmp fr=%d", (int)ores);
     setError(buf);
-    Serial.printf("[registry] install fail: %s for %s\n", buf, tmpPath);
+    DBG("[registry] install fail: %s for %s\n", buf, tmpPath);
     return AssetInstallResult::kFsWriteError;
   }
 
@@ -709,8 +712,7 @@ AssetInstallResult installFileToPath(const char* url,
         ok = false;
         break;
       }
-      Serial.printf(
-          "[registry] stream stall at %u/%u, retry %d (resume)\n",
+      DBG("[registry] stream stall at %u/%u, retry %d (resume)\n",
           (unsigned)written, (unsigned)total, retries);
       s.close();
       // Linear backoff: 500 ms, 1 s, 1.5 s, 2 s. Long enough that a
@@ -732,8 +734,7 @@ AssetInstallResult installFileToPath(const char* url,
         // wastes the bytes we already wrote, but jsDelivr / GitHub
         // CDN / ibiblio all honour Range so the path is rare in
         // practice.
-        Serial.printf(
-            "[registry] server ignored Range; restarting from 0\n");
+        DBG("[registry] server ignored Range; restarting from 0\n");
         f_lseek(&fil, 0);
         f_truncate(&fil);
         written = 0;
@@ -773,7 +774,7 @@ AssetInstallResult installFileToPath(const char* url,
   if (!ok) {
     if (wantSha) mbedtls_sha256_free(&shaCtx);
     f_unlink(fs, tmpPath);
-    Serial.printf("[registry] install fail: %s (write loop) for %s\n",
+    DBG("[registry] install fail: %s (write loop) for %s\n",
                   sLastError, destPath);
     if (outWritten) *outWritten = written;
     return AssetInstallResult::kFsWriteError;
@@ -790,7 +791,7 @@ AssetInstallResult installFileToPath(const char* url,
       std::snprintf(buf, sizeof(buf),
                     "sha256 mismatch (got %.16s...)", hex);
       setError(buf);
-      Serial.printf("[registry] install fail: %s for %s\n", buf, destPath);
+      DBG("[registry] install fail: %s for %s\n", buf, destPath);
       f_unlink(fs, tmpPath);
       if (outWritten) *outWritten = written;
       return AssetInstallResult::kSha256Mismatch;
@@ -804,13 +805,13 @@ AssetInstallResult installFileToPath(const char* url,
     char buf[64];
     std::snprintf(buf, sizeof(buf), "rename fr=%d", (int)rres);
     setError(buf);
-    Serial.printf("[registry] install fail: %s for %s\n", buf, destPath);
+    DBG("[registry] install fail: %s for %s\n", buf, destPath);
     f_unlink(fs, tmpPath);
     if (outWritten) *outWritten = written;
     return AssetInstallResult::kFsWriteError;
   }
 
-  Serial.printf("[registry] installed file -> %s (%u bytes)\n",
+  DBG("[registry] installed file -> %s (%u bytes)\n",
                 destPath, (unsigned)written);
   if (outWritten) *outWritten = written;
   return AssetInstallResult::kOk;
@@ -837,7 +838,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   // existing footprint dominates the free count (DOOM WAD: 4.5 MB
   // against ~2 MB residual free on a typical ffat partition).
   if (destFullyPresent(entry)) {
-    Serial.printf("[registry] install %s: already on disk, adopting\n",
+    DBG("[registry] install %s: already on disk, adopting\n",
                   entry.id);
     persistInstalledVersion(entry.id, entry.version);
     if (cb) {
@@ -854,7 +855,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   if (needed == 0) needed = entry.size + 1024;
   uint64_t freeBytes = 0;
   if (!ensureFreeSpace(needed, &freeBytes)) {
-    Serial.printf("[registry] insufficient space: need=%u have=%llu\n",
+    DBG("[registry] insufficient space: need=%u have=%llu\n",
                   (unsigned)needed, (unsigned long long)freeBytes);
     char buf[80];
     std::snprintf(buf, sizeof(buf), "need %u, have %u KB",
@@ -867,7 +868,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     }
     return false;
   }
-  Serial.printf("[registry] space ok: need=%u have=%llu\n",
+  DBG("[registry] space ok: need=%u have=%llu\n",
                 (unsigned)needed, (unsigned long long)freeBytes);
 
   if (entry.kind == AssetKind::kFile) {
@@ -883,7 +884,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
       return false;
     }
     persistInstalledVersion(entry.id, entry.version);
-    Serial.printf("[registry] installed %s -> %s (%u bytes)\n",
+    DBG("[registry] installed %s -> %s (%u bytes)\n",
                   entry.id, entry.dest_path, (unsigned)written);
     if (cb) {
       AssetProgress p{written, entry.size, true, AssetInstallResult::kOk};
@@ -895,13 +896,13 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   // ── kApp ────────────────────────────────────────────────────────────
   // dest_path here is the bundle directory, e.g. "/apps/zigmoji". Each
   // file's `path` is relative to it.
-  Serial.printf("[registry] install app %s (%u files) -> %s\n",
+  DBG("[registry] install app %s (%u files) -> %s\n",
                 entry.id, static_cast<unsigned>(entry.fileCount),
                 entry.dest_path);
   FATFS* fs = replay_get_fatfs();
   if (!fs) {
     setError("filesystem not mounted");
-    Serial.println("[registry] install fail: filesystem not mounted");
+    DBG("[registry] install fail: filesystem not mounted\n");
     if (cb) {
       AssetProgress p{0, 0, true, AssetInstallResult::kFsWriteError};
       cb(p, user);
@@ -910,7 +911,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   }
   if (entry.fileCount == 0 || sFiles == nullptr) {
     setError("app entry has no files");
-    Serial.printf("[registry] install fail: %s has no files (count=%u files=%p)\n",
+    DBG("[registry] install fail: %s has no files (count=%u files=%p)\n",
                   entry.id, static_cast<unsigned>(entry.fileCount),
                   static_cast<const void*>(sFiles));
     if (cb) {
@@ -955,7 +956,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     }
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(destFull)) {
       setError("dest path too long");
-      Serial.printf("[registry] install fail: %s path too long for %s + %s\n",
+      DBG("[registry] install fail: %s path too long for %s + %s\n",
                     entry.id, entry.dest_path, fe.path);
       if (cb) {
         AssetProgress p{doneBundleBytes, totalBundleBytes, true,
@@ -968,7 +969,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
       char buf[80];
       std::snprintf(buf, sizeof(buf), "mkdir parents for %s", destFull);
       setError(buf);
-      Serial.printf("[registry] install fail: %s\n", buf);
+      DBG("[registry] install fail: %s\n", buf);
       if (cb) {
         AssetProgress p{doneBundleBytes, totalBundleBytes, true,
                         AssetInstallResult::kFsWriteError};
@@ -1001,7 +1002,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
         cb ? fileCb : nullptr, &ctx, &written);
     doneBundleBytes += written;
     if (code != AssetInstallResult::kOk) {
-      Serial.printf("[registry] install fail: %s file %u/%u (%s) code=%d %s\n",
+      DBG("[registry] install fail: %s file %u/%u (%s) code=%d %s\n",
                     entry.id, static_cast<unsigned>(i + 1),
                     static_cast<unsigned>(entry.fileCount),
                     fe.path, static_cast<int>(code), sLastError);
@@ -1014,7 +1015,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   }
 
   persistInstalledVersion(entry.id, entry.version);
-  Serial.printf("[registry] installed app %s -> %s (%u files, %u bytes)\n",
+  DBG("[registry] installed app %s -> %s (%u files, %u bytes)\n",
                 entry.id, entry.dest_path,
                 (unsigned)entry.fileCount, (unsigned)doneBundleBytes);
   if (cb) {

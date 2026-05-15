@@ -13,6 +13,7 @@
 #include "OTAHttp.h"
 #include "../api/WiFiService.h"
 #include "../hardware/Power.h"
+#include "../infra/DebugLog.h"
 #include "../identity/BadgeVersion.h"
 
 extern "C" {
@@ -134,11 +135,11 @@ void begin() {
     esp_ota_img_states_t state;
     if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
       sPendingVerify = (state == ESP_OTA_IMG_PENDING_VERIFY);
-      Serial.printf("[ota] running partition state=%d pending_verify=%d\n",
+      DBG("[ota] running partition state=%d pending_verify=%d\n",
                     (int)state, sPendingVerify ? 1 : 0);
     }
   }
-  Serial.printf("[ota] cache loaded: tag='%s' size=%u last_epoch=%lu\n",
+  DBG("[ota] cache loaded: tag='%s' size=%u last_epoch=%lu\n",
                 sLatestTag, (unsigned)sAssetSize,
                 (unsigned long)sLastCheckEpoch);
 }
@@ -228,7 +229,7 @@ CheckResult checkNow(bool ignoreCooldown) {
   std::free(body);
 
   const int cmp = compareSemver(sLatestTag, FIRMWARE_VERSION);
-  Serial.printf("[ota] latest=%s current=%s cmp=%d size=%u\n",
+  DBG("[ota] latest=%s current=%s cmp=%d size=%u\n",
                 sLatestTag, FIRMWARE_VERSION, cmp, (unsigned)sAssetSize);
 
   if (cmp > 0) return CheckResult::kOkNewerAvailable;
@@ -344,7 +345,7 @@ InstallResult installCached(InstallProgressCb cb, void* user) {
     cb(done, user);
   }
 
-  Serial.printf("[ota] install complete (%u bytes); rebooting\n",
+  DBG("[ota] install complete (%u bytes); rebooting\n",
                 (unsigned)written);
   return InstallResult::kOk;
 }
@@ -354,9 +355,9 @@ void markCurrentAppValidIfPending() {
   esp_err_t rc = esp_ota_mark_app_valid_cancel_rollback();
   if (rc == ESP_OK) {
     sValidated = true;
-    Serial.println("[ota] running app marked valid; rollback cancelled");
+    DBG("[ota] running app marked valid; rollback cancelled\n");
   } else {
-    Serial.printf("[ota] mark_valid failed rc=%d\n", (int)rc);
+    DBG("[ota] mark_valid failed rc=%d\n", (int)rc);
   }
 }
 
@@ -405,12 +406,12 @@ bool ffatExpansionAvailable() {
 }
 
 void reformatFfatAndReboot() {
-  Serial.println("[ota] reformatting ffat — all user data will be lost");
+  DBG("[ota] reformatting ffat — all user data will be lost\n");
   // The replay_bdev helper unmounts, mkfs's, and ESP.restart()s. It
   // does not return on success.
   int rc = replay_bdev_reformat_and_reboot();
   // If we get here, something went wrong. Reboot anyway to recover.
-  Serial.printf("[ota] reformat helper returned rc=%d; rebooting\n", rc);
+  DBG("[ota] reformat helper returned rc=%d; rebooting\n", rc);
   delay(300);
   ESP.restart();
 }

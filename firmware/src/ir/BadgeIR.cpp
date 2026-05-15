@@ -508,7 +508,7 @@ int irSetMode(int mode) {
     }
     s_ir_mode = (uint8_t)mode;
     irDrainAltRx();
-    Serial.printf("[%s] mode -> %d\n", TAG, mode);
+    DBG("[%s] mode -> %d\n", TAG, mode);
     return 0;
 }
 
@@ -756,15 +756,15 @@ int irSetTxPower(int percent) {
     if (percent < 1 || percent > 50) return -1;
     s_tx_power_percent = percent;
     if (!s_hw_up) {
-        Serial.printf("[%s] TX power stored (%d%%) — will apply on next hw init\n",
-                      TAG, percent);
+        DBG("[%s] TX power stored (%d%%) — will apply on next hw init\n",
+            TAG, percent);
         return 0;
     }
     float duty = (float)percent / 100.0f;
     if (s_tx_ctx == nullptr) return -1;
     esp_err_t ret = nec_tx_set_carrier_duty(s_tx_ctx, duty);
-    Serial.printf("[%s] TX power -> %d%% (duty=%.2f, rmt_apply_carrier=%s)\n",
-                  TAG, percent, duty, esp_err_to_name(ret));
+    DBG("[%s] TX power -> %d%% (duty=%.2f, rmt_apply_carrier=%s)\n",
+        TAG, percent, duty, esp_err_to_name(ret));
     return (ret == ESP_OK) ? 0 : -1;
 }
 

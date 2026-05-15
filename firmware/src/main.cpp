@@ -3,6 +3,7 @@
 #include "hardware/HardwareConfig.h"
 
 #include "infra/BadgeConfig.h"
+#include "infra/DebugLog.h"
 #include "infra/Filesystem.h"
 #include "micropython/StartupFiles.h"
 #include "ui/GUI.h"
@@ -514,7 +515,7 @@ void loop( ) {
                 // waiting; otherwise a launch/exit button can stay logically
                 // held and repeat into the restored menu.
                 inputs.resyncButtons();
-                Serial.println("[doom] waiting for input release before GUI restore");
+                DBG("[doom] waiting for input release before GUI restore\n");
 
                 // Spin until all buttons are released so the exit combo
                 // doesn't leak into the GUI as spurious presses.
@@ -530,7 +531,7 @@ void loop( ) {
                         delay(20);
                     }
                     if (!allUp) {
-                        Serial.println("[doom] input release wait timed out");
+                        DBG("[doom] input release wait timed out\n");
                     }
                     // One final flush after release
                     uint32_t quietUntil = millis() + 250;
@@ -542,7 +543,7 @@ void loop( ) {
                 }
 
                 guiManager.activate();
-                Serial.println("[doom] teardown complete, GUI restored");
+                DBG("[doom] teardown complete, GUI restored\n");
             } else {
                 Power::noteActivity();
                 delay(1);
@@ -567,7 +568,7 @@ void loop( ) {
 #ifdef BADGE_HAS_IMU
     if ( imu.flipChanged( ) ) {
         const auto orient = imu.getOrientation( );
-        Serial.printf("imu.tiltXMag: %f, imu.tiltYMag: %f\n", imu.tiltXMg(), imu.tiltYMg());
+        DBG("imu.tiltXMag: %f, imu.tiltYMag: %f\n", imu.tiltXMg(), imu.tiltYMg());
         
         applyBadgeOrientation( orient );
         guiManager.setNametagMode( orient == BadgeOrientation::kInverted );

@@ -40,6 +40,7 @@
 #include <cstring>
 
 #include "../BadgeGlobals.h"
+#include "../infra/DebugLog.h"
 #include "../apps/AppRegistry.h"
 #include "../apps/MenuOrderStore.h"
 #include <algorithm>
@@ -109,7 +110,7 @@ static void launchPythonApp(GUIManager& gui, const char* path,
   pythonIrListening = false;
   irDrainPythonRx();
   if (mpy_collect != nullptr) mpy_collect();
-  Serial.printf("[appmem] enter %s largest=%u free=%u psram=%u\n",
+  DBG("[appmem] enter %s largest=%u free=%u psram=%u\n",
                 displayName,
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -124,14 +125,14 @@ static void launchPythonApp(GUIManager& gui, const char* path,
   OLEDLayout::drawFooterActions(d, nullptr, nullptr, "exit", nullptr);
   d.sendBuffer();
 
-  Serial.printf("GUI: Running app %s\n", path);
+  DBG("GUI: Running app %s\n", path);
   mpy_gui_exec_file(path);
 
 #ifdef BADGE_ENABLE_BLE_PROXIMITY
   BleBeaconScanner::clearScanCache();
 #endif
   if (mpy_collect != nullptr) mpy_collect();
-  Serial.printf("[appmem] exit %s largest=%u free=%u psram=%u\n",
+  DBG("[appmem] exit %s largest=%u free=%u psram=%u\n",
                 displayName,
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -156,7 +157,7 @@ static void launchPythonApp(GUIManager& gui, const char* path,
   }
   inputs.clearEdges();
 
-  Serial.println("GUI: App finished, returning to menu");
+  DBG("GUI: App finished, returning to menu\n");
   gui.requestRender();
 }
 
@@ -698,7 +699,7 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   gGuiActive = true;
 
   scheduler.setServiceState("OLED", false);
-  Serial.printf("GUI: initialized (screens=%u cap=%u)\n",
+  DBG("GUI: initialized (screens=%u cap=%u)\n",
                 (unsigned)screenCount_, (unsigned)kMaxScreens);
 }
 
@@ -861,7 +862,7 @@ void GUIManager::pushScreen(ScreenId sid) {
   if (!scr) {
     // Keep this warning — it's the only way to catch future silent-drop
     // regressions if the registration list outgrows kMaxScreens again.
-    Serial.printf("[GUI] pushScreen(id=%u) FAILED: screen not registered "
+    DBG("[GUI] pushScreen(id=%u) FAILED: screen not registered "
                   "(screenCount=%u)\n",
                   (unsigned)sid, (unsigned)screenCount_);
     return;
@@ -877,7 +878,7 @@ void GUIManager::resetStackTo(ScreenId sid) {
   sid = resolveScreenForBadgeState(sid);
   Screen* scr = findScreen(sid);
   if (!scr) {
-    Serial.printf("[GUI] resetStackTo(id=%u) FAILED: screen not registered "
+    DBG("[GUI] resetStackTo(id=%u) FAILED: screen not registered "
                   "(screenCount=%u)\n",
                   (unsigned)sid, (unsigned)screenCount_);
     return;
@@ -911,7 +912,7 @@ void GUIManager::popScreen() {
 }
 
 void GUIManager::popScreens(uint8_t n) {
-  Serial.printf("[GUI] popScreens(%u) entry  depth=%u  top=%u\n",
+  DBG("[GUI] popScreens(%u) entry  depth=%u  top=%u\n",
                 (unsigned)n, (unsigned)stackDepth_,
                 stackDepth_ > 0 ? (unsigned)stack_[stackDepth_ - 1] : 0u);
   if (n == 0) return;
@@ -924,7 +925,7 @@ void GUIManager::popScreens(uint8_t n) {
     Screen* old = findScreen(popping);
     if (old) old->onExit(*this);
     stackDepth_--;
-    Serial.printf("[GUI] popScreens  popped id=%u  newDepth=%u\n",
+    DBG("[GUI] popScreens  popped id=%u  newDepth=%u\n",
                   (unsigned)popping, (unsigned)stackDepth_);
   }
   enterTransitionIn();
@@ -935,7 +936,7 @@ void GUIManager::replaceScreen(ScreenId sid) {
   sid = resolveScreenForBadgeState(sid);
   Screen* scr = findScreen(sid);
   if (!scr) {
-    Serial.printf("[GUI] replaceScreen(id=%u) FAILED: screen not registered "
+    DBG("[GUI] replaceScreen(id=%u) FAILED: screen not registered "
                   "(screenCount=%u)\n",
                   (unsigned)sid, (unsigned)screenCount_);
     return;
@@ -1000,7 +1001,7 @@ void GUIManager::registerScreen(Screen* screen) {
   // Loud warning on overflow — the historical silent-drop behavior is how
   // the Contacts menu broke when the registration list outgrew kMaxScreens.
   // If this ever fires again, bump kMaxScreens in GUI.h.
-  Serial.printf("[GUI] registerScreen: dropped screen id=%u (cap=%u)\n",
+  DBG("[GUI] registerScreen: dropped screen id=%u (cap=%u)\n",
                 screen ? (unsigned)screen->id() : 0u,
                 (unsigned)kMaxScreens);
 }
@@ -1036,7 +1037,7 @@ ScreenId GUIManager::resolveScreenForBadgeState(ScreenId sid) {
 
   const ScreenId home = homeScreenForBadgeState();
   if (sid != home) {
-    Serial.printf("[GUI] screen id=%u blocked while %s; routing to id=%u\n",
+    DBG("[GUI] screen id=%u blocked while %s; routing to id=%u\n",
                   (unsigned)sid,
                   badgeStateName(badgeState),
                   (unsigned)home);
@@ -1093,7 +1094,7 @@ void GUIManager::activate() {
   cursorY_ = 32.0f;
   sleepService.caffeine = true;
   requestRender();
-  Serial.println("GUI: activated");
+  DBG("GUI: activated\n");
 }
 
 void GUIManager::activateKeepStack() {
@@ -1101,7 +1102,7 @@ void GUIManager::activateKeepStack() {
   gGuiActive = true;
   scheduler.setServiceState("OLED", false);
   requestRender();
-  Serial.println("GUI: activated (keep stack)");
+  DBG("GUI: activated (keep stack)\n");
 }
 
 void GUIManager::deactivate() {
@@ -1112,7 +1113,7 @@ void GUIManager::deactivate() {
                                  Power::Policy::schedulerNormalDivisor,
                                  Power::Policy::schedulerLowDivisor);
   applyDisplayPolicy(DisplayPolicy::kNormal);
-  Serial.println("GUI: deactivated");
+  DBG("GUI: deactivated\n");
 }
 
 void GUIManager::checkActivation(uint32_t nowMs) {

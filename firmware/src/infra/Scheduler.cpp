@@ -1,5 +1,6 @@
 #include "Scheduler.h"
 #include <cstring>
+#include "DebugLog.h"
 
 namespace {
 constexpr uint32_t kSlowServiceWarnMs = 40;
@@ -55,7 +56,7 @@ void Scheduler::runOnce() {
     service->service();
     const uint32_t elapsedMs = millis() - startMs;
     if (elapsedMs >= kSlowServiceWarnMs) {
-      Serial.printf("[Scheduler] slow service=%s priority=%u elapsed=%lu ms loop=%lu\n",
+      DBG("[Scheduler] slow service=%s priority=%u elapsed=%lu ms loop=%lu\n",
                     service->name() ? service->name() : "?",
                     (unsigned)services_[i].priority,
                     (unsigned long)elapsedMs,
@@ -122,7 +123,7 @@ bool Scheduler::setServiceState(IService* service, bool active) {
 }
 
 void Scheduler::printTasks() const {
-  Serial.printf("=== Scheduler Tasks (%d/%d) ===\n", serviceCount_, kMaxServices);
+  DBG("=== Scheduler Tasks (%d/%d) ===\n", serviceCount_, kMaxServices);
   for (uint8_t i = 0; i < serviceCount_; ++i) {
     if (services_[i].service) {
       const char* state = services_[i].active ? "RUNNING" : "PAUSED ";
@@ -132,7 +133,7 @@ void Scheduler::printTasks() const {
         case ServicePriority::kNormal: priorityStr = "NORMAL"; break;
         case ServicePriority::kLow: priorityStr = "LOW   "; break;
       }
-      Serial.printf("[%d] %-15s | Priority: %s | State: %s\n", 
+      DBG("[%d] %-15s | Priority: %s | State: %s\n", 
                     i, services_[i].service->name(), priorityStr, state);
     }
   }

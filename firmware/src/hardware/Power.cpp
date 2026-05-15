@@ -49,6 +49,7 @@ uint8_t gPerformanceDepth = 0;
 #if defined(CHG_GOOD_PIN) && defined(CHG_STAT_PIN)
 bool gChargerTelemetryPinsReady = false;
 uint32_t gLastChargerTelemetryLogMs = 0;
+bool gWasCharging = false;
 #endif
 
 bool configurePm(uint32_t minMhz, uint32_t maxMhz, bool lightSleep) {
@@ -116,7 +117,14 @@ void logChargerTelemetryIfDue(uint32_t intervalMs) {
     return;
   }
   gLastChargerTelemetryLogMs = now;
-  logChargerTelemetry(readChargerTelemetry());
+  const ChargerTelemetry telemetry = readChargerTelemetry();
+  logChargerTelemetry(telemetry);
+
+  if (gWasCharging && !telemetry.charging && telemetry.externalPowerPresent) {
+    Serial.println("[POWER] BATTERY_FULL");
+    ESP_LOGI("POWER", "Charge complete — battery full");
+  }
+  gWasCharging = telemetry.charging;
 }
 #endif
 
@@ -382,24 +390,94 @@ void SleepService::enterDeepSleep() {
 
   preparePeripheralsForDeepSleep();
 
-  if (!isLineStableHigh(wakePin_)) {
-     ESP_LOGI("POWER","Deep sleep pre-arm warning; wake line GPIO %u not stably high, continuing\n", wakePin_);
+  // Build EXT1 mask: EXT0 only observes a single RTC pin; on Echo / Charlie the
+  // face buttons diode-OR onto INT_PWR_PIN (and may share MCU_SLEEP_PIN) while
+  // INT_GP_PIN is the accelerometer IRQ. Wake must include every net that pulls
+  // low on user activity or we never leave deep sleep until IMU twitch.
+  uint64_t ext1_mask = (1ULL << wakePin_);
+
+#if defined(INT_PWR_PIN)
+  if (static_cast<int>(wakePin_) != INT_PWR_PIN) {
+    ext1_mask |= (1ULL << static_cast<unsigned>(INT_PWR_PIN));
+  }
+#endif
+
+#if defined(MCU_SLEEP_PIN)
+#  if defined(SYSOFF_PIN) && (MCU_SLEEP_PIN == SYSOFF_PIN)
+  // Boot holds SYSOFF as OUTPUT LOW; release so the diode button bus can idle
+  // high (pull-up) and pulse low without fighting a driven low.
+  pinMode(SYSOFF_PIN, INPUT_PULLUP);
+#  endif
+  if (static_cast<int>(wakePin_) != MCU_SLEEP_PIN
+#  if defined(INT_PWR_PIN)
+      && MCU_SLEEP_PIN != INT_PWR_PIN
+#  endif
+      ) {
+    ext1_mask |= (1ULL << static_cast<unsigned>(MCU_SLEEP_PIN));
+  }
+#endif
+
+#if defined(INT_PWR_PIN)
+  // If a wake line is already low when EXT1 armed (e.g. user still pressing a
+  // button after "force sleep" hold), deep sleep exits immediately — wait a
+  // short window for release before configuring RTC.
+  {
+    constexpr uint16_t kMaxWaitMs = 400;
+    const uint32_t waitStartMs = millis();
+    while (((millis() - waitStartMs) < kMaxWaitMs)
+           && (digitalRead(static_cast<uint8_t>(INT_PWR_PIN)) == LOW)) {
+      delay(5);
+    }
+    if (digitalRead(static_cast<uint8_t>(INT_PWR_PIN)) == LOW) {
+      ESP_LOGI("POWER",
+               "Wake arm: INT_PWR_PIN still LOW after %u ms; sleep may bounce\n",
+               static_cast<unsigned>(kMaxWaitMs));
+    }
+  }
+#endif
+
+  for (unsigned bit = 0; bit < 64u; ++bit) {
+    if (((ext1_mask >> bit) & 1ULL) == 0) {
+      continue;
+    }
+    if (!isLineStableHigh(static_cast<uint8_t>(bit), 6, 2)) {
+      ESP_LOGI("POWER",
+               "Deep sleep pre-arm warning; RTC wake GPIO %u not stably high, continuing\n",
+               static_cast<unsigned>(bit));
+    }
   }
 
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
-  rtc_gpio_pullup_en((gpio_num_t)wakePin_);
-  rtc_gpio_pulldown_dis((gpio_num_t)wakePin_);
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
-  const esp_err_t wakeCfg = esp_sleep_enable_ext0_wakeup((gpio_num_t)wakePin_, 0);
+  for (unsigned bit = 0; bit < 64u; ++bit) {
+    if (((ext1_mask >> bit) & 1ULL) == 0) {
+      continue;
+    }
+    const gpio_num_t g = static_cast<gpio_num_t>(bit);
+    rtc_gpio_init(g);
+    rtc_gpio_set_direction(g, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_en(g);
+    rtc_gpio_pulldown_dis(g);
+  }
+
+  const esp_err_t wakeCfg =
+      esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_LOW);
   if (wakeCfg != ESP_OK) {
-     ESP_LOGI("POWER","Wake config failed on GPIO %u, err=%d\n", wakePin_, wakeCfg);
+    ESP_LOGI("POWER", "Wake config failed EXT1 mask=0x%016llx err=%d\n",
+             static_cast<unsigned long long>(ext1_mask), static_cast<int>(wakeCfg));
     return;
   }
 
-  if (!isLineStableHigh(wakePin_, 4, 1)) {
-     ESP_LOGI("POWER","Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n", wakePin_);
+  for (unsigned bit = 0; bit < 64u; ++bit) {
+    if (((ext1_mask >> bit) & 1ULL) == 0) {
+      continue;
+    }
+    if (!isLineStableHigh(static_cast<uint8_t>(bit), 4, 1)) {
+      ESP_LOGI("POWER",
+               "Deep sleep arm warning; GPIO %u dipped low during arm, continuing\n",
+               static_cast<unsigned>(bit));
+    }
   }
 
   if (display_ != nullptr) {
@@ -409,7 +487,8 @@ void SleepService::enterDeepSleep() {
     delay(20);
   }
 
-  ESP_LOGI("POWER","Sleeping; wake on GPIO %u LOW\n", wakePin_);
+  ESP_LOGI("POWER", "Sleeping; EXT1 wake mask=0x%016llx (ANY LOW)\n",
+           static_cast<unsigned long long>(ext1_mask));
   Serial.flush();
   esp_deep_sleep_start();
 }

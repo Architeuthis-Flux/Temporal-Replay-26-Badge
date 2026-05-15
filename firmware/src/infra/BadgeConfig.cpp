@@ -15,6 +15,7 @@
 #include "hardware/LEDmatrix.h"
 #include "hardware/Power.h"
 #include "ir/BadgeIR.h"
+#include "DebugLog.h"
 #include "Filesystem.h"
 #include "hardware/oled.h"
 #include "../BadgeGlobals.h"
@@ -389,7 +390,7 @@ int8_t fontFamilyFromName(const char* name) {
     clearLegacyNetworkFromNvs();
     migrateFlipDelayDefault(values_);
     applyTimezone();
-    Serial.println("Config: loaded from NVS");
+    DBG("Config: loaded from NVS\n");
     return true;
   }
   
@@ -403,7 +404,7 @@ int8_t fontFamilyFromName(const char* name) {
     }
     gPrefs.end();
     saveStringsToNvs();
-    Serial.println("Config: saved to NVS");
+    DBG("Config: saved to NVS\n");
     return true;
   }
 
@@ -630,7 +631,7 @@ int8_t fontFamilyFromName(const char* name) {
     const char* tz = timezone_[0] ? timezone_ : kDefaultTimezone;
     setenv("TZ", tz, 1);
     tzset();
-    Serial.printf("Config: timezone set to %s\n", tz);
+    DBG("Config: timezone set to %s\n", tz);
   }
 
   void Config::setOtaManifestUrl(const char* value) {
@@ -713,14 +714,13 @@ int8_t fontFamilyFromName(const char* name) {
       }
       draw::freeAll(*doc);
       delete doc;
-      Serial.printf("[Nametag] settings anim '%s' missing — disabling custom\n",
-                    aid);
+      DBG("[Nametag] settings anim '%s' missing — disabling custom\n", aid);
       clearNametag();
       return;
     }
 
     if (parse == draw::NametagSettingParse::Invalid) {
-      Serial.printf("[Nametag] invalid nametag setting \"%s\"\n", nametagSetting_);
+      DBG("[Nametag] invalid nametag setting \"%s\"\n", nametagSetting_);
       clearNametag();
       return;
     }
@@ -787,8 +787,7 @@ int8_t fontFamilyFromName(const char* name) {
     }
 
     if (migratedFromLegacy) {
-      Serial.println(
-          "Config: migrating legacy WiFi credentials into slot 0");
+      DBG("Config: migrating legacy WiFi credentials into slot 0\n");
       // setWifiCredentialsAt persists the new slot and the next clean
       // boot will see the modern keys. We then drop the legacy keys
       // explicitly so they don't reappear on subsequent migrations.
@@ -840,7 +839,7 @@ int8_t fontFamilyFromName(const char* name) {
     }
     p.end();
     if (removed) {
-      Serial.println("Config: removed legacy network secrets from NVS");
+      DBG("Config: removed legacy network secrets from NVS\n");
     }
   }
   
@@ -952,7 +951,7 @@ int8_t fontFamilyFromName(const char* name) {
       }
     }
   
-    Serial.printf("Config: parsed %u settings from file\n", matched);
+    DBG("Config: parsed %u settings from file\n", matched);
     return matched > 0;
   }
   
@@ -1201,23 +1200,22 @@ int8_t fontFamilyFromName(const char* name) {
           (values_[kFlipDelayMs] == 0 || values_[kFlipDelayMs] == 3000);
       migrateFlipDelayDefault(values_);
       applyTimezone();
-      Serial.println("Config: loaded from settings.txt");
-      Serial.printf(
-          "Config: community_apps_url = %s (firmware default; "
+      DBG("Config: loaded from settings.txt\n");
+      DBG("Config: community_apps_url = %s (firmware default; "
           "settings.txt value ignored for now)\n",
           communityAppsUrl_);
       if (hadLegacyNetworkSecrets) {
-        Serial.println("Config: removing legacy network secrets from settings.txt");
+        DBG("Config: removing legacy network secrets from settings.txt\n");
         saveToFile();
       } else if (!hadTimezone) {
-        Serial.println("Config: adding default timezone to settings.txt");
+        DBG("Config: adding default timezone to settings.txt\n");
         saveToFile();
       } else if (migratedFlipDelay) {
-        Serial.println("Config: migrated flip_ms default to 100");
+        DBG("Config: migrated flip_ms default to 100\n");
         saveToFile();
       }
     } else if (hadLegacyNetworkSecrets) {
-      Serial.println("Config: replacing legacy network-only settings.txt");
+      DBG("Config: replacing legacy network-only settings.txt\n");
       saveToFile();
     }
     return ok;
@@ -1261,7 +1259,7 @@ int8_t fontFamilyFromName(const char* name) {
     }
   
     snapshotFileStat();
-    Serial.println("Config: saved to settings.txt");
+    DBG("Config: saved to settings.txt\n");
     saveToNvs();
     return true;
   }
@@ -1481,7 +1479,7 @@ int8_t fontFamilyFromName(const char* name) {
         // toggling on does nothing here — the user can press the
         // Connect action or reboot to retry the boot auto-connect.
         if (values_[kWifiEnabled] == 0 && wifiService.isConnected()) {
-          Serial.println("[WiFi] disabled in settings — disconnecting");
+          DBG("[WiFi] disabled in settings — disconnecting\n");
           wifiService.disconnect();
         }
         break;
@@ -1507,7 +1505,7 @@ int8_t fontFamilyFromName(const char* name) {
     apply(kFlipUpThreshold);
     applyTimezone();
     applyNametagSetting();
-    Serial.println("Config: applied all settings");
+    DBG("Config: applied all settings\n");
   }
   
   // ─── File-change detection ───────────────────────────────────────────────────
@@ -1554,7 +1552,7 @@ int8_t fontFamilyFromName(const char* name) {
 
     if (!config_->checkFileChanged()) return;
 
-    Serial.println("ConfigWatcher: settings.txt changed, reloading");
+    DBG("ConfigWatcher: settings.txt changed, reloading\n");
     const bool ok = config_->loadFromFile();
     // loadFromFile() now snapshots file stat unconditionally so the
     // watcher won't re-trigger when the file parses to 0 keys, but we
