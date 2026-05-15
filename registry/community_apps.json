@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generator": "generate_startup_files.py",
+  "generator": "regenerate_community_apps.py",
   "assets": [
     {
       "id": "breaksnake",
@@ -10,7 +10,7 @@
       "dest_dir": "/apps/breaksnake",
       "size": 15391,
       "min_free_bytes": 19487,
-      "description": " import sys ",
+      "description": "BreakSnake app entry point.",
       "files": [
         {
           "path": "/bs_data.py",
@@ -52,7 +52,7 @@
       "dest_dir": "/apps/flappy_asteroids",
       "size": 22866,
       "min_free_bytes": 26962,
-      "description": " import sys ",
+      "description": "Flappy Asteroids app entry point.",
       "files": [
         {
           "path": "/fa_data.py",
@@ -94,7 +94,7 @@
       "dest_dir": "/apps/ir_block_battle",
       "size": 40897,
       "min_free_bytes": 44993,
-      "description": " import sys ",
+      "description": "IR Block Battle app entry point.",
       "files": [
         {
           "path": "/ibb_data.py",
@@ -148,7 +148,7 @@
       "dest_dir": "/apps/ir_remote",
       "size": 91233,
       "min_free_bytes": 95329,
-      "description": " Four-tile launcher that visually mirrors the badge's home GridMenuScreen but lives in MicroPython. Each tile owns a separate consolidated app:",
+      "description": "IR Playground \u2014 home grid.",
       "files": [
         {
           "path": "/data/__init__.py",
@@ -643,6 +643,30 @@
       "size": 509,
       "min_free_bytes": 1533,
       "description": "Optional asset (/docs/README.md)"
+    },
+    {
+      "id": "example-hello",
+      "kind": "app",
+      "name": "Hello Community",
+      "version": "1435cb574d50",
+      "dest_dir": "/apps/example_hello",
+      "size": 5744,
+      "min_free_bytes": 9840,
+      "description": "Tiny example showing how to submit a community app",
+      "files": [
+        {
+          "path": "/icon.py",
+          "size": 1353,
+          "sha256": "23f39e0f0a79c4bcadc80768f2afd87228ef13714240b3fc3b07fcd70705c2b1",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/community/example_hello/icon.py"
+        },
+        {
+          "path": "/main.py",
+          "size": 4391,
+          "sha256": "31f9cb99db638b4e70e49181bdab7f34b32ece9a61309ca9fa8a6f0cd1406409",
+          "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/community/example_hello/main.py"
+        }
+      ]
     },
     {
       "id": "doom1-shareware",
