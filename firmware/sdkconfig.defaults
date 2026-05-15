@@ -1,0 +1,78 @@
+# Cross-profile defaults for the Temporal Badge IDF build.
+# Profile-specific overrides live in sdkconfig.defaults.<profile>.
+
+# Target chip
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_IDF_TARGET_ESP32S3=y
+
+# CPU clock — matches platformio.ini board_build.f_cpu = 240MHz
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# Bootloader / esptool defaults that pioarduino used
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# PSRAM (BOARD_HAS_PSRAM was always on in platformio.ini)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# FATFS as primary VFS — board_build.filesystem = fatfs
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_VOLUME_COUNT=2
+CONFIG_FATFS_SECTOR_4096=y
+
+# Arduino-as-component prerequisites
+CONFIG_FREERTOS_HZ=1000
+# Arduino-esp32 provides app_main that calls setup()/loop() — required since
+# main.cpp uses the Arduino entry-point shape rather than IDF's app_main.
+CONFIG_AUTOSTART_ARDUINO=y
+CONFIG_ARDUINO_LOOP_STACK_SIZE=24576
+CONFIG_ARDUINO_LOOP_TASK_PRIORITY=1
+CONFIG_ARDUINO_RUNNING_CORE=1
+CONFIG_ARDUINO_EVENT_RUNNING_CORE=1
+CONFIG_ARDUINO_UDP_RUNNING_CORE=1
+CONFIG_ARDUINO_USB_CDC_ON_BOOT=y
+
+# USB Serial JTAG console (matches existing sdkconfig.echo-dev)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+
+# Main task stack — keep platformio's "24 KB headroom" for HTTPS/TLS in Messages
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576
+
+# C++ runtime features the codebase uses (exceptions off, RTTI off — matches arduino-esp32 default)
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+
+# WPA3 SAE (the codebase comments specifically mention 10s SAE handshake)
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# Bluetooth — pioarduino's framework-arduinoespressif32-libs/esp32s3 sdkconfig
+# enables CONFIG_BT_ENABLED, and badge code in src/hardware/Power.cpp pulls in
+# esp_bt.h (`esp_bt_controller_disable()` to put BT to sleep). Match that here
+# so the include resolves.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLE_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# mbedTLS – HTTPS for Messages.
+# arduino-esp32's ssl_client.cpp guards its body on
+# MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED — without these flags the file is
+# empty and links fail with `ssl_init` etc. unresolved.
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_PSK_MODES=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_DHE_PSK=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_PSK=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_RSA_PSK=y
