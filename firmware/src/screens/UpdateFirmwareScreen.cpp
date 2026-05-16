@@ -137,9 +137,19 @@ void drawTwoLineError(oled& d, const char* message) {
 
 void drawModalPanel(oled& d, const char* title, const char* line1,
                     const char* line2, const char* line3,
-                    bool /*danger*/ = false) {
+                    bool danger = false) {
   d.setDrawColor(1);
   d.drawRFrame(4, 15, 120, 34, 2);
+  if (danger) {
+    d.drawRFrame(3, 14, 122, 36, 3);
+    d.drawLine(12, 22, 8, 30);
+    d.drawLine(8, 30, 16, 30);
+    d.drawLine(16, 30, 12, 22);
+    d.setDrawColor(0);
+    d.drawPixel(12, 25);
+    d.drawPixel(12, 28);
+    d.setDrawColor(1);
+  }
   d.setFontPreset(FONT_TINY);
   drawCentered(d, 24, title ? title : "");
   if (line1) drawCentered(d, 34, line1);
