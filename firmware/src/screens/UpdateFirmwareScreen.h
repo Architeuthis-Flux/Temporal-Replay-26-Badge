@@ -45,6 +45,7 @@ class UpdateFirmwareScreen : public Screen {
 
   Phase phase_ = Phase::kIdle;
   uint32_t spinnerStartMs_ = 0;
+  uint32_t installStartMs_ = 0;
   size_t installBytes_ = 0;
   size_t installTotal_ = 0;
   bool installDone_ = false;

@@ -37,6 +37,116 @@ void formatRelativeTime(time_t epoch, char* buf, size_t cap) {
   }
 }
 
+int clampInt(int v, int lo, int hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+void drawCentered(oled& d, int y, const char* text) {
+  if (!text) return;
+  const int w = d.getStrWidth(text);
+  d.drawStr((128 - w) / 2, y, text);
+}
+
+void drawSimpleSpinner(oled& d, int cx, int cy, uint8_t phase) {
+  static constexpr int8_t kPts[4][2] = {
+      {0, -5}, {5, 0}, {0, 5}, {-5, 0},
+  };
+  d.setDrawColor(1);
+  for (uint8_t i = 0; i < 4; ++i) {
+    const int px = cx + kPts[i][0];
+    const int py = cy + kPts[i][1];
+    if (i == (phase & 3)) {
+      d.drawBox(px - 1, py - 1, 3, 3);
+    } else {
+      d.drawPixel(px, py);
+    }
+  }
+}
+
+void drawCleanProgress(oled& d, int x, int y, int w, int h,
+                       size_t bytes, size_t total, uint8_t phase) {
+  d.setDrawColor(1);
+  d.drawRFrame(x, y, w, h, 3);
+
+  const int innerX = x + 2;
+  const int innerY = y + 2;
+  const int innerW = w - 4;
+  const int innerH = h - 4;
+  if (innerW <= 0 || innerH <= 0) return;
+
+  if (total > 0) {
+    int fill = static_cast<int>((bytes * innerW) / total);
+    fill = clampInt(fill, 0, innerW);
+    if (fill > 0) {
+      const int radius = (fill >= innerH) ? 2 : 1;
+      d.setClipWindow(innerX, innerY, innerX + fill, innerY + innerH);
+      d.drawRBox(innerX, innerY, fill + 2, innerH, radius);
+
+      // A small inverted shimmer gives motion without cluttering the
+      // screen. It stays clipped to the filled portion of the rounded bar.
+      d.setDrawColor(0);
+      for (int sx = innerX - innerH + (phase % 8); sx < innerX + fill; sx += 8) {
+        d.drawLine(sx, innerY + innerH - 1, sx + innerH - 1, innerY);
+      }
+      d.setDrawColor(1);
+      d.setMaxClipWindow();
+
+      const int glint = innerX + fill - 1;
+      if (glint >= innerX && glint < innerX + innerW) {
+        d.drawVLine(glint, innerY + 1, innerH - 2);
+      }
+    }
+  } else {
+    const int blockW = 24;
+    const int travel = innerW + blockW;
+    const int bx = innerX - blockW + ((phase * 2) % travel);
+    d.setClipWindow(innerX, innerY, innerX + innerW, innerY + innerH);
+    d.drawRBox(bx, innerY, blockW, innerH, 2);
+    d.setMaxClipWindow();
+  }
+}
+
+void drawTwoLineError(oled& d, const char* message) {
+  char first[80];
+  char second[80];
+  first[0] = '\0';
+  second[0] = '\0';
+  std::snprintf(first, sizeof(first), "%s", message && message[0] ? message : "Unknown error");
+
+  char* split = nullptr;
+  for (char* p = first; *p; ++p) {
+    if (*p == ' ') {
+      *p = '\0';
+      if (d.getStrWidth(first) <= 120 && d.getStrWidth(p + 1) <= 120) {
+        split = p;
+      }
+      *p = ' ';
+    }
+  }
+  if (split) {
+    *split = '\0';
+    std::snprintf(second, sizeof(second), "%s", split + 1);
+  }
+  OLEDLayout::fitText(d, first, sizeof(first), 120);
+  OLEDLayout::fitText(d, second, sizeof(second), 120);
+  d.drawStr(4, 31, first);
+  if (second[0]) d.drawStr(4, 41, second);
+}
+
+void drawModalPanel(oled& d, const char* title, const char* line1,
+                    const char* line2, const char* line3,
+                    bool /*danger*/ = false) {
+  d.setDrawColor(1);
+  d.drawRFrame(4, 15, 120, 34, 2);
+  d.setFontPreset(FONT_TINY);
+  drawCentered(d, 24, title ? title : "");
+  if (line1) drawCentered(d, 34, line1);
+  if (line2) drawCentered(d, 43, line2);
+  if (line3) drawCentered(d, 52, line3);
+}
+
 }  // namespace
 
 void UpdateFirmwareScreen::onEnter(GUIManager& /*gui*/) {
@@ -82,16 +192,32 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
   d.setFontPreset(FONT_TINY);
 
   if (phase_ == Phase::kChecking) {
-    d.drawStr(2, 24, "Checking GitHub for new");
-    d.drawStr(2, 33, "firmware release...");
-    OLEDLayout::drawBusySpinner(d, 64, 46,
-                                static_cast<uint8_t>((millis() / 80) & 7));
+    const uint8_t phase = static_cast<uint8_t>((millis() - spinnerStartMs_) / 80);
+    drawSimpleSpinner(d, 64, 28, phase);
+    d.setFontPreset(FONT_TINY);
+    drawCentered(d, 43, "Checking GitHub...");
     OLEDLayout::drawNavFooter(d, "Please wait");
     return;
   }
 
   if (phase_ == Phase::kInstalling) {
-    d.drawStr(2, 24, "Installing...");
+    const uint8_t phase = static_cast<uint8_t>((millis() - installStartMs_) / 70);
+    const uint8_t pct = installTotal_ > 0
+                            ? static_cast<uint8_t>(clampInt(
+                                  (int)((installBytes_ * 100u) / installTotal_), 0, 100))
+                            : 0;
+    d.setFontPreset(FONT_TINY);
+    drawCentered(d, 18, "Installing firmware");
+
+    char pctBuf[8];
+    if (installTotal_ > 0) {
+      std::snprintf(pctBuf, sizeof(pctBuf), "%u%%", (unsigned)pct);
+    } else {
+      std::snprintf(pctBuf, sizeof(pctBuf), "--%%");
+    }
+    d.setFontPreset(FONT_SMALL);
+    drawCentered(d, 31, pctBuf);
+
     char szBuf[40];
     if (installTotal_ > 0) {
       std::snprintf(szBuf, sizeof(szBuf), "%u / %u KB",
@@ -101,74 +227,51 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
       std::snprintf(szBuf, sizeof(szBuf), "%u KB",
                     (unsigned)(installBytes_ / 1024));
     }
-    d.drawStr(2, 33, szBuf);
-    // Progress bar
-    constexpr int kBarX = 4, kBarY = 40, kBarW = 120, kBarH = 8;
-    d.drawRFrame(kBarX, kBarY, kBarW, kBarH, 1);
-    if (installTotal_ > 0) {
-      int fill = static_cast<int>(((installBytes_ * (kBarW - 2)) /
-                                   installTotal_));
-      if (fill < 0) fill = 0;
-      if (fill > kBarW - 2) fill = kBarW - 2;
-      d.drawBox(kBarX + 1, kBarY + 1, fill, kBarH - 2);
-    } else {
-      // Indeterminate: barber-pole.
-      uint32_t off = (millis() / 60) % (kBarW - 8);
-      d.drawBox(kBarX + 1 + off, kBarY + 1, 6, kBarH - 2);
-    }
+    d.setFontPreset(FONT_TINY);
+    drawCentered(d, 41, szBuf);
+    drawCleanProgress(d, 16, 47, 96, 6, installBytes_, installTotal_, phase);
     OLEDLayout::drawNavFooter(d, "Do not unplug");
     return;
   }
 
   if (phase_ == Phase::kError) {
-    d.drawStr(2, 22, "Update failed:");
-    char buf[80];
-    std::snprintf(buf, sizeof(buf), "%s", ota::lastErrorMessage());
-    OLEDLayout::fitText(d, buf, sizeof(buf), 124);
-    d.drawStr(2, 32, buf);
+    d.setFontPreset(FONT_TINY);
+    drawCentered(d, 22, "Update failed");
+    drawTwoLineError(d, ota::lastErrorMessage());
     OLEDLayout::drawNavFooter(d, "Any:Back");
     return;
   }
 
-  // Idle. Three lines of status, plus the primary action footer.
+  // Idle. Keep the screen sparse: versions, status, actions.
   char line[48];
-  std::snprintf(line, sizeof(line), "Current:  %s", FIRMWARE_VERSION);
-  d.drawStr(2, 18, line);
+  d.setFontPreset(FONT_TINY);
+  std::snprintf(line, sizeof(line), "Current: %s", FIRMWARE_VERSION);
+  d.drawStr(4, 20, line);
 
   const char* tag = ota::latestKnownTag();
-  if (tag[0]) {
-  std::snprintf(line, sizeof(line), "Latest:   %s", tag);
-  } else {
-  std::snprintf(line, sizeof(line), "Latest: (not checked)");
-  }
-  d.drawStr(2, 27, line);
+  std::snprintf(line, sizeof(line), "Latest:  %s", tag[0] ? tag : "(not checked)");
+  OLEDLayout::fitText(d, line, sizeof(line), 120);
+  d.drawStr(4, 30, line);
 
-  // Row 3 (y=36): status warning if any; otherwise the friendlier
-  // "Last check: <age>". Warnings displace the staleness line because
-  // they're more actionable.
   const bool wifiUp = wifiService.isConnected();
   const char* warning = nullptr;
   if (!wifiUp) {
-    warning = "WiFi off — connect first";
+    warning = "WiFi off - connect first";
   } else if (lastCheckResult_ == ota::CheckResult::kNoMatchingAsset) {
     warning = "No asset for this build";
   } else if (lastCheckResult_ == ota::CheckResult::kOkOlder) {
     warning = "Newer than published";
   }
   if (warning) {
-    d.drawStr(2, 36, warning);
+    std::snprintf(line, sizeof(line), "%s", warning);
   } else {
     char age[20];
     formatRelativeTime(ota::lastCheckEpoch(), age, sizeof(age));
     std::snprintf(line, sizeof(line), "Last check: %s", age);
-    d.drawStr(2, 36, line);
   }
+  OLEDLayout::fitText(d, line, sizeof(line), 120);
+  d.drawStr(4, 40, line);
 
-  // Row 4 (y=45): filesystem capacity. Always shown when the FS is
-  // mounted. When the partition has unclaimed space (post-OTA bump),
-  // append an X-glyph expand affordance routed through drawInlineHint
-  // so the letter becomes the X button glyph (project convention —
-  // see firmware/src/ui/ButtonGlyphs.h).
   const size_t volBytes = ota::ffatVolumeBytes();
   if (volBytes > 0) {
     char szLine[48];
@@ -181,7 +284,7 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
     } else {
       std::snprintf(szLine, sizeof(szLine), "FS: %.1f MB", curMb);
     }
-    ButtonGlyphs::drawInlineHint(d, 2, 45, szLine);
+    ButtonGlyphs::drawInlineHint(d, 4, 50, szLine);
   }
 
   // Footer: D-pad Up = Check, D-pad Right = Install. Drawn through
@@ -209,7 +312,6 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
 
 void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
   OLEDLayout::drawStatusHeader(d, "EXPAND STORAGE");
-  d.setFontPreset(FONT_TINY);
 
   const unsigned partMb =
       static_cast<unsigned>(ota::ffatPartitionBytes() / (1024u * 1024u));
@@ -217,38 +319,33 @@ void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
   if (!secondConfirm) {
     char buf[48];
     std::snprintf(buf, sizeof(buf), "Reformat to %u MB?", partMb);
-    d.drawStr(2, 18, buf);
-    d.drawStr(2, 28, "ALL user data is wiped:");
-    d.drawStr(2, 37, "  contacts, nametags,");
-    d.drawStr(2, 46, "  WAD, settings.txt");
+    drawModalPanel(d, "Expand storage", buf,
+                   "This wipes user data.",
+                   nullptr, true);
     OLEDLayout::drawActionFooter(d, "Continue", "Confirm");
     return;
   }
 
-  d.drawStr(2, 18, "ARE YOU SURE?");
-  d.drawStr(2, 30, "This cannot be undone.");
-  d.drawStr(2, 42, "The badge will reboot");
-  d.drawStr(2, 51, "after formatting.");
+  drawModalPanel(d, "Are you sure?", "This cannot be undone.",
+                 "Badge reboots after format.",
+                 nullptr, true);
   OLEDLayout::drawActionFooter(d, "WIPE & EXPAND", "Wipe");
 }
 
 void UpdateFirmwareScreen::renderReinstallConfirm(oled& d) {
   OLEDLayout::drawStatusHeader(d, "REINSTALL?");
-  d.setFontPreset(FONT_TINY);
 
   const char* tag = ota::latestKnownTag();
   char line[48];
-  std::snprintf(line, sizeof(line), "Current:  %s", FIRMWARE_VERSION);
-  d.drawStr(2, 18, line);
-  std::snprintf(line, sizeof(line), "Latest:   %s",
+  std::snprintf(line, sizeof(line), "%s -> %s", FIRMWARE_VERSION,
                 tag[0] ? tag : "(unknown)");
-  d.drawStr(2, 27, line);
 
   // The user requested an install even though we're at-or-ahead of
   // the published tag. Make the consequences explicit so a fat-fingered
   // D-pad press doesn't trigger a multi-MB flash + reboot.
-  d.drawStr(2, 39, "Already at this version");
-  d.drawStr(2, 48, "or newer. Reinstall?");
+  drawModalPanel(d, "Reinstall firmware", line,
+                 "Already current or newer.",
+                 nullptr);
   OLEDLayout::drawActionFooter(d, "Reinstall", "Confirm");
 }
 
@@ -401,6 +498,7 @@ void UpdateFirmwareScreen::installProgressCb(
 
 void UpdateFirmwareScreen::runInstall() {
   phase_ = Phase::kInstalling;
+  installStartMs_ = millis();
   installBytes_ = 0;
   installTotal_ = ota::latestKnownAssetSize();
   installDone_ = false;
@@ -419,9 +517,11 @@ void UpdateFirmwareScreen::runInstall() {
   if (installResult_ == ota::InstallResult::kOk) {
     // Final paint then reboot.
     d.clearBuffer();
-    OLEDLayout::drawStatusHeader(d, "FIRMWARE UPDATE");
+    OLEDLayout::drawStatusHeader(d, "UPDATE COMPLETE");
     d.setFontPreset(FONT_SMALL);
-    d.drawStr(20, 30, "Rebooting...");
+    drawCentered(d, 32, "Rebooting...");
+    d.setFontPreset(FONT_TINY);
+    drawCentered(d, 44, "Firmware installed");
     d.sendBuffer();
     delay(800);
     ESP.restart();
