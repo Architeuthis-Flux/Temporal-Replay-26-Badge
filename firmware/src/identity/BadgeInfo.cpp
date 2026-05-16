@@ -1,6 +1,7 @@
 #include "BadgeInfo.h"
 
 #include "../infra/Filesystem.h"
+#include "../infra/PsramAllocator.h"
 
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -108,7 +109,7 @@ bool loadFromNvs(BadgeInfo::Fields& out) {
         p.end();
         return false;
     }
-    char* buf = static_cast<char*>(malloc(len + 1));
+    char* buf = static_cast<char*>(BadgeMemory::allocPreferPsram(len + 1));
     if (!buf) {
         p.end();
         return false;

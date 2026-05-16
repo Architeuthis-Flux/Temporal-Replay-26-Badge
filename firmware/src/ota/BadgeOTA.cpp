@@ -10,11 +10,22 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <esp_heap_caps.h>
+
+#include "AssetRegistry.h"
 #include "OTAHttp.h"
 #include "../api/WiFiService.h"
 #include "../hardware/Power.h"
 #include "../infra/DebugLog.h"
+#include "../infra/PsramAllocator.h"
 #include "../identity/BadgeVersion.h"
+
+#if __has_include(<micropython_embed.h>)
+extern "C" void mpy_collect(void);
+#define BADGEOTA_HAS_MPY_COLLECT 1
+#else
+#define BADGEOTA_HAS_MPY_COLLECT 0
+#endif
 
 extern "C" {
 #include "lib/oofatfs/ff.h"
@@ -23,6 +34,43 @@ int replay_bdev_reformat_and_reboot(void);
 }
 
 extern BatteryGauge batteryGauge;
+
+namespace {
+
+void logOtaCheckHeap(const char* phase) {
+  // Match Arduino ESP.getFreeHeap() / getMinFreeHeap() / getMaxAllocHeap()
+  // (internal DRAM only). Do not use esp_get_minimum_free_heap_size() here —
+  // it uses MALLOC_CAP_DEFAULT and can include SPIRAM, so it misleadingly
+  // stays ~MB while internal free is ~100 KiB.
+  const uint32_t intFree = static_cast<uint32_t>(ESP.getFreeHeap());
+  const uint32_t intMinEver = static_cast<uint32_t>(ESP.getMinFreeHeap());
+  const uint32_t intLargest = static_cast<uint32_t>(ESP.getMaxAllocHeap());
+  const size_t psramTotal =
+      heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  uint32_t psramFree = 0;
+  uint32_t psramLargest = 0;
+  if (psramTotal > 0) {
+    psramFree = static_cast<uint32_t>(
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    psramLargest = static_cast<uint32_t>(
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  Serial.printf(
+      "[ota-check] %s: int_free=%u int_min_ever=%u int_largest=%u "
+      "psram_total=%u psram_free=%u psram_largest=%u\n",
+      phase ? phase : "?", intFree, intMinEver, intLargest,
+      static_cast<unsigned>(psramTotal), psramFree, psramLargest);
+}
+
+uint8_t* otaInstallChunkScratch() {
+  static uint8_t* p = nullptr;
+  if (!p) {
+    p = static_cast<uint8_t*>(BadgeMemory::allocPreferPsram(4096));
+  }
+  return p;
+}
+
+}  // namespace
 
 namespace ota {
 
@@ -124,6 +172,23 @@ bool batteryAllowsInstall() {
 
 }  // namespace
 
+void prepareFirmwareInstallHeap() {
+  constexpr uint32_t kRegistryWaitMs = 120000;
+  const uint32_t t0 = millis();
+  while (registry::isRefreshing()) {
+    if ((uint32_t)(millis() - t0) >= kRegistryWaitMs) {
+      DBG("[ota] prepareInstall: registry refresh still running after %u ms\n",
+          (unsigned)kRegistryWaitMs);
+      break;
+    }
+    delay(20);
+    yield();
+  }
+#if BADGEOTA_HAS_MPY_COLLECT
+  mpy_collect();
+#endif
+}
+
 void begin() {
   if (sBegun) return;
   sBegun = true;
@@ -161,20 +226,26 @@ CheckResult checkNow(bool ignoreCooldown) {
                 "https://api.github.com/repos/%s/releases/latest",
                 OTA_GITHUB_REPO);
 
+  logOtaCheckHeap("pre-github-http");
+
   char* body = nullptr;
   size_t bodyLen = 0;
   HttpResult httpRes = getJson(url, &body, &bodyLen, kJsonMaxBytes, 20000);
   if (!httpRes.ok) {
+    logOtaCheckHeap("post-github-http-fail");
     setError(httpRes.error);
     if (body) std::free(body);
     return CheckResult::kNetworkError;
   }
 
+  logOtaCheckHeap("post-github-http-ok");
+
   // GitHub release JSON. We only care about `tag_name` + the asset
   // whose `name` matches OTA_ASSET_NAME.
-  DynamicJsonDocument doc(8192);
+  BadgeMemory::PsramJsonDocument doc(8192);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
+    logOtaCheckHeap("post-json-parse-fail");
     char buf[64];
     std::snprintf(buf, sizeof(buf), "json parse: %s", err.c_str());
     setError(buf);
@@ -228,6 +299,8 @@ CheckResult checkNow(bool ignoreCooldown) {
   persistCache();
   std::free(body);
 
+  logOtaCheckHeap("check-complete");
+
   const int cmp = compareSemver(sLatestTag, FIRMWARE_VERSION);
   DBG("[ota] latest=%s current=%s cmp=%d size=%u\n",
                 sLatestTag, FIRMWARE_VERSION, cmp, (unsigned)sAssetSize);
@@ -262,6 +335,8 @@ InstallResult installCached(InstallProgressCb cb, void* user) {
     return InstallResult::kWifiUnavailable;
   }
 
+  prepareFirmwareInstallHeap();
+
   // Hold WiFi awake + CPU at 240 MHz across the multi-MB firmware
   // pull. Same rationale as the AssetRegistry installer — modem sleep
   // and CPU scaling between chunks cap throughput at single-digit
@@ -284,12 +359,15 @@ InstallResult installCached(InstallProgressCb cb, void* user) {
     return InstallResult::kUpdateBeginFailed;
   }
 
-  // 4 KB chunks — bigger than the historic 2 KB without bloating the
-  // worker's stack budget. Update.write batches into the flash sector
-  // size internally so larger reads here mostly buy us fewer
-  // HTTPClient::available polls and fewer SHA/CRC update calls inside
-  // arduino-esp32's Update layer.
-  uint8_t chunk[4096];
+  uint8_t* chunk = otaInstallChunkScratch();
+  if (!chunk) {
+    Update.abort();
+    setError("install chunk alloc failed");
+    return InstallResult::kHttpError;
+  }
+
+  // 4 KiB read buffer — PSRAM-backed scratch so this path does not consume
+  // 4 KiB of the Arduino loop stack during a multi-MB flash write loop.
   size_t written = 0;
   uint32_t lastReport = 0;
   while (true) {

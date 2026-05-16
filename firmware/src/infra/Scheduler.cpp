@@ -2,10 +2,6 @@
 #include <cstring>
 #include "DebugLog.h"
 
-namespace {
-constexpr uint32_t kSlowServiceWarnMs = 40;
-}
-
 Scheduler::Scheduler()
     : services_{},
       serviceCount_(0),
@@ -52,16 +48,7 @@ void Scheduler::runOnce() {
       continue;
     }
 
-    const uint32_t startMs = millis();
     service->service();
-    const uint32_t elapsedMs = millis() - startMs;
-    if (elapsedMs >= kSlowServiceWarnMs) {
-      DBG("[Scheduler] slow service=%s priority=%u elapsed=%lu ms loop=%lu\n",
-                    service->name() ? service->name() : "?",
-                    (unsigned)services_[i].priority,
-                    (unsigned long)elapsedMs,
-                    (unsigned long)loopCounter_);
-    }
   }
 }
 
