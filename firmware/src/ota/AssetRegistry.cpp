@@ -482,12 +482,13 @@ bool beginRefreshAsync(bool ignoreCooldown) {
     return false;  // already running
   }
   AsyncCtx* ctx = new AsyncCtx{ignoreCooldown};
-  // 12 KB stack: HTTPClient + the 64 KB JsonDocument is PSRAM-backed
+  // 8 KB stack: HTTPClient + the 64 KB JsonDocument is PSRAM-backed
   // (BadgeMemory::PsramJsonDocument), but the parse + WiFi stack
   // frames still need a bit of internal RAM headroom. Core 0 keeps
-  // it off the GUI loop on Core 1. Priority 1 = same as Arduino loop.
+  // it off the GUI loop on Core 1 while keeping TLS headroom on badges
+  // that have just completed the boot-edge OTA check.
   BaseType_t ok = xTaskCreatePinnedToCore(
-      &refreshTask, "registry_refresh", 12 * 1024, ctx, 1, nullptr, 0);
+      &refreshTask, "registry_refresh", 8 * 1024, ctx, 1, nullptr, 0);
   if (ok != pdPASS) {
     delete ctx;
     sRefreshing.store(false);

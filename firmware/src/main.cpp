@@ -70,7 +70,7 @@ TaskHandle_t gIrTaskHandle = NULL;
 
 bool gWakeOnlyMode = false;
 
-static constexpr size_t kMallocPreferInternalBelowBytes = 1024;
+static constexpr size_t kMallocPreferInternalBelowBytes = 0;
 static constexpr size_t kSerialRxBufferBytes = 4096;
 static size_t sBootPsramBytes = 0;
 static bool sBootPsramPolicyApplied = false;
