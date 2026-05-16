@@ -12,24 +12,30 @@ name: release-firmware
 # Asset Library can fetch them from
 # `https://github.com/<owner>/<repo>/releases/latest/download/<name>`.
 #
-# Before building, sync_firmware_release.sh ensures firmware/VERSION
-# matches the release tag (semver, optional leading v) and force-moves
-# the tag to the current main HEAD so re-runs pick up newer commits.
-#
 # See firmware/docs/OTA-MAINTAINER.md § 2 for the full workflow.
 #
 # Triggers:
-#   - Automatically when a release is published.
-#   - Manually via the Actions tab (workflow_dispatch).
+#   - Every push to main → resolve_push_tag.sh decides whether to
+#     reuse the current firmware/VERSION (if the tag is unused) or
+#     auto-bump the patch component. Then sync_firmware_release.sh
+#     points the tag at the new main HEAD, the firmware is built,
+#     and softprops/action-gh-release publishes the release (creating
+#     it if it didn't already exist). The bot's bump commit carries
+#     `[skip ci]` so this is a single-step loop, not a runaway.
+#   - When a release is published manually → builds against that tag.
+#   - workflow_dispatch with a tag input → rebuilds an existing tag,
+#     repointing it at the latest main HEAD.
 
 on:
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.9); must already exist; retagged to main HEAD on each run"
-        required: true
+        description: "Release tag (e.g. v0.2.9); leave empty on push to auto-resolve"
+        required: false
 
 permissions:
   contents: write   # VERSION commit, tag move, release asset upload
@@ -44,16 +50,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine release tag
+      - name: Resolve release tag
+        # On push: read firmware/VERSION; auto-bump patch (and commit)
+        # if the tag already exists. On release/dispatch: take the
+        # provided tag verbatim. The sync step downstream is fed the
+        # result of whichever path we took.
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
+          case "${{ github.event_name }}" in
+            release)
+              echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ -n "${{ github.event.inputs.tag }}" ]; then
+                echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+              else
+                bash scripts/resolve_push_tag.sh
+              fi
+              ;;
+            push)
+              bash scripts/resolve_push_tag.sh
+              ;;
+            *)
+              echo "error: unsupported event ${{ github.event_name }}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Sync VERSION with tag and move tag to main HEAD
+        # Idempotent: brings firmware/VERSION into agreement with the
+        # tag and force-points the tag at the current main HEAD so a
+        # re-run picks up newer commits. Safe to call on a fresh tag
+        # (no-op for the bump because resolve_push_tag.sh already did
+        # it).
         id: sync
         run: bash scripts/sync_firmware_release.sh "${{ steps.tag.outputs.tag }}"
 
@@ -140,10 +169,17 @@ jobs:
       - name: List release artifacts
         run: ls -lh artifacts/release/
 
-      - name: Upload assets to release
+      - name: Publish release (create if missing) and upload assets
+        # softprops/action-gh-release@v2 creates the GitHub release
+        # when one doesn't already exist for tag_name — that's how the
+        # push-triggered path becomes "first push to a new VERSION
+        # auto-publishes the release". `generate_release_notes: true`
+        # populates the body from commits since the previous tag.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.sync.outputs.tag }}
+          name: ${{ steps.sync.outputs.tag }}
+          generate_release_notes: true
           # Glob — picks up firmware.bin plus every file the
           # release-asset staging step produced (doom1.wad, etc.).
           files: artifacts/release/*

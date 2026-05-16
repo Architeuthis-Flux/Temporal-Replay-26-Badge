@@ -86,28 +86,47 @@ need stricter pre-release ordering, edit `parseSemver` in
 
 ### Releasing a new firmware version
 
-1. Bump `firmware/VERSION`:
-   ```
-   cd firmware && ./scripts/bump_version.sh 0.2.0
-   ```
-   (or just edit the file by hand).
-2. Commit and push.
-3. Create a GitHub release tagged `0.2.0` (the leading `v` is
-   optional — both work).
-4. The `release-firmware.yml` Action runs automatically; within a
-   few minutes the release will have a `firmware.bin` asset.
-5. Badges in the field will pick it up on their next WiFi-up edge —
-   the firmware fires one OTA check + one community-apps refresh
-   exactly once per reconnect (the previous 24 h cooldown was removed
-   in firmware v0.2.3). A user can also force a recheck from the
-   **FW UPDATE** screen by pressing D-pad Up, or trigger an install
-   with D-pad Right when an update is cached.
+The `release-firmware.yml` Action runs on **every push to `main`** and
+creates a release automatically. You don't have to touch the GitHub
+release UI for routine patch bumps.
+
+How the auto-resolve works (`scripts/resolve_push_tag.sh`):
+
+1. Reads `firmware/VERSION` (e.g. `0.2.9`).
+2. If `v0.2.9` doesn't exist on origin yet, that's the new tag.
+3. If it already exists, bumps the patch component to `0.2.10`,
+   commits with `[skip ci]`, and pushes — so the next release tag is
+   `v0.2.10`. GitHub's native `[skip ci]` rule prevents the bot's
+   commit from triggering another workflow run.
+4. The build then runs on the resulting commit, the tag is
+   force-pointed at it, and `softprops/action-gh-release` creates the
+   release (with auto-generated notes from commits since the previous
+   tag) if it doesn't already exist.
+
+So in practice:
+
+- **Routine patch release**: just push to `main`. The action picks the
+  next patch number.
+- **Minor / major bump**: edit `firmware/VERSION` (or run
+  `firmware/scripts/bump_version.sh minor`), commit, and push. Because
+  the new tag won't exist yet, the action uses your version verbatim.
+- **Rebuild an existing tag**: trigger the workflow manually from the
+  Actions tab and supply the tag (e.g. `v0.2.9`). The tag will be
+  force-moved to the latest `main` HEAD before the rebuild.
+
+Badges in the field pick the new release up on their next WiFi-up
+edge — the firmware fires one OTA check + one community-apps refresh
+exactly once per reconnect (the previous 24 h cooldown was removed in
+firmware v0.2.3). A user can also force a recheck from the **FW
+UPDATE** screen by pressing D-pad Up, or trigger an install with
+D-pad Right when an update is cached.
 
 If something goes wrong with the Action:
 
 - Check the **Actions** tab on GitHub for failure details.
-- You can re-run the Action manually from `workflow_dispatch` —
-  pass the existing tag name.
+- Re-run the workflow via `workflow_dispatch`. Leave the tag input
+  empty to re-resolve via `firmware/VERSION`, or supply an existing
+  tag to rebuild it.
 - As a last-ditch fallback, build locally and drop the `.bin` onto
   the release manually:
   ```
