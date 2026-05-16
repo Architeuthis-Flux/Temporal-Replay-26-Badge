@@ -86,6 +86,10 @@ void OTAService::service() {
     case 1: {
       if ((uint32_t)(now - sPostConnectMarkMs) < kWifiOtaDeferMs) return;
       if (!tlsHeapHeadroomOk()) return;
+      // Don't start the OTA HTTP call while a community-registry
+      // async worker (Core 0) is already holding a TLS session — same
+      // mbedTLS internal-heap contention as phase 2→3 above.
+      if (registry::isRefreshing()) return;
       DBG("[ota-svc] WiFi up — OTA check (deferred)\n");
       ota::checkNow(true);
       sPostConnectPhase = 2;

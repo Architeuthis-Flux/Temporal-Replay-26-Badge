@@ -166,6 +166,31 @@ jobs:
           mkdir -p artifacts/release
           cp firmware/.pio/build/echo/firmware.bin artifacts/release/firmware.bin
 
+      - name: Build full-flash recovery image (16 MB)
+        # Single-file dump of the whole 16 MB SPI flash: bootloader +
+        # partition table + boot_app0 + firmware + fatfs (with the
+        # DOOM WAD and every in-repo community app preloaded into
+        # /apps/<id>/). End-user recovery is then a single esptool
+        # write_flash call — no source checkout, no PlatformIO. See
+        # firmware/docs/OTA-MAINTAINER.md#recovery.
+        #
+        # The release-bundled DOOM WAD lives at
+        # artifacts/release/doom1.wad (staged by the previous step).
+        # Drop it into firmware/data/ so buildfs picks it up; the
+        # script's own community-app staging handles the apps half.
+        run: |
+          set -euo pipefail
+          if [ -f artifacts/release/doom1.wad ]; then
+            mkdir -p firmware/data
+            cp artifacts/release/doom1.wad firmware/data/doom1.wad
+            echo "staged doom1.wad ($(stat -c%s firmware/data/doom1.wad) bytes)"
+          else
+            echo "warning: no doom1.wad in artifacts/release — recovery image will be DOOM-less"
+          fi
+          python3 firmware/scripts/build_recovery_image.py \
+            --env echo \
+            --out artifacts/release/temporal-badge-full-flash-16mb.bin
+
       - name: List release artifacts
         run: ls -lh artifacts/release/
 

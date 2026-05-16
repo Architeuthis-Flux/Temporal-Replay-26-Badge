@@ -60,6 +60,39 @@ enum class InstallResult : uint8_t {
   kEndFailed,
 };
 
+// ── Partition table migration ─────────────────────────────────────────────
+//
+// In-place layout swap from `_doom` (6.0 MB ffat) to `_ver2`
+// (6.875 MB ffat). The firmware binary itself is layout-agnostic
+// (uses `esp_partition_find_*` for every data partition) and both
+// layouts keep `app0` at offset 0x10000, so the running app at
+// `app0` continues to boot under either partition table.
+//
+// `migrateToExpandedLayout()` rewrites the partition table sector at
+// flash offset 0x8000 with the embedded `_ver2` blob, verifies it,
+// then `ESP.restart()`s. The new boot will see an unformatted ffat
+// at the new offset; the FATFS mount path already reformats on
+// failed mount, so the badge comes up clean with the larger volume.
+//
+// Recovery: a power cut during the ~200 ms erase+write window can
+// brick the partition table. The fallback is the same as a fresh
+// USB flash — run `firmware/scripts/erase_and_flash_expanded.sh`
+// (or `erase_and_flash.sh` for the default layout). The UI shows a
+// recovery QR before asking for confirmation so the user can keep
+// the recovery URL on their phone before kicking off the migration.
+enum class MigrationResult : uint8_t {
+  kOk,                  // Partition table written + verified; reboot pending
+  kAlreadyExpanded,     // Layout is already `_ver2`; nothing to do
+  kBatteryTooLow,       // < 50 % and not on charger
+  kNotRunningFromApp0,  // Active app is in the `app1` slot — refuse
+                        // (app1 offset differs between the two layouts)
+  kEmbedMissing,        // partitions_ver2.bin not embedded in this build
+  kFlashReadFailed,     // Couldn't snapshot the old table
+  kFlashEraseFailed,    // Erase of sector @ 0x8000 failed before write
+  kFlashWriteFailed,    // Write failed; rollback attempted
+  kVerifyFailed,        // Readback didn't match; rollback attempted
+};
+
 struct InstallProgress {
   size_t bytesWritten;
   size_t totalBytes;     // 0 if unknown
@@ -159,9 +192,44 @@ bool canOfferLayoutMigration();
 bool layoutJustChanged();
 void acknowledgeLayoutChange();
 
+// True once after a boot reached via `ESP.restart()` from
+// `migrateToExpandedLayout()`. Distinguishes "we just completed the
+// in-place partition swap the user confirmed" from the broader
+// `layoutJustChanged()` signal (which also fires after USB
+// reflashing a different layout). Backed by an `RTC_NOINIT_ATTR`
+// magic that survives soft-reset but clears on power-cycle: a
+// brownout mid-migration will NOT trigger this on the recovery boot.
+// Cross-checked against `esp_reset_reason() == ESP_RST_SW` so an
+// unrelated RTC artefact can't produce a false positive. Cleared
+// by `acknowledgeMigrationBoot()`. Use this to auto-navigate to a
+// success panel at boot; use `layoutJustChanged()` for the
+// passive "huh, layout changed" path when the user happens to open
+// FW UPDATE.
+bool justRebootedFromLayoutMigration();
+void acknowledgeMigrationBoot();
+
 // Reformats `ffat` and reboots. Synchronous; does NOT return on
 // success. Wipes ALL user data on `/`. Caller must have already
 // confirmed the destructive action with the user.
 void reformatFfatAndReboot();
+
+// Atomically (modulo a brief power-loss window) rewrites the
+// partition table sector at 0x8000 with the embedded `_ver2` blob,
+// then `ESP.restart()`s. Does NOT return on success. See
+// `MigrationResult` above for failure modes and recovery notes.
+// Caller MUST have confirmed the destructive action with the user
+// (this also wipes ffat because the partition moves).
+MigrationResult migrateToExpandedLayout();
+
+// True iff the firmware was built with the `_ver2` partition blob
+// embedded — i.e. `migrateToExpandedLayout()` has bytes to write.
+// Used by the UI to refuse migration on builds that didn't include
+// the embed (defensive — every production build does).
+bool migrationAssetPresent();
+
+// Cap for the embedded partition table. Mirrors the 4 KB sector
+// size at 0x8000; exposed so unit-test style code can sanity check
+// the embed without re-deriving the value.
+constexpr size_t kPartitionTableSectorBytes = 0x1000;
 
 }  // namespace ota

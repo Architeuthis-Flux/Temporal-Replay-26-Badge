@@ -336,72 +336,60 @@ bool WifiScreen::overlayActive() const {
 }
 
 void WifiScreen::drawConnectOverlay(oled& d) {
-  // Centered modal, ~118 × 38, leaves the header pill visible above
-  // and the footer rule below.
+  // Centered modal — same geometry as before; chrome now delegated to
+  // drawModalChrome so the title-strip, wipe, and frame are consistent
+  // with every other modal on the badge.
   constexpr int kBoxW = 118;
   constexpr int kBoxH = 38;
   constexpr int kBoxX = (OLEDLayout::kScreenW - kBoxW) / 2;
   constexpr int kBoxY = 14;
 
-  // Knockout fill so the underlying list rows don't bleed through.
-  d.setDrawColor(0);
-  d.drawBox(kBoxX, kBoxY, kBoxW, kBoxH);
-  d.setDrawColor(1);
-  d.drawRFrame(kBoxX, kBoxY, kBoxW, kBoxH, 2);
-
-  const auto phase = wifiService.phase();
   const char* ssid = wifiService.phaseSsid();
-  const char* status = wifiService.phaseStatusText();
-
-  // Title bar: inverted strip with "WiFi · <SSID>".
-  constexpr int kStripH = 9;
-  d.drawBox(kBoxX, kBoxY, kBoxW, kStripH);
-  d.setDrawColor(0);
-  d.setFont(u8g2_font_5x7_tf);
   char title[40];
   if (ssid && ssid[0]) {
     std::snprintf(title, sizeof(title), "WiFi  %.18s", ssid);
   } else {
     std::snprintf(title, sizeof(title), "WiFi");
   }
-  d.drawStr(kBoxX + 4, kBoxY + 7, title);
-  d.setDrawColor(1);
 
-  // Phase line: bold-ish (5x8 default font) heading.
+  const auto mc = OLEDLayout::drawModalChrome(
+      d, kBoxX, kBoxY, kBoxW, kBoxH, title, nullptr, /*scrollStartMs=*/0);
+
+  const auto phase  = wifiService.phase();
+  const char* status = wifiService.phaseStatusText();
+
+  // Phase label — slightly larger font so it reads at a glance.
   d.setFont(u8g2_font_6x10_tf);
-  const char* label = phaseLabel(phase);
-  d.drawStr(kBoxX + 4, kBoxY + kStripH + 10, label);
+  d.setDrawColor(1);
+  d.drawStr(mc.interiorX + 4, mc.bodyTopY + 8, phaseLabel(phase));
 
-  // Spinner glyph at the right edge of the phase line while the
-  // attempt is still in flight; replaced by a check / x mark on
-  // terminal phases.
+  // Status icon at the right edge of the phase line.
   if (phase == WiFiService::Phase::kStarting ||
       phase == WiFiService::Phase::kAttempting ||
       phase == WiFiService::Phase::kAuthenticating) {
     OLEDLayout::drawBusySpinner(d, kBoxX + kBoxW - 9,
-                                kBoxY + kStripH + 6, millis() / 125);
+                                mc.bodyTopY + 4, millis() / 125);
   } else if (phase == WiFiService::Phase::kConnected) {
-    // Tiny check: two diagonal strokes.
     const int cx = kBoxX + kBoxW - 12;
-    const int cy = kBoxY + kStripH + 6;
+    const int cy = mc.bodyTopY + 4;
     d.drawLine(cx, cy + 2, cx + 2, cy + 4);
     d.drawLine(cx + 2, cy + 4, cx + 6, cy);
   } else if (phase == WiFiService::Phase::kFailed) {
     const int cx = kBoxX + kBoxW - 11;
-    const int cy = kBoxY + kStripH + 2;
+    const int cy = mc.bodyTopY + 2;
     d.drawLine(cx, cy, cx + 5, cy + 5);
     d.drawLine(cx + 5, cy, cx, cy + 5);
   }
 
-  // Status text — single line, fit-to-width so long IPs don't bleed
-  // past the frame.
+  // Status text — single line at the bottom of the body; truncate to
+  // the interior width so a long IP never bleeds past the frame.
   d.setFont(u8g2_font_5x7_tf);
   char detail[64] = {};
   std::snprintf(detail, sizeof(detail), "%s",
                 status && status[0] ? status : "");
   if (detail[0]) {
     OLEDLayout::fitText(d, detail, sizeof(detail), kBoxW - 8);
-    d.drawStr(kBoxX + 4, kBoxY + kBoxH - 5, detail);
+    d.drawStr(mc.interiorX + 4, mc.bodyBotY - 3, detail);
   }
 }
 

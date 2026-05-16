@@ -2,27 +2,59 @@
 """
 inject_version.py — Single source of truth for the badge firmware version.
 
-Reads firmware/VERSION (a one-line semver like "0.1.4") and injects:
+Derives the firmware version from (in priority order):
+  1. The latest git tag (vX.X.X or X.X.X — leading v is stripped).
+     If the tag is strictly newer than firmware/VERSION, the file is
+     updated in-place so it stays in sync with the repo history.
+  2. firmware/VERSION — used as-is when git is unavailable or the file
+     is already at the latest tagged version.
+  3. "dev" fallback — emitted when neither source yields a valid semver.
 
+Then injects:
   -DFIRMWARE_VERSION="<ver>"          (consumed by src/identity/BadgeVersion.h
                                        and any C++ TU that includes it)
   -DBADGE_FIRMWARE_VERSION="<ver>"    (consumed by lib/micropython_embed/src/
                                        mpconfigport.h to format the REPL banner
                                        "Replay Badge v<ver> with ESP32-S3")
 
-Both header files keep their #ifndef fallbacks so direct `pio run` without
-this script (or Arduino IDE builds) still compile — they just report the
-hard-coded fallback string instead of the canonical VERSION.
+BADGE_FIRMWARE_VERSION *must* be passed as a compiler flag (-D) because
+mpconfigport.h is compiled as part of the MicroPython embed library and
+cannot include GeneratedFirmwareVersion.h directly — it relies solely on
+the #ifndef BADGE_FIRMWARE_VERSION guard in that file.
+
+GitHub tags use the vX.X.X convention; "v0.2.9" and "0.2.9" represent the
+same semver after stripping the prefix. When both exist, prefer the v-prefixed
+form (the canonical newer format).
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 
 try:
     Import("env")  # type: ignore[name-defined]
 except NameError:
     env = None
+
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _parse_semver(s: str) -> tuple[int, int, int] | None:
+    """Parse a semver string (with optional leading v) into a comparable tuple."""
+    m = _SEMVER_RE.match(s.lstrip("v"))
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def _semver_gt(a: str, b: str) -> bool:
+    """Return True when a is strictly greater than b (both v-prefix aware)."""
+    pa, pb = _parse_semver(a), _parse_semver(b)
+    if pa is None or pb is None:
+        return False
+    return pa > pb
 
 
 def project_dir() -> Path:
@@ -31,12 +63,70 @@ def project_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def git_latest_tag_version(root: Path) -> str | None:
+    """
+    Return the semver from the latest git tag reachable from HEAD, or None.
+
+    Tries v-prefixed tags first (canonical GitHub format), then bare tags.
+    Strips the leading 'v' before returning so the caller always gets plain
+    semver like "0.2.9".
+    """
+    def _run(args: list[str]) -> str | None:
+        try:
+            return subprocess.check_output(
+                args, cwd=root, stderr=subprocess.DEVNULL, text=True
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+
+    # Prefer v-prefixed tags — sort by version descending, take the top one.
+    v_tags = _run(["git", "tag", "-l", "v[0-9]*", "--sort=-v:refname"])
+    if v_tags:
+        for line in v_tags.splitlines():
+            ver = line.strip().lstrip("v")
+            if _parse_semver(ver) is not None:
+                return ver
+
+    # Fall back to git describe (covers bare tags like "0.2.9").
+    described = _run(["git", "describe", "--tags", "--abbrev=0"])
+    if described:
+        ver = described.lstrip("v")
+        if _parse_semver(ver) is not None:
+            return ver
+
+    return None
+
+
 def read_version(root: Path) -> str:
+    """
+    Determine the canonical firmware version.
+
+    Syncs firmware/VERSION from the latest git tag when the tag is newer
+    (semver comparison, v-prefix stripped). Updates the file in-place so
+    subsequent tool runs (serial_log, badge_sync, verify_firmware_version)
+    see the same value without a manual bump.
+    """
     path = root / "VERSION"
-    if not path.exists():
-        return "dev"
-    raw = path.read_text(encoding="utf-8").strip()
-    return raw or "dev"
+    file_ver = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+    git_ver = git_latest_tag_version(root)
+
+    if git_ver:
+        needs_sync = (
+            not file_ver
+            or file_ver == "dev"
+            or _semver_gt(git_ver, file_ver)
+        )
+        if needs_sync and git_ver != file_ver:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(git_ver + "\n", encoding="utf-8")
+            print(
+                f"[inject_version] synced firmware/VERSION "
+                f"{file_ver!r} -> {git_ver!r} from git tag"
+            )
+        return git_ver
+
+    return file_ver or "dev"
 
 
 def write_generated_header(root: Path, version: str) -> Path:
@@ -64,6 +154,13 @@ def main() -> None:
 
     if env is None:
         return
+
+    # Pass BADGE_FIRMWARE_VERSION as a compiler flag so the MicroPython embed
+    # (lib/micropython_embed/src/mpconfigport.h) picks it up via the
+    #   #ifndef BADGE_FIRMWARE_VERSION … #define BADGE_FIRMWARE_VERSION "dev"
+    # guard. That file cannot include GeneratedFirmwareVersion.h directly —
+    # the -D flag is the only injection path.
+    env.Append(CPPDEFINES=[("BADGE_FIRMWARE_VERSION", f'\\"{version}\\"')])
 
     # Header + explicit dependency: a VERSION-only change must rebuild
     # BootSplash, DiagnosticsScreen, BadgeOTA, and the MicroPython embed.

@@ -18,7 +18,7 @@
 void AnimTestScreen::onEnter(GUIManager& /*gui*/) {
   frameIdx_ = 0;
   scaleIdx_ = 0;
-  frameDelayMs_ = 200;
+  frameDelayMs_ = kDefaultDelay;
   lastFrameMs_ = millis();
   lastJoyNavMs_ = 0;
   if (isExternal()) {
@@ -387,7 +387,7 @@ void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
 
     OLEDLayout::drawGameFooter(d);
     if (extFrameCount_ > 1) {
-      OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr,
+      OLEDLayout::drawUpperFooterActions(d, "fast", "slow", nullptr, nullptr,
                                          0, /*leftAlign=*/true);
     }
     OLEDLayout::drawFooterActions(d, nullptr, nullptr, "esc", nullptr,
@@ -423,25 +423,35 @@ void AnimTestScreen::render(oled& d, GUIManager& /*gui*/) {
   std::snprintf(buf, sizeof(buf), "%dx%d", dispW, dispH);
   d.drawStr(0, 16, buf);
 
-  uint16_t curDelay = (img.frameTimes && frameIdx_ < img.frameCount)
-                      ? img.frameTimes[frameIdx_] : frameDelayMs_;
+  // When authored per-frame times exist, frameDelayMs_ is a proportional
+  // speed multiplier: at kDefaultDelay it plays at 1×; lower/higher values
+  // scale every frame time proportionally.
+  uint16_t effectiveDelay;
+  if (img.frameTimes && frameIdx_ < img.frameCount) {
+    uint32_t scaled =
+        static_cast<uint32_t>(img.frameTimes[frameIdx_]) * frameDelayMs_ /
+        kDefaultDelay;
+    effectiveDelay = static_cast<uint16_t>(
+        scaled < kMinDelay ? kMinDelay
+                           : (scaled > kMaxDelay ? kMaxDelay : scaled));
+  } else {
+    effectiveDelay = frameDelayMs_;
+  }
   std::snprintf(buf, sizeof(buf), "F%d/%d %dms",
-                frameIdx_ + 1, img.frameCount, curDelay);
+                frameIdx_ + 1, img.frameCount, effectiveDelay);
   d.drawStr(0, 24, buf);
 
   std::snprintf(buf, sizeof(buf), "%d/%d", imageIdx_ + 1, kImageCatalogCount);
   d.drawStr(0, 32, buf);
 
   OLEDLayout::drawGameFooter(d);
-  OLEDLayout::drawUpperFooterActions(d, "slow", "fast", nullptr, nullptr,
+  OLEDLayout::drawUpperFooterActions(d, "fast", "slow", nullptr, nullptr,
                                      0, /*leftAlign=*/true);
   OLEDLayout::drawFooterActions(d, nullptr, nullptr, "back", "next",
                                 0, /*leftAlign=*/true);
 
   uint32_t now = millis();
-  uint16_t delay = (img.frameTimes && frameIdx_ < img.frameCount)
-                   ? img.frameTimes[frameIdx_] : frameDelayMs_;
-  if (img.frameCount > 1 && now - lastFrameMs_ >= delay) {
+  if (img.frameCount > 1 && now - lastFrameMs_ >= effectiveDelay) {
     frameIdx_ = (frameIdx_ + 1) % img.frameCount;
     lastFrameMs_ = now;
   }

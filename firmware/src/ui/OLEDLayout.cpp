@@ -552,10 +552,10 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
   if (BleBeaconScanner::isScanning()) {
     drawBleScanIcon(d, wifiX, 1, BleBeaconScanner::hasFix());
   } else {
-    drawWifiIcon(d, wifiX, 1, wifiService.networkIndicatorActive(), syncing);
+    drawWifiIcon(d, wifiX, 1, wifiService.isConnected(), syncing);
   }
 #else
-  drawWifiIcon(d, wifiX, 1, wifiService.networkIndicatorActive(), syncing);
+  drawWifiIcon(d, wifiX, 1, wifiService.isConnected(), syncing);
 #endif
   const bool batteryReady = batteryGauge.isReady();
   drawBatteryIcon(d, batX, 1, batteryReady,
@@ -563,7 +563,7 @@ void drawStatusHeaderImpl(oled& d, const char* title, bool firstNameFallback) {
 }
 
 void drawNetworkIndicator(oled& d, int x, int y, bool busy) {
-  drawWifiIcon(d, x, y, wifiService.networkIndicatorActive(), busy);
+  drawWifiIcon(d, x, y, wifiService.isConnected(), busy);
 }
 
 void drawHeaderRule(oled& d, uint8_t y) {
@@ -873,6 +873,104 @@ ModalChrome drawModalChrome(oled& d, int boxX, int boxY, int boxW, int boxH,
       titleDivY + 1,
       bodyBotY,
   };
+}
+
+// ── drawTextModal helpers ───────────────────────────────────────────
+
+// Small warning triangle drawn at the top-left of the modal body.
+// cx = left-edge x of the icon slot, ty = bodyTopY.
+// Uses color-1 strokes on the already-black modal interior.
+static void drawTextModalDangerIcon(oled& d, int cx, int ty) {
+  const int apex = cx + 4;
+  const int bot  = ty + 9;
+  d.setDrawColor(1);
+  d.drawLine(apex,     ty + 1, cx,      bot);  // left edge
+  d.drawLine(apex,     ty + 1, cx + 8,  bot);  // right edge
+  d.drawLine(cx,       bot,    cx + 8,  bot);  // base
+  // Exclamation mark (two pixels, colour-0 cut into the white triangle).
+  d.setDrawColor(0);
+  d.drawPixel(apex, ty + 4);
+  d.drawPixel(apex, ty + 7);
+  d.setDrawColor(1);
+}
+
+void drawTextModal(oled& d, const char* title,
+                   const char* const* lines, int lineCount,
+                   int scrollOffset, bool danger,
+                   uint32_t titleScrollMs) {
+  // Body line stride: 8 px (7 px glyph + 1 px leading).
+  // Box height formula derived from drawModalChrome geometry (frame=true):
+  //   bodyTopY = boxY + 11   (1 frame + 9 title + 1 divider)
+  //   last line bottom = bodyTopY + visLines*8   (ascent 7 + descent 1)
+  //   need <= bodyBotY = boxY + boxH - 2
+  //   → boxH = visLines*8 + 13
+  constexpr int kBoxX      = 4;
+  constexpr int kBoxW      = 120;
+  constexpr int kBodyLineH = 8;
+
+  const int visLines =
+      lineCount < kTextModalViewport ? lineCount : kTextModalViewport;
+  const int boxH = visLines * kBodyLineH + 13;
+
+  // Centre the box in the content zone between header and footer.
+  // kContentTopY=10, kFooterTopY=54 → 44 px available.
+  // Integer-divide rounds down so the box sits slightly above centre,
+  // which matches the natural reading-gravity of the screen.
+  int boxY = (static_cast<int>(kContentTopY) +
+              static_cast<int>(kFooterTopY) - boxH) / 2;
+  if (boxY < static_cast<int>(kContentTopY)) {
+    boxY = static_cast<int>(kContentTopY);
+  }
+
+  // Danger: outer emphasis frame drawn AFTER drawModalChrome so the
+  // chrome wipe doesn't erase it.
+  const ModalChrome mc = drawModalChrome(
+      d, kBoxX, boxY, kBoxW, boxH, title, nullptr, titleScrollMs);
+
+  if (danger) {
+    d.setDrawColor(1);
+    d.drawRFrame(kBoxX - 1, boxY - 1, kBoxW + 2, boxH + 2, 5);
+    drawTextModalDangerIcon(d, mc.interiorX + 1, mc.bodyTopY);
+  }
+
+  // Body text — left-aligned, indented past the danger icon when present.
+  const int textIndent = danger ? 12 : 2;
+  const int textX      = mc.interiorX + textIndent;
+  const int textW      = mc.interiorW - textIndent - 2;
+
+  d.setFont(UIFonts::kText);
+  d.setDrawColor(1);
+
+  for (int i = 0; i < visLines; ++i) {
+    const int lineIdx = scrollOffset + i;
+    if (lineIdx >= lineCount) break;
+    const char* text = lines[lineIdx];
+    if (!text || !text[0]) continue;
+    const int baseline = mc.bodyTopY + 7 + i * kBodyLineH;
+    if (baseline > mc.bodyBotY) break;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s", text);
+    fitText(d, buf, sizeof(buf), textW);
+    d.drawStr(textX, baseline, buf);
+  }
+
+  // Scroll pips: tiny 3-pixel chevrons at the right interior edge,
+  // drawn only when there is off-screen content above/below.
+  if (lineCount > kTextModalViewport) {
+    const int pipX = mc.interiorX + mc.interiorW - 3;
+    if (scrollOffset > 0) {
+      // Up chevron
+      d.drawPixel(pipX,     mc.bodyTopY + 2);
+      d.drawPixel(pipX - 1, mc.bodyTopY + 3);
+      d.drawPixel(pipX + 1, mc.bodyTopY + 3);
+    }
+    if (scrollOffset + kTextModalViewport < lineCount) {
+      // Down chevron
+      d.drawPixel(pipX,     mc.bodyBotY - 1);
+      d.drawPixel(pipX - 1, mc.bodyBotY - 2);
+      d.drawPixel(pipX + 1, mc.bodyBotY - 2);
+    }
+  }
 }
 
 void clearFooter(oled& d) {

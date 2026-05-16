@@ -29,7 +29,8 @@ usage() {
 [[ "$1" == "-h" || "$1" == "--help" ]] && usage 0
 
 CUR="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo "0.0.0")"
-ARG="$1"
+# Strip a leading 'v' so both "v0.2.9" and "0.2.9" work as explicit targets.
+ARG="${1#v}"
 
 bump_part() {
     local part="$1" cur="$2"

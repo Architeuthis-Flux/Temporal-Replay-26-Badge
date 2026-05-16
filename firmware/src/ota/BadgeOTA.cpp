@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <Update.h>
+#include <esp_flash.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <cstdio>
@@ -11,6 +12,41 @@
 #include <cstring>
 
 #include <esp_heap_caps.h>
+
+// We need to write into the partition-table sector at 0x8000, which
+// arduino-esp32 (default sdkconfig: CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS=1)
+// treats as a fatal programmer error in esp_flash_erase_region /
+// esp_flash_write. The first attempt — routing through
+// bootloader_flash_erase_range / bootloader_flash_write — also
+// panics, because in app context those are literally single-line
+// tail calls to esp_flash_* (confirmed by disassembling
+// libbootloader_support.a / bootloader_flash.c.obj). The
+// IDF-supplied runtime escape hatch is
+// esp_flash_set_dangerous_write_protection(chip, false), declared
+// in esp_flash_internal.h. We re-enable the protection after the
+// write window closes (or before rollback completes) so unrelated
+// future bugs still trip the abort and we don't leave the rest of
+// the system in a permanently-unguarded state.
+extern "C" {
+esp_err_t bootloader_flash_read(size_t src_addr, void* dest, size_t size,
+                                bool allow_decrypt);
+esp_err_t bootloader_flash_write(size_t dest_addr, void* src, size_t size,
+                                 bool write_encrypted);
+esp_err_t bootloader_flash_erase_range(uint32_t start_addr, uint32_t size);
+esp_err_t esp_flash_set_dangerous_write_protection(esp_flash_t* chip,
+                                                   const bool protect);
+}
+
+// Embedded `_ver2` partition table blob. Generated at build time by
+// scripts/gen_expanded_partitions.py and folded into the link via
+// `board_build.embed_files` (see platformio.ini). The symbol short
+// names are produced by scripts/normalize_bundle_symbols.py.
+extern "C" {
+extern const uint8_t kPartitionTableVer2Start[]
+    asm("_binary_partitions_ver2_bin_start");
+extern const uint8_t kPartitionTableVer2End[]
+    asm("_binary_partitions_ver2_bin_end");
+}
 
 #include "AssetRegistry.h"
 #include "OTAHttp.h"
@@ -93,9 +129,53 @@ constexpr size_t kUrlMax = 1536;
 // `_ver2`: ffat @ 0x910000  (6.875 MB, opt-in)
 constexpr uint32_t kFfatExpandedPartitionBase = 0x910000u;
 
+// Flash offset of the partition table sector. ESP-IDF reserves a
+// single 4 KB sector here for the table itself; bootloader / nvs /
+// app0 / etc are addressed via the entries inside it.
+constexpr uint32_t kPartitionTableFlashOffset = 0x8000u;
+
+// Both `_doom` and `_ver2` place app0 at the same physical offset.
+// This is the safety pre-condition for the in-place migration: as
+// long as we're running from app0 at 0x10000 when we swap tables,
+// the bootloader will find the same running image under the new
+// layout. app1 offsets differ between the two layouts (0x3F0000
+// vs 0x490000), so migrating from app1 would mean booting into an
+// unprogrammed region of flash.
+constexpr uint32_t kApp0FlashOffset = 0x10000u;
+
+// Migration requires this fraction of charge unless the badge is on
+// USB power. Higher than the OTA install threshold (kMinBatteryPct
+// = 30) because a power cut during the partition write window is
+// the only way to actually brick the badge.
+constexpr float kMigrationMinBatteryPct = 50.0f;
+
 char sLatestTag[kTagMax] = "";
 char sAssetUrl[kUrlMax] = "";
 char sResolvedAssetUrl[kUrlMax] = "";
+
+// ── Migration-reboot announce signal ──────────────────────────────────────
+//
+// RTC noinit memory survives a software reset (ESP.restart, panic,
+// task WDT) but is *cleared* on a power-on / brownout / RTC reset.
+// That's exactly the lifetime we want for "tell the user about THIS
+// specific reboot": if the badge dies mid-migration and the user
+// power-cycles to recover, we don't want the next boot to claim the
+// migration succeeded.
+//
+// Set to `kMagic` right before ESP.restart() in
+// migrateToExpandedLayout(). Re-read in begin() and cross-check
+// against `esp_reset_reason() == ESP_RST_SW` — the magic + soft
+// reset combo is a deterministic "we just rebooted because of OUR
+// partition swap" signal that's invariant under unrelated NVS
+// editing or USB reflashing.
+//
+// The magic itself is a fixed 32-bit value chosen so that an
+// uninitialised RTC slow region (typically 0x00000000 or
+// 0xFFFFFFFF on a fresh power-on) does not alias it.
+constexpr uint32_t kMigrationBootMagic = 0xCAFEFEEDu;
+RTC_NOINIT_ATTR uint32_t sMigrationBootMagic;
+bool sJustMigratedReboot = false;
+bool sMigrationBootAcknowledged = false;
 size_t sAssetSize = 0;
 time_t sLastCheckEpoch = 0;
 char sLastError[80] = "";
@@ -350,6 +430,52 @@ void prepareFirmwareInstallHeap() {
 void begin() {
   if (sBegun) return;
   sBegun = true;
+
+  // Migration-reboot detection. RTC noinit memory is wiped on a real
+  // power cycle (POR / brownout / external reset / RTC wake) but
+  // survives every flavour of warm reset (clean ESP.restart, panic,
+  // task WDT, interrupt WDT). That makes the magic a one-way signal:
+  // its presence proves we've rebooted from a system that successfully
+  // completed migrate AND the user hasn't yanked power since.
+  //
+  // We DO NOT clear the magic here. The migration UI may not get a
+  // chance to render on this boot — e.g. the first post-migration
+  // boot has to format a fresh ffat, and any panic in that path
+  // (we hit one in oofatfs `f_mount(NULL)` and fixed it, but the
+  // class of bug remains) would otherwise wipe our only evidence
+  // that the migration succeeded. Clearing is deferred to
+  // acknowledgeMigrationBoot(), which the UI calls only after the
+  // user has actually dismissed the panel. A power cycle in between
+  // still wipes everything, which is the correct semantics.
+  //
+  // Belt-and-suspenders: also accept the magic when the reset
+  // reason is consistent with "we rebooted from a system that had
+  // the migration code path active". Reject obvious power-up
+  // reasons defensively even though RTC would already have been
+  // wiped in those cases.
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  const uint32_t observedMagic = sMigrationBootMagic;
+  const bool warmReset =
+      resetReason == ESP_RST_SW       ||
+      resetReason == ESP_RST_PANIC    ||
+      resetReason == ESP_RST_INT_WDT  ||
+      resetReason == ESP_RST_TASK_WDT ||
+      resetReason == ESP_RST_WDT;
+  if (observedMagic == kMigrationBootMagic && warmReset) {
+    sJustMigratedReboot = true;
+    DBG("[ota] migrate: post-migration boot detected "
+        "(reset_reason=%d) — UI will show one-shot welcome\n",
+        (int)resetReason);
+  } else if (observedMagic == kMigrationBootMagic) {
+    // Magic survives only across warm resets; seeing it together
+    // with a cold-reset reason means either (a) the rule above
+    // missed a case we should accept, or (b) something corrupted
+    // RTC slow. Clear it defensively so we don't loop forever.
+    sMigrationBootMagic = 0;
+    DBG("[ota] migrate: magic present with cold reset_reason=%d — "
+        "clearing without announce\n", (int)resetReason);
+  }
+
   loadCache();
   recordCurrentLayout();
 
@@ -570,6 +696,234 @@ void reformatFfatAndReboot() {
   DBG("[ota] reformat helper returned rc=%d; rebooting\n", rc);
   delay(300);
   ESP.restart();
+}
+
+// ── Partition table migration ─────────────────────────────────────────────
+
+namespace {
+
+size_t embeddedPartitionTableLen() {
+  const ptrdiff_t n = kPartitionTableVer2End - kPartitionTableVer2Start;
+  if (n <= 0) return 0;
+  return static_cast<size_t>(n);
+}
+
+bool migrationBatteryOk() {
+#ifdef BADGE_HAS_BATTERY_GAUGE
+  if (!batteryGauge.isReady()) {
+    // No gauge → no signal either way; let the user proceed. They
+    // had to triple-confirm to get here anyway.
+    return true;
+  }
+  if (batteryGauge.usbPresent()) return true;
+  return batteryGauge.stateOfChargePercent() >= kMigrationMinBatteryPct;
+#else
+  return true;
+#endif
+}
+
+bool runningFromApp0() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  return running && running->address == kApp0FlashOffset;
+}
+
+}  // namespace
+
+bool migrationAssetPresent() {
+  const size_t n = embeddedPartitionTableLen();
+  return n > 0 && n <= kPartitionTableSectorBytes;
+}
+
+MigrationResult migrateToExpandedLayout() {
+  setError("");
+  if (isExpandedPartitionLayout()) {
+    return MigrationResult::kAlreadyExpanded;
+  }
+  if (!migrationBatteryOk()) {
+    setError("battery <50% — charge first");
+    return MigrationResult::kBatteryTooLow;
+  }
+  if (!runningFromApp0()) {
+    // Booting from app1 means the bootloader's "current image" lives
+    // at 0x3F0000. The `_ver2` table has nothing at that address, so
+    // the bootloader would fall back / fail to find a valid image on
+    // the next boot. Refuse and tell the user to OTA-install first
+    // (every OTA install writes to the *inactive* slot, so two
+    // installs in a row would land them back on app0).
+    setError("run from app0 — reinstall OTA first");
+    return MigrationResult::kNotRunningFromApp0;
+  }
+  const size_t newLen = embeddedPartitionTableLen();
+  if (newLen == 0 || newLen > kPartitionTableSectorBytes) {
+    setError("partition blob missing from firmware");
+    return MigrationResult::kEmbedMissing;
+  }
+
+  // Snapshot the OLD table so we can roll back on any failure short
+  // of a literal power cut. Heap rather than stack: the partition
+  // table sector is only 4 KB but the loop stack is also where the
+  // GUI render path lives, and adding 4 KB to it would be tight.
+  // MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA: bootloader_flash_* expects
+  // DRAM-backed buffers (the flash driver may DMA from them, and
+  // PSRAM cache may be disabled during the write window).
+  uint8_t* oldTable = static_cast<uint8_t*>(
+      heap_caps_malloc(kPartitionTableSectorBytes,
+                       MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA |
+                           MALLOC_CAP_8BIT));
+  if (!oldTable) {
+    setError("alloc failed (DRAM)");
+    return MigrationResult::kFlashReadFailed;
+  }
+  std::memset(oldTable, 0xFF, kPartitionTableSectorBytes);
+  esp_err_t rc = bootloader_flash_read(kPartitionTableFlashOffset,
+                                       oldTable,
+                                       kPartitionTableSectorBytes,
+                                       /*allow_decrypt=*/false);
+  if (rc != ESP_OK) {
+    heap_caps_free(oldTable);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "flash read rc=%d", (int)rc);
+    setError(buf);
+    return MigrationResult::kFlashReadFailed;
+  }
+
+  // The dangerous window starts here. In arduino-esp32 (sdkconfig:
+  // CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS=1) any esp_flash_erase /
+  // esp_flash_write whose range overlaps the bootloader, partition
+  // table, or NVS region panics via abort(). bootloader_flash_* in
+  // app context is a one-line tail-call to esp_flash_* (verified by
+  // disassembling libbootloader_support.a), so it hits the same trap.
+  // The IDF-blessed runtime bypass is
+  // esp_flash_set_dangerous_write_protection(chip, false).
+  // We re-enable protection after the write closes — both on the
+  // success path (before reboot, defensive) and on every rollback
+  // exit — so unrelated future bugs still abort cleanly.
+  if (!esp_flash_default_chip) {
+    heap_caps_free(oldTable);
+    setError("no default flash chip");
+    return MigrationResult::kFlashEraseFailed;
+  }
+  esp_flash_set_dangerous_write_protection(esp_flash_default_chip, false);
+
+  DBG("[ota] migrate: erasing partition table sector @ 0x%08X (%u bytes)\n",
+      (unsigned)kPartitionTableFlashOffset,
+      (unsigned)kPartitionTableSectorBytes);
+  rc = bootloader_flash_erase_range(kPartitionTableFlashOffset,
+                                    kPartitionTableSectorBytes);
+  if (rc != ESP_OK) {
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+    heap_caps_free(oldTable);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "flash erase rc=%d", (int)rc);
+    setError(buf);
+    return MigrationResult::kFlashEraseFailed;
+  }
+
+  // bootloader_flash_write requires a non-const src buffer; the
+  // embedded blob is `const uint8_t*` in flash. Stage it through an
+  // internal-RAM DMA-capable buffer so the driver can pull from it.
+  uint8_t* writeBuf = static_cast<uint8_t*>(
+      heap_caps_malloc(kPartitionTableSectorBytes,
+                       MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA |
+                           MALLOC_CAP_8BIT));
+  if (!writeBuf) {
+    // Rollback: re-write the snapshot we already have. The sector
+    // is erased to 0xFF right now; an alloc failure here would
+    // otherwise leave the badge unbootable.
+    bootloader_flash_write(kPartitionTableFlashOffset, oldTable,
+                           kPartitionTableSectorBytes, false);
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+    heap_caps_free(oldTable);
+    setError("alloc failed (write buf)");
+    return MigrationResult::kFlashWriteFailed;
+  }
+  std::memset(writeBuf, 0xFF, kPartitionTableSectorBytes);
+  std::memcpy(writeBuf, kPartitionTableVer2Start, newLen);
+
+  rc = bootloader_flash_write(kPartitionTableFlashOffset, writeBuf,
+                              kPartitionTableSectorBytes,
+                              /*write_encrypted=*/false);
+  heap_caps_free(writeBuf);
+  if (rc != ESP_OK) {
+    // Best-effort rollback. If THIS fails the badge is bricked, but
+    // that scenario requires the flash to be misbehaving in two
+    // separate operations back-to-back.
+    DBG("[ota] migrate: write failed rc=%d; rolling back\n", (int)rc);
+    bootloader_flash_erase_range(kPartitionTableFlashOffset,
+                                 kPartitionTableSectorBytes);
+    bootloader_flash_write(kPartitionTableFlashOffset, oldTable,
+                           kPartitionTableSectorBytes, false);
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+    heap_caps_free(oldTable);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "flash write rc=%d", (int)rc);
+    setError(buf);
+    return MigrationResult::kFlashWriteFailed;
+  }
+
+  // Read it back and compare. If verify fails we still have the old
+  // table bytes in `oldTable`; rewrite them and bail.
+  uint8_t* verify = static_cast<uint8_t*>(
+      heap_caps_malloc(kPartitionTableSectorBytes,
+                       MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA |
+                           MALLOC_CAP_8BIT));
+  bool verifyOk = false;
+  if (verify) {
+    std::memset(verify, 0, kPartitionTableSectorBytes);
+    if (bootloader_flash_read(kPartitionTableFlashOffset, verify,
+                              kPartitionTableSectorBytes,
+                              /*allow_decrypt=*/false) == ESP_OK &&
+        std::memcmp(verify, kPartitionTableVer2Start, newLen) == 0) {
+      verifyOk = true;
+    }
+    heap_caps_free(verify);
+  }
+  if (!verifyOk) {
+    DBG("[ota] migrate: verify failed; rolling back\n");
+    bootloader_flash_erase_range(kPartitionTableFlashOffset,
+                                 kPartitionTableSectorBytes);
+    bootloader_flash_write(kPartitionTableFlashOffset, oldTable,
+                           kPartitionTableSectorBytes, false);
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+    heap_caps_free(oldTable);
+    setError("verify failed; rolled back");
+    return MigrationResult::kVerifyFailed;
+  }
+
+  // Success path: re-arm the guard before reboot. This is purely
+  // defensive — we're about to ESP.restart() — but it's the right
+  // shape for code reviewers and for any future change that might
+  // not immediately reboot after the swap.
+  esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+  heap_caps_free(oldTable);
+
+  // Arm the post-migration announce signal *before* ESP.restart().
+  // RTC noinit memory survives the soft reset, so begin() on the
+  // next boot will see the magic + ESP_RST_SW combo and latch
+  // sJustMigratedReboot. See the kMigrationBootMagic block at the
+  // top of this file for the full rationale.
+  sMigrationBootMagic = kMigrationBootMagic;
+
+  DBG("[ota] migrate: partition table swapped to _ver2 (%u bytes); "
+      "rebooting (RTC magic armed)\n", (unsigned)newLen);
+  // Brief settle so the DBG line + any UI-side "rebooting…" paint
+  // makes it out before we cycle.
+  delay(200);
+  ESP.restart();
+  return MigrationResult::kOk;  // unreachable
+}
+
+bool justRebootedFromLayoutMigration() {
+  return sJustMigratedReboot && !sMigrationBootAcknowledged;
+}
+
+void acknowledgeMigrationBoot() {
+  sMigrationBootAcknowledged = true;
+  // Now — and only now — clear the RTC magic. Until this point the
+  // magic was the durable "user hasn't seen the announce yet" flag;
+  // a panic in the post-migration boot would otherwise have lost
+  // the signal entirely (see the matching comment in begin()).
+  sMigrationBootMagic = 0;
 }
 
 }  // namespace ota

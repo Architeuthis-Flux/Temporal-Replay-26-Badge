@@ -471,15 +471,241 @@ The FW UPDATE screen has two adjacent X-button affordances:
    fires when the formatted FAT capacity is meaningfully smaller
    than the partition (>256 KB slack). Reformats `ffat` in place.
 2. **Bigger storage (layout migration)** — only shown on the
-   default `_doom` layout. Explains the one-time
-   `erase_and_flash_expanded.sh` USB path that swaps in the `_ver2`
-   partition table for a 6.875 MB ffat. After the reflash, the
-   next FW UPDATE entry shows the layout-change welcome described
-   above.
+   default `_doom` layout. Walks the user through an **in-place
+   partition-table swap** (see § 5c) and falls back to the legacy
+   USB-script path if the running firmware doesn't have the
+   partition blob embedded.
 
 The `BADGE_PARTITIONS_EXPANDED` define is now only a debugging
 breadcrumb — runtime code detects the layout from the mounted ffat
 address and doesn't consume the macro.
+
+## 5c. In-place partition-table migration (`_doom` → `_ver2`)
+
+The badge can rewrite its own partition table at runtime to switch
+from `_doom` (6.0 MB ffat) to `_ver2` (6.875 MB ffat) without USB
+reflashing. The mechanism, the guarantees, and what to do when it
+breaks all live here.
+
+### Why it's safe (most of the time)
+
+Two facts of the layout pair make this tractable:
+
+- **`app0` is at the same physical offset (0x10000) in both tables.**
+  A `_doom`-built firmware at `0x10000` boots correctly under a
+  `_ver2` partition table — the slot just becomes bigger (3.84 MB →
+  4.5 MB) and the same image still occupies its first ~2.8 MB.
+- **`firmware.bin` is layout-agnostic.** Every data partition is
+  located at runtime via `esp_partition_find_first`; there are no
+  hardcoded flash offsets. So no separate firmware needs to be
+  flashed alongside the table swap.
+
+`app1` *does* differ between the layouts (`0x3F0000` vs `0x490000`).
+That's the failure mode — see "It refused to run" below.
+
+### What the badge actually does
+
+`ota::migrateToExpandedLayout()`:
+
+1. Confirms the running app is at `app0` (i.e. `esp_ota_get_running_partition()->address == 0x10000`).
+2. Confirms battery ≥ 50 % OR USB power is present.
+3. Snapshots the existing 4 KB partition-table sector at `0x8000`
+   into RAM (`heap_caps_malloc`).
+4. `esp_flash_erase_region(NULL, 0x8000, 0x1000)`.
+5. `esp_flash_write(NULL, embedded_ver2_blob, 0x8000, blob_len)`.
+6. Read back + `memcmp` against the embedded blob.
+7. **On verify success:** `ESP.restart()`. The next boot brings up
+   the larger ffat at `0x910000` (unformatted → caught by the
+   FATFS mount path → reformatted on first mount failure).
+8. **On any failure between (4) and (6):** erase the sector again,
+   write the snapshotted old bytes back, return `MigrationResult::k*Failed`
+   to the UI. The badge keeps running.
+
+The dangerous window is between erase (step 4) and a successful
+verified write (step 6) — a few hundred ms. Power loss in that
+window leaves the partition table sector blank; the bootloader will
+panic and the badge becomes unbootable until USB reflashed.
+
+### The recovery story (what the on-device QR points at)
+
+If the migration window is interrupted (power cut, JTAG reset,
+flash defect mid-write), the badge cannot recover on its own. The
+fix is the same as any first-time flash:
+
+```bash
+# Default `_doom` layout (matches every production badge):
+cd firmware && ./scripts/erase_and_flash.sh
+
+# `_ver2` layout (if the user wanted the migration to land):
+cd firmware && ./scripts/erase_and_flash_expanded.sh
+```
+
+Both scripts do a full chip erase + reflash bootloader + partition
+table + factory app + filesystem image over USB DFU. NVS (contacts,
+WiFi creds, badge UID) is wiped — recovery is destructive, same as
+the original factory provisioning.
+
+The FW UPDATE screen shows a QR code pointing at this document
+*before* asking the user to confirm the destructive step, so the
+recovery URL ends up on their phone before they take the risk.
+
+### UI flow (`UpdateFirmwareScreen`)
+
+| Phase                          | What the screen shows |
+|--------------------------------|-----------------------|
+| `kLayoutMigratePrecheck`       | Headline + 3 condition rows (battery, layout, recovery blob present). Confirm advances; cancel returns to idle. |
+| `kLayoutMigrateRecovery`       | QR linking to this doc, plus a 4-line "USB + erase_and_flash.sh" recap. Confirm advances; cancel returns. |
+| `kLayoutMigrateConfirm`        | Final modal panel ("Rewrites partition tbl / Wipes ffat / Auto-reboots") with a danger frame. Confirm fires the migration; cancel returns. |
+| `kLayoutMigrating`             | "Swapping partition table / DO NOT POWER OFF". Painted once before the synchronous flash ops; on success the badge reboots; on rollback it falls through to `kLayoutMigrateError`. |
+| `kLayoutMigrateError`          | One-line cause from `MigrationResult` plus the raw `ota::lastErrorMessage()` fallback. Any button returns to idle. |
+| `kLayoutWelcome` (next boot)   | One-shot panel reading "Layout changed / FS partition: 6.9 MB" on the next FW UPDATE entry after a successful migration. Cleared by `ota::acknowledgeLayoutChange()`. |
+
+### It refused to run — common reasons
+
+| `MigrationResult`          | Meaning                                                                                       | Fix                                                                                          |
+|----------------------------|-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| `kAlreadyExpanded`         | Layout is already `_ver2`. Migration is a no-op.                                              | Nothing to do.                                                                               |
+| `kBatteryTooLow`           | Battery <50 % and not on USB.                                                                 | Plug in USB or charge above 50 %, then retry.                                                |
+| `kNotRunningFromApp0`      | Active slot is `app1` (at `0x3F0000`, which doesn't exist in `_ver2`).                        | Install the latest OTA from the FW UPDATE screen. OTA always writes to the *inactive* slot, so the install flips the active slot back to `app0` on next boot. |
+| `kEmbedMissing`            | This firmware build doesn't have `partitions_ver2.bin` embedded. Should not happen on releases. | Confirm `firmware/build_assets/partitions_ver2.bin` exists locally and rebuild.              |
+| `kFlashReadFailed` / `kFlashEraseFailed` | Flash driver returned an error before any destructive write completed. Safe.    | Retry; if persistent, the hardware may be failing.                                           |
+| `kFlashWriteFailed`        | Write returned non-`ESP_OK`. Rollback was attempted automatically — badge keeps running.       | Retry.                                                                                       |
+| `kVerifyFailed`            | Readback didn't match. Rollback was applied; badge keeps running.                              | Retry; if it keeps failing, USB recovery via `erase_and_flash_expanded.sh`.                  |
+
+### Building / shipping the partition blob
+
+The embedded blob is produced at build time by
+[`firmware/scripts/gen_expanded_partitions.py`](../scripts/gen_expanded_partitions.py),
+which runs the framework's `gen_esp32part.py` against
+`partitions_replay_16MB_ver2.csv` and writes the result to
+`firmware/build_assets/partitions_ver2.bin`. Then
+`board_build.embed_files` in `[env:echo]` links it into the firmware
+and `scripts/normalize_bundle_symbols.py` normalizes the symbol
+names to `_binary_partitions_ver2_bin_{start,end}`.
+
+The blob is small (~150 bytes — one MD5'd partition table). It adds
+no meaningful size to `firmware.bin` and is regenerated on every
+build only when the CSV or the generator script is newer than the
+existing output (idempotent).
+
+### Reverting from `_ver2` back to `_doom`
+
+Not supported in-place — the inverse would force-format the larger
+ffat region and there's no upside vs. the USB script. If a user
+needs to go back, they USB-flash from the recovery image (see § 5d
+below).
+
+<a id="recovery"></a>
+
+## 5d. Recovery — full-flash 16 MB image
+
+The FW UPDATE screen's "BIGGER STORAGE" warning panel shows a QR code
+linking to this section. Every GitHub release attaches a single-file
+16 MB recovery image so any bricked-badge situation has the same
+one-line answer.
+
+### Where the file lives
+
+Attached to every release as
+`temporal-badge-full-flash-16mb.bin`. Stable URL:
+
+```
+https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/releases/latest/download/temporal-badge-full-flash-16mb.bin
+```
+
+What it contains, at production flash offsets:
+
+| Offset    | Content              | Source                              |
+|-----------|----------------------|-------------------------------------|
+| 0x000000  | bootloader.bin       | PlatformIO build output             |
+| 0x008000  | partitions.bin       | `partitions_replay_16MB_doom.csv`   |
+| 0x00E000  | boot_app0.bin        | arduino-esp32 framework             |
+| 0x010000  | firmware.bin         | the release's app slot 0            |
+| 0x7D0000  | fatfs.bin            | `initial_filesystem/` + `doom1.wad` + every in-repo `community/<id>/` preloaded into `/apps/<id>/` |
+| (gaps)    | 0xFF                 | `--fill-flash-size 16MB` from esptool merge_bin |
+
+Total size: exactly 16 MiB (16,777,216 bytes). The file is what the
+SPI flash chip looks like the moment a brand-new badge boots for the
+first time — wipe and reflash with this and you have a factory-fresh
+device.
+
+### How a user recovers
+
+1. **Plug the badge into USB.** No special button hold — the
+   ESP32-S3's native USB-CDC handles reset automatically.
+2. **Install `esptool`** (one-time, on the recovery host):
+
+   ```bash
+   python3 -m pip install --upgrade esptool
+   ```
+
+3. **Download the recovery image** from the latest release:
+
+   ```bash
+   curl -LO https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/releases/latest/download/temporal-badge-full-flash-16mb.bin
+   ```
+
+4. **Find the badge's serial port**: macOS / Linux `/dev/cu.usbmodem*`
+   or `/dev/ttyACM*`; Windows `COMx` from Device Manager.
+
+5. **Flash it**:
+
+   ```bash
+   esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX \
+       write_flash 0x0 temporal-badge-full-flash-16mb.bin
+   ```
+
+   Takes ~90 seconds at the default 460800 baud. `--baud 921600`
+   roughly halves that on hardware that can keep up.
+
+6. **Power-cycle.** Badge boots into the factory state — no contacts,
+   no nametag, no saved WiFi (those live in NVS, which was wiped along
+   with everything else). Walk through Settings → WiFi Setup and
+   you're back online.
+
+`write_flash 0x0 <image>` reproduces the chip byte-for-byte, so any
+prior partition-table layout (`_doom` or `_ver2`), corrupted
+`otadata`, or trashed FATFS is replaced — the recovery image always
+lands on the production `_doom` layout regardless of what was there
+before.
+
+### Building the recovery image locally
+
+```bash
+cd firmware
+# Build firmware + initial fatfs.bin first (the script reuses these):
+~/.platformio/penv/bin/pio run -e echo
+
+# Then assemble the 16 MB merged image:
+python3 scripts/build_recovery_image.py \
+    --env echo \
+    --out artifacts/recovery/temporal-badge-full-flash-16mb.bin
+```
+
+The script (`firmware/scripts/build_recovery_image.py`):
+
+1. Stages `community/<id>/` → `firmware/data/apps/<id>/` (drops
+   `manifest.toml` + dotfiles).
+2. Runs `pio run -e echo -t buildfs` so the fresh fatfs.bin carries
+   the community apps + DOOM WAD.
+3. Calls `esptool.py merge_bin --fill-flash-size 16MB …` against
+   bootloader + partitions + boot_app0 + firmware + fatfs.
+
+CI runs the same script from `.github/workflows/release-firmware.yml`,
+so what the user downloads from the release is reproducible from a
+clean checkout.
+
+### Recovery image vs. `erase_and_flash_expanded.sh`
+
+| Path                                  | When to use                                                | Layout after recovery |
+|---------------------------------------|------------------------------------------------------------|-----------------------|
+| Full-flash recovery image (this §)    | Bricked badge, no PlatformIO, no source checkout           | `_doom` (production)  |
+| `firmware/scripts/erase_and_flash_expanded.sh` | Working badge, opt-in to bigger ffat from source  | `_ver2` (expanded)    |
+| In-place partition migration (§ 5c)   | Working badge on `_doom`, wants `_ver2` without USB        | `_ver2` (expanded)    |
+
+The recovery image is the simplest of the three because it doesn't
+care about prior state — it just overwrites everything. The trade is
+that NVS goes with it (contacts, paired ticket UUID, saved WiFi).
 
 ### Initial-filesystem footnote
 
@@ -604,6 +830,10 @@ across every sync, even `--clear-extras`.
 | `Update.begin failed: ...`        | Image larger than the OTA partition (4 MB)      | Trim build / reduce features                 |
 | `battery too low — plug in`       | Battery <30% and no charger                     | Plug in USB                                  |
 | `stream short N/M`                | Bad WiFi mid-flash                              | Try again                                    |
+| `partition blob missing from firmware` | Build did not include `partitions_ver2.bin`  | Run `scripts/gen_expanded_partitions.py` and rebuild |
+| `flash erase rc=…` / `flash write rc=…` mid-migration | Underlying SPI flash op failed       | Retry; persistent failure → USB recovery via `erase_and_flash.sh` |
+| `run from app0 — reinstall OTA first` | Migration refused: active slot is `app1`     | Install the latest OTA, then retry migration |
+| Bricked after partition swap      | Power cut during the partition-table write window | USB recovery — `./scripts/erase_and_flash.sh` from the `firmware/` dir |
 
 The Update screen surfaces the underlying error message verbatim, so
 users can include it in bug reports.

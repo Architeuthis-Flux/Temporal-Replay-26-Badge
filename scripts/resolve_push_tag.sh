@@ -67,6 +67,12 @@ if tag_exists_on_origin "${TAG}"; then
     git -C "$ROOT" commit -m "chore: bump firmware to ${TAG} [skip ci]"
     git -C "$ROOT" push origin "HEAD:${DEFAULT_BRANCH}"
     git -C "$ROOT" pull --ff-only origin "${DEFAULT_BRANCH}"
+elif tag_exists_on_origin "${CUR}"; then
+    # A legacy un-prefixed tag (e.g. "0.2.9") exists but the canonical
+    # v-prefixed form ("v0.2.9") does not. CI switched to the vX.X.X
+    # convention; treat the v-prefixed tag as the newer canonical form and
+    # create it on this run without bumping the version.
+    echo "legacy tag ${CUR} (no v-prefix) found on origin — migrating to canonical ${TAG}"
 else
     echo "tag ${TAG} not yet on origin — using current firmware/VERSION"
 fi

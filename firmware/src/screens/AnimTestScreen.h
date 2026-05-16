@@ -49,9 +49,10 @@ class AnimTestScreen : public Screen {
   uint32_t lastJoyNavMs_ = 0;
 
   static constexpr uint16_t kJoyDeadband = 400;
-  static constexpr uint16_t kMinDelay = 30;
+  static constexpr uint16_t kMinDelay = 5;
   static constexpr uint16_t kMaxDelay = 2000;
-  static constexpr uint16_t kDelayStep = 30;
+  static constexpr uint16_t kDelayStep = 10;
+  static constexpr uint16_t kDefaultDelay = 200;
 
   uint8_t scaleDims_[8];
   uint8_t scaleCount_ = 0;

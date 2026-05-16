@@ -695,6 +695,20 @@ void GUIManager::begin(oled* display, Inputs* inputs) {
   // starfield (run from main.cpp setup() before GUI init) is the only
   // boot visual. Go straight to the home screen for the current state.
   pushScreen(homeScreenForBadgeState());
+
+  // Post-migration boot: surface the success panel proactively. The
+  // FW UPDATE screen's onEnter() reads the same RTC-magic signal,
+  // routes to kLayoutWelcome with the success copy, and acks both
+  // flags. We stack it on top of the home screen so the user can
+  // dismiss with any button and land back on the menu. The softer
+  // NVS-comparison path (`layoutJustChanged()` alone) still waits
+  // for the user to navigate to FW UPDATE on their own — that
+  // fires on USB reflash too and auto-popping it would be
+  // obnoxious in that case.
+  if (ota::justRebootedFromLayoutMigration()) {
+    pushScreen(kScreenUpdateFirmware);
+  }
+
   active_ = true;
   gGuiActive = true;
 
