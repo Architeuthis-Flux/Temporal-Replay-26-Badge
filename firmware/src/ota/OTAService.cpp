@@ -22,8 +22,8 @@ constexpr uint32_t kHealthyBootMs = 30000;         // 30 s post-setup before
 // mbedtls/ESP-IDF TLS with "esp-aes: Failed to allocate memory" on
 // badges where the WiFi bring-up + GUI left little contiguous internal
 // heap — the two handshakes overlapped and peak allocation spiked.
-// We defer after L2 association, run OTA synchronously, then wait for
-// the TLS stack to tear down before kicking the async registry worker.
+// We defer after L2 association, run OTA first, then wait for the TLS
+// stack to tear down before kicking the async registry worker.
 constexpr uint32_t kWifiOtaDeferMs = 2500;
 constexpr uint32_t kAfterOtaBeforeRegistryMs = 800;
 // Conservative floor for WiFiClientSecure + mbedTLS crypto on S3.
@@ -83,11 +83,10 @@ void OTAService::service() {
       }
       if (ESP.getFreeHeap() < kMinHeapForTls) return;
       DBG("[ota-svc] registry refresh (after OTA)\n");
-      // Run the boot-edge registry refresh on the scheduler stack instead
-      // of spawning the async worker. The extra 12 KB worker stack was enough
-      // to fragment internal RAM and make the second back-to-back TLS
-      // handshake fail on memory-constrained badges.
-      registry::refresh(true);
+      if (!registry::beginRefreshAsync(true)) {
+        sPostConnectMarkMs = now;
+        return;
+      }
       sPostConnectPhase = 3;
       sPostConnectMarkMs = now;
       break;

@@ -150,7 +150,7 @@ InstallResult installFromUrl(const char* url, size_t expectedSize,
     if (resolveRedirect(url, sResolvedAssetUrl, sizeof(sResolvedAssetUrl), 30000)) {
       installUrl = sResolvedAssetUrl;
     } else {
-      Serial.println("[ota] redirect resolve failed; streaming original URL");
+      DBG("[ota] redirect resolve failed; streaming original URL\n");
     }
   }
 

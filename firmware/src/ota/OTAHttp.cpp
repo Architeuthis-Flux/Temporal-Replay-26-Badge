@@ -231,6 +231,7 @@ bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
     return false;
   }
   if (!wifiService.connect()) {
+    wifiService.noteRequestFailed();
     return false;
   }
 
@@ -241,11 +242,13 @@ bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
   String urlStr(url);
   if (isHttps(url)) {
     secure.setInsecure();
+    secure.setHandshakeTimeout(timeoutMs / 1000);
     began = http.begin(secure, urlStr);
   } else {
     began = http.begin(plain, urlStr);
   }
   if (!began) {
+    wifiService.noteRequestFailed();
     return false;
   }
   applyCommonOptionsNoRedirect(http, timeoutMs);
@@ -256,15 +259,18 @@ bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
   http.end();
 
   if (code < 300 || code >= 400 || location.length() == 0) {
+    wifiService.noteRequestFailed();
     return false;
   }
   if (static_cast<size_t>(location.length()) >= outUrlLen) {
     Serial.printf("[ota-http] redirect too long: %u >= %u\n",
                   (unsigned)location.length(), (unsigned)outUrlLen);
+    wifiService.noteRequestFailed();
     return false;
   }
   std::strncpy(outUrl, location.c_str(), outUrlLen - 1);
   outUrl[outUrlLen - 1] = '\0';
+  wifiService.noteRequestOk();
   return true;
 }
 
