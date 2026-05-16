@@ -70,6 +70,12 @@ using InstallProgressCb = void (*)(const InstallProgress&, void* user);
 // dead battery mid-flash is the most likely cause.
 constexpr uint8_t kMinBatteryPct = 30;
 
+// Best-effort: wait out an in-flight community-registry HTTPS fetch and
+// run a MicroPython GC so internal heap is less fragmented before TLS +
+// Update.begin. Safe any time; call immediately before `installCached()`
+// (also invoked from inside `installCached()` for a single choke point).
+void prepareFirmwareInstallHeap();
+
 // Initialise from NVS cache. Call after Preferences is usable
 // (post-nvs_flash_init in setup()).
 void begin();

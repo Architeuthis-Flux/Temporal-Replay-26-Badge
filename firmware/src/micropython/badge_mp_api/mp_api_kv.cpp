@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "../../infra/PsramAllocator.h"
+
 #include "nvs.h"
 
 extern "C" {
@@ -57,7 +59,7 @@ extern "C" int temporalbadge_runtime_kv_put(const char *key, char type,
     uint8_t *blob = stack_buf;
     bool heap = false;
     if (1 + len > sizeof(stack_buf)) {
-        blob = static_cast<uint8_t *>(malloc(1 + len));
+        blob = static_cast<uint8_t *>(BadgeMemory::allocPreferPsram(1 + len));
         if (!blob) return -1;
         heap = true;
     }

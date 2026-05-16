@@ -17,6 +17,7 @@
 #include "ir/BadgeIR.h"
 #include "DebugLog.h"
 #include "Filesystem.h"
+#include "PsramAllocator.h"
 #include "hardware/oled.h"
 #include "../BadgeGlobals.h"
 #include "../screens/draw/AnimDoc.h"
@@ -1168,7 +1169,7 @@ int8_t fontFamilyFromName(const char* name) {
       return false;
     }
 
-    char* buf = static_cast<char*>(malloc(kSettingsBufSize));
+    char* buf = static_cast<char*>(BadgeMemory::allocPreferPsram(kSettingsBufSize));
     if (buf == nullptr) {
       Serial.println("Config: malloc failed for settings read");
       f_close(&fil);
@@ -1229,7 +1230,7 @@ int8_t fontFamilyFromName(const char* name) {
       return saveToNvs();
     }
   
-    char* buf = static_cast<char*>(malloc(kSettingsBufSize));
+    char* buf = static_cast<char*>(BadgeMemory::allocPreferPsram(kSettingsBufSize));
     if (buf == nullptr) {
       Serial.println("Config: malloc failed for settings write");
       return false;

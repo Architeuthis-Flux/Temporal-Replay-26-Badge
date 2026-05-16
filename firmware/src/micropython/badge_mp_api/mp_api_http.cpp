@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../api/WiFiService.h"
+#include "../../infra/PsramBodySink.h"
 
 #include "temporalbadge_runtime.h"
 
@@ -18,12 +19,23 @@ char* s_http_response = nullptr;
 
 const char* setResponse(const char* text) {
     if (!text) text = "";
-    free(s_http_response);
     const size_t len = strlen(text);
-    s_http_response = static_cast<char*>(malloc(len + 1));
-    if (!s_http_response) return nullptr;
-    memcpy(s_http_response, text, len + 1);
+    char* copy = static_cast<char*>(malloc(len + 1));
+    if (!copy) {
+        free(s_http_response);
+        s_http_response = nullptr;
+        return "";
+    }
+    memcpy(copy, text, len + 1);
+    free(s_http_response);
+    s_http_response = copy;
     return s_http_response;
+}
+
+const char* setResponseOwned(char* p) {
+    free(s_http_response);
+    s_http_response = p;
+    return s_http_response ? s_http_response : "";
 }
 
 const char* setError(const char* msg) {
@@ -64,6 +76,7 @@ const char* request(const char* method, const char* url, const char* body) {
     http.setTimeout(kHttpTimeoutMs);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.addHeader("User-Agent", "TemporalBadge/1.0");
+    http.addHeader("Accept-Encoding", "identity");
 
     int code = -1;
     if (strcmp(method, "POST") == 0) {
@@ -83,14 +96,29 @@ const char* request(const char* method, const char* url, const char* body) {
         return setError(err);
     }
 
-    String payload = http.getString();
+    BadgeMemory::PsramBodySink sink(kHttpResponseMax);
+    if (!sink.ok()) {
+        http.end();
+        wifiService.noteRequestFailed();
+        return setError("out of memory");
+    }
+    const int wr = http.writeToStream(&sink);
+    if (wr < 0) {
+        http.end();
+        wifiService.noteRequestFailed();
+        char err[112];
+        snprintf(err, sizeof(err), "http read failed %d (%s)", wr,
+                 HTTPClient::errorToString(wr).c_str());
+        return setError(err);
+    }
     http.end();
     wifiService.noteRequestOk();
 
-    if (payload.length() > kHttpResponseMax) {
-        return setError("response too large");
+    char* owned = sink.release();
+    if (!owned) {
+        return setError("out of memory");
     }
-    return setResponse(payload.c_str());
+    return setResponseOwned(owned);
 }
 
 }  // namespace

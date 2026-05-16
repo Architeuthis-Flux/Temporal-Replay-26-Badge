@@ -7,6 +7,8 @@
 #include "AssetRegistry.h"
 #include "BadgeOTA.h"
 
+#include <esp_heap_caps.h>
+
 namespace ota {
 
 OTAService otaService;
@@ -25,9 +27,22 @@ constexpr uint32_t kHealthyBootMs = 30000;         // 30 s post-setup before
 // We defer after L2 association, run OTA first, then wait for the TLS
 // stack to tear down before kicking the async registry worker.
 constexpr uint32_t kWifiOtaDeferMs = 2500;
-constexpr uint32_t kAfterOtaBeforeRegistryMs = 800;
-// Conservative floor for WiFiClientSecure + mbedTLS crypto on S3.
-constexpr uint32_t kMinHeapForTls = 48 * 1024;
+constexpr uint32_t kAfterOtaBeforeRegistryMs = 1200;
+// mbedTLS + WiFiClientSecure allocate large *contiguous* internal blocks.
+// ESP.getFreeHeap() mixes internal + PSRAM on typical Arduino builds, so a
+// badge can show "plenty" of total free heap while internal RAM is too low
+// or fragmented for TLS — use internal-only caps + largest block.
+constexpr size_t kMinInternalFreeForTls = 40 * 1024;
+constexpr size_t kMinLargestInternalBlockForTls = 26 * 1024;
+
+bool tlsHeapHeadroomOk() {
+  const size_t internalFree =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const size_t largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  return internalFree >= kMinInternalFreeForTls &&
+         largest >= kMinLargestInternalBlockForTls;
+}
 
 uint32_t sBootMs = 0;
 bool sRollbackHandled = false;
@@ -70,7 +85,7 @@ void OTAService::service() {
   switch (sPostConnectPhase) {
     case 1: {
       if ((uint32_t)(now - sPostConnectMarkMs) < kWifiOtaDeferMs) return;
-      if (ESP.getFreeHeap() < kMinHeapForTls) return;
+      if (!tlsHeapHeadroomOk()) return;
       DBG("[ota-svc] WiFi up — OTA check (deferred)\n");
       ota::checkNow(true);
       sPostConnectPhase = 2;
@@ -81,7 +96,7 @@ void OTAService::service() {
       if ((uint32_t)(now - sPostConnectMarkMs) < kAfterOtaBeforeRegistryMs) {
         return;
       }
-      if (ESP.getFreeHeap() < kMinHeapForTls) return;
+      if (!tlsHeapHeadroomOk()) return;
       DBG("[ota-svc] registry refresh (after OTA)\n");
       if (!registry::beginRefreshAsync(true)) {
         sPostConnectMarkMs = now;

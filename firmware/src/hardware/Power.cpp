@@ -49,6 +49,7 @@ uint8_t gPerformanceDepth = 0;
 #if defined(CHG_GOOD_PIN) && defined(CHG_STAT_PIN)
 bool gChargerTelemetryPinsReady = false;
 uint32_t gLastChargerTelemetryLogMs = 0;
+uint32_t gLastBatteryFullSerialMs = 0;
 bool gWasCharging = false;
 #endif
 
@@ -121,8 +122,13 @@ void logChargerTelemetryIfDue(uint32_t intervalMs) {
   logChargerTelemetry(telemetry);
 
   if (gWasCharging && !telemetry.charging && telemetry.externalPowerPresent) {
-    Serial.println("[POWER] BATTERY_FULL");
-    ESP_LOGI("POWER", "Charge complete — battery full");
+    constexpr uint32_t kBatteryFullLogIntervalMs = 5 * 60 * 1000;
+    if (gLastBatteryFullSerialMs == 0 ||
+        (uint32_t)(now - gLastBatteryFullSerialMs) >= kBatteryFullLogIntervalMs) {
+      gLastBatteryFullSerialMs = now;
+      Serial.println("[POWER] BATTERY_FULL");
+      ESP_LOGI("POWER", "Charge complete — battery full");
+    }
   }
   gWasCharging = telemetry.charging;
 }

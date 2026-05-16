@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../infra/Filesystem.h"
+#include "../infra/PsramAllocator.h"
 
 extern "C" {
 #include "lib/oofatfs/ff.h"
@@ -20,6 +21,16 @@ namespace {
 
 DynamicApp s_apps[kMaxDynamicApps];
 size_t s_count = 0;
+
+// Single scratch for FAT reads (max 2048 B). Lives in PSRAM when available
+// so AppRegistry::scan does not burn ~5 KiB of the Arduino loop stack.
+char* appRegScratch() {
+  static char* buf = nullptr;
+  if (!buf) {
+    buf = static_cast<char*>(BadgeMemory::allocPreferPsram(2048));
+  }
+  return buf;
+}
 
 // Read up to `maxLen` bytes from a FAT file into the caller's buffer,
 // preserving NUL-termination. Returns the byte count actually read, or
@@ -237,8 +248,14 @@ void resolveIcon(const char* slug, const char* iconValue, DynamicApp& app) {
     snprintf(path, sizeof(path), "/apps/%s/%s", slug, iconValue);
   }
 
-  char buf[2048];
-  int32_t bytes = readFileChunk(path, buf, sizeof(buf));
+  char* buf = appRegScratch();
+  if (!buf) {
+    if (parseIconData(iconValue, strlen(iconValue), app.icon)) {
+      app.hasCustomIcon = true;
+    }
+    return;
+  }
+  int32_t bytes = readFileChunk(path, buf, 2048);
   if (bytes < 0) {
     // Inline tuple? Try parsing the value directly.
     if (parseIconData(iconValue, strlen(iconValue), app.icon)) {
@@ -258,8 +275,12 @@ void parseAppMain(const char* slug, DynamicApp& app) {
   snprintf(app.entryPath, kEntryPathCap, "/apps/%s/main.py", slug);
   app.orderHint = INT16_MAX;
 
-  char buf[2048];
-  int32_t bytes = readFileChunk(app.entryPath, buf, sizeof(buf));
+  char* buf = appRegScratch();
+  if (!buf) {
+    slugToTitle(slug, app.title, kTitleCap);
+    return;
+  }
+  int32_t bytes = readFileChunk(app.entryPath, buf, 2048);
   if (bytes < 0) {
     return;
   }
@@ -290,8 +311,9 @@ void parseAppMain(const char* slug, DynamicApp& app) {
     // No __icon__ explicitly — try /apps/<slug>/icon.py opportunistically.
     char fallbackPath[kEntryPathCap];
     snprintf(fallbackPath, kEntryPathCap, "/apps/%s/icon.py", slug);
-    char iconBuf[1024];
-    int32_t iconBytes = readFileChunk(fallbackPath, iconBuf, sizeof(iconBuf));
+    char* iconBuf = appRegScratch();
+    int32_t iconBytes =
+        iconBuf ? readFileChunk(fallbackPath, iconBuf, 1024) : -1;
     if (iconBytes > 0 &&
         parseIconData(iconBuf, static_cast<size_t>(iconBytes), app.icon)) {
       app.hasCustomIcon = true;
@@ -313,8 +335,9 @@ void detectMatrixApp(const char* slug, DynamicApp& app) {
   if (!Filesystem::fileExists(path)) return;
   app.hasMatrixApp = true;
   // Best-effort __matrix_title__ extraction; fall back to the app title.
-  char buf[1024];
-  int32_t bytes = readFileChunk(path, buf, sizeof(buf));
+  char* buf = appRegScratch();
+  if (!buf) return;
+  int32_t bytes = readFileChunk(path, buf, 1024);
   if (bytes > 0) {
     findDunder(buf, bytes, "__matrix_title__", app.matrixTitle, kTitleCap);
   }

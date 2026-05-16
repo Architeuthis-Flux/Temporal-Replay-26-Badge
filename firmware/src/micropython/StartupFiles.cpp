@@ -9,6 +9,7 @@ FATFS* replay_get_fatfs(void);
 }
 
 #include "../infra/Filesystem.h"
+#include "../infra/PsramAllocator.h"
 #include "StartupFilesData.h"
 
 // ── Dev force-refresh helpers ─────────────────────────────────────────────
@@ -467,7 +468,8 @@ bool formatAndReprovisionFFat() {
     // Working buffer for f_mkfs. 4 KiB matches the original mount path
     // in replay_bdev.c; smaller buffers fail on FAT32-eligible volumes.
     constexpr size_t kWorkBufSize = 4096;
-    uint8_t* working_buf = static_cast<uint8_t*>(malloc(kWorkBufSize));
+    uint8_t* working_buf =
+        static_cast<uint8_t*>(BadgeMemory::allocPreferPsram(kWorkBufSize));
     if (!working_buf) {
         Serial.println("[startup] formatAndReprovisionFFat: malloc 4 KiB failed");
         return false;

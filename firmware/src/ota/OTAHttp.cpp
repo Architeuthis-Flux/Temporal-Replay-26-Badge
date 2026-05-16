@@ -6,7 +6,6 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
-#include <Stream.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -14,7 +13,7 @@
 #include "esp32-hal-cpu.h"
 
 #include "../api/WiFiService.h"
-#include "../infra/PsramAllocator.h"
+#include "../infra/PsramBodySink.h"
 
 namespace ota {
 
@@ -62,61 +61,6 @@ void applyCommonOptionsNoRedirect(HTTPClient& http, uint32_t timeoutMs) {
   applyCommonOptions(http, timeoutMs);
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
 }
-
-// Accumulates HTTP response bytes into a single contiguous buffer allocated
-// with BadgeMemory::allocPreferPsram (PSRAM first). Avoids HTTPClient::getString()
-// / StreamString, which reserves the full body on internal heap and competes
-// with mbedTLS during HTTPS.
-class JsonBodySink : public ::Stream {
- public:
-  explicit JsonBodySink(size_t capBytes) : cap_(capBytes) {
-    if (capBytes == 0) return;
-    buf_ = static_cast<char*>(BadgeMemory::allocPreferPsram(capBytes + 1));
-    if (!buf_) return;
-    buf_[0] = '\0';
-  }
-
-  ~JsonBodySink() override { std::free(buf_); }
-
-  JsonBodySink(const JsonBodySink&) = delete;
-  JsonBodySink& operator=(const JsonBodySink&) = delete;
-
-  bool ok() const { return buf_ != nullptr; }
-  size_t length() const { return len_; }
-  const char* c_str() const { return buf_ ? buf_ : ""; }
-
-  char* release() {
-    char* p = buf_;
-    buf_ = nullptr;
-    len_ = 0;
-    cap_ = 0;
-    return p;
-  }
-
-  int available() override { return 0; }
-  int read() override { return -1; }
-  int peek() override { return -1; }
-
-  size_t write(uint8_t c) override { return write(&c, 1); }
-
-  size_t write(const uint8_t* buffer, size_t size) override {
-    if (!buf_ || size == 0) return 0;
-    if (len_ >= cap_) return 0;
-    const size_t room = cap_ - len_;
-    const size_t n = (size < room) ? size : room;
-    std::memcpy(buf_ + len_, buffer, n);
-    len_ += n;
-    buf_[len_] = '\0';
-    if (n < size) return 0;
-    return size;
-  }
-
- private:
-  size_t cap_{0};
-  size_t len_{0};
-  char* buf_{nullptr};
-};
-
 }  // namespace
 
 HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
@@ -167,7 +111,7 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
   if (code != 200) {
     // Drain a bounded amount of error body without String/getString().
     constexpr size_t kErrBodyCap = 512;
-    JsonBodySink errSink(kErrBodyCap);
+    BadgeMemory::PsramBodySink errSink(kErrBodyCap);
     if (errSink.ok()) {
       (void)http.writeToStream(&errSink);
     }
@@ -195,7 +139,7 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
   // Content-Length=-1 are decoded by the library (same as getString),
   // but the body buffer is one PSRAM-backed allocation — no
   // StreamString reserve on internal heap.
-  JsonBodySink sink(maxBytes);
+  BadgeMemory::PsramBodySink sink(maxBytes);
   if (!sink.ok()) {
     std::snprintf(sError, sizeof(sError), "out of memory");
     http.end();

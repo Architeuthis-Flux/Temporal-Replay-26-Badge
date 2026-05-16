@@ -677,11 +677,10 @@ AssetInstallResult installFileToPath(const char* url,
   // f_write call (FATFS sector bookkeeping), an mbedtls_sha256_update
   // (HW-accelerated on S3 but per-call overhead still matters), and a
   // progress-callback check. At 4 MB this is the difference between
-  // ~33 KB/s and ~250 KB/s on a healthy WiFi link. Heap-allocated so
-  // we don't eat the main-loop's 24 KB stack on the AssetLibraryScreen
-  // call path; PSRAM is preferred but internal heap is fine too.
+  // ~33 KB/s and ~250 KB/s on a healthy WiFi link. Prefer PSRAM so the
+  // 8 KiB staging buffer does not squeeze mbedTLS on concurrent HTTPS.
   constexpr size_t kChunkBytes = 8192;
-  uint8_t* chunk = static_cast<uint8_t*>(std::malloc(kChunkBytes));
+  uint8_t* chunk = static_cast<uint8_t*>(BadgeMemory::allocPreferPsram(kChunkBytes));
   if (!chunk) {
     setError("chunk alloc failed");
     f_close(&fil);
