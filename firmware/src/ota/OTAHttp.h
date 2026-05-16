@@ -4,9 +4,9 @@
 // used by both `BadgeOTA` (firmware pull from GitHub Releases) and
 // `AssetRegistry` (asset manifest + per-asset file downloads). The badge
 // firmware is open source with no secrets to protect, so TLS uses
-// setInsecure() — there is no certificate pinning. Redirects are
-// followed automatically (GitHub redirects release-asset URLs to
-// objects.githubusercontent.com).
+// setInsecure() — there is no certificate pinning. Firmware OTA
+// resolves GitHub release-asset redirects before opening the large
+// stream so the signed asset URL fits in badge-owned storage.
 //
 // Two surfaces:
 //   `request()` — simple GET into a malloc'd buffer, suitable for
@@ -76,6 +76,11 @@ struct HttpResult {
 HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
                    size_t maxBytes = kJsonMaxBytes,
                    uint32_t timeoutMs = kDefaultTimeoutMs);
+
+// Resolve a GitHub release-asset URL to its signed release-assets URL without
+// downloading the body. Returns true only for a 30x response with Location.
+bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
+                     uint32_t timeoutMs = kDefaultTimeoutMs);
 
 // Streaming download. Opens an HTTP GET and exposes the response
 // stream so the caller can drain chunks (Update.write, file write).

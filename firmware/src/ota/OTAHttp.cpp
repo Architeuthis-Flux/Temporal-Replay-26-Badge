@@ -58,6 +58,11 @@ void applyCommonOptions(HTTPClient& http, uint32_t timeoutMs) {
   http.addHeader("Accept-Encoding", "identity");
 }
 
+void applyCommonOptionsNoRedirect(HTTPClient& http, uint32_t timeoutMs) {
+  applyCommonOptions(http, timeoutMs);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+}
+
 // Accumulates HTTP response bytes into a single contiguous buffer allocated
 // with BadgeMemory::allocPreferPsram (PSRAM first). Avoids HTTPClient::getString()
 // / StreamString, which reserves the full body on internal heap and competes
@@ -217,6 +222,50 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
   result.ok = true;
   result.error = "";
   return result;
+}
+
+bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
+                     uint32_t timeoutMs) {
+  if (outUrl && outUrlLen > 0) outUrl[0] = '\0';
+  if (!outUrl || outUrlLen == 0 || !isHttp(url)) {
+    return false;
+  }
+  if (!wifiService.connect()) {
+    return false;
+  }
+
+  HTTPClient http;
+  WiFiClient plain;
+  WiFiClientSecure secure;
+  bool began = false;
+  String urlStr(url);
+  if (isHttps(url)) {
+    secure.setInsecure();
+    began = http.begin(secure, urlStr);
+  } else {
+    began = http.begin(plain, urlStr);
+  }
+  if (!began) {
+    return false;
+  }
+  applyCommonOptionsNoRedirect(http, timeoutMs);
+  http.addHeader("Range", "bytes=0-0");
+
+  const int code = http.GET();
+  const String location = http.getLocation();
+  http.end();
+
+  if (code < 300 || code >= 400 || location.length() == 0) {
+    return false;
+  }
+  if (static_cast<size_t>(location.length()) >= outUrlLen) {
+    Serial.printf("[ota-http] redirect too long: %u >= %u\n",
+                  (unsigned)location.length(), (unsigned)outUrlLen);
+    return false;
+  }
+  std::strncpy(outUrl, location.c_str(), outUrlLen - 1);
+  outUrl[outUrlLen - 1] = '\0';
+  return true;
 }
 
 // ── Stream ─────────────────────────────────────────────────────────────────

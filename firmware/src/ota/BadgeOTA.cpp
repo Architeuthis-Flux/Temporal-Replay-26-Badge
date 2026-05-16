@@ -35,10 +35,11 @@ constexpr const char* kNvsAssetUrl  = "asset_url";
 constexpr const char* kNvsAssetSize = "asset_size";
 
 constexpr size_t kTagMax = 32;
-constexpr size_t kUrlMax = 256;
+constexpr size_t kUrlMax = 1536;
 
 char sLatestTag[kTagMax] = "";
 char sAssetUrl[kUrlMax] = "";
+char sResolvedAssetUrl[kUrlMax] = "";
 size_t sAssetSize = 0;
 time_t sLastCheckEpoch = 0;
 char sLastError[80] = "";
@@ -120,6 +121,120 @@ bool batteryAllowsInstall() {
 #else
   return true;
 #endif
+}
+
+bool urlIsHttps(const char* url) {
+  return url && std::strncmp(url, "https://", 8) == 0;
+}
+
+InstallResult installFromUrl(const char* url, size_t expectedSize,
+                             InstallProgressCb cb, void* user) {
+  if (!url || url[0] == '\0') return InstallResult::kNoAssetCached;
+  if (!batteryAllowsInstall()) {
+    setError("battery too low — plug in to update");
+    return InstallResult::kBatteryTooLow;
+  }
+  if (!wifiService.connect()) {
+    setError("wifi unavailable");
+    return InstallResult::kWifiUnavailable;
+  }
+
+  // Hold WiFi awake + CPU at 240 MHz across the multi-MB firmware
+  // pull. Same rationale as the AssetRegistry installer — modem sleep
+  // and CPU scaling between chunks cap throughput at single-digit
+  // percentages of the link rate.
+  ThroughputBoost boost;
+  const char* installUrl = url;
+  if (urlIsHttps(url) && std::strstr(url, "github.com/") != nullptr) {
+    sResolvedAssetUrl[0] = '\0';
+    if (resolveRedirect(url, sResolvedAssetUrl, sizeof(sResolvedAssetUrl), 30000)) {
+      installUrl = sResolvedAssetUrl;
+    } else {
+      Serial.println("[ota] redirect resolve failed; streaming original URL");
+    }
+  }
+
+  Stream s;
+  if (!s.open(installUrl, 45000)) {
+    setError(s.lastError());
+    return InstallResult::kHttpError;
+  }
+  size_t total = s.contentLength();
+  if (total == 0 && expectedSize > 0) total = expectedSize;
+
+  if (!Update.begin(total > 0 ? total : UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf),
+                  "Update.begin failed: %s",
+                  Update.errorString());
+    setError(buf);
+    return InstallResult::kUpdateBeginFailed;
+  }
+
+  // 4 KB chunks — bigger than the historic 2 KB without bloating the
+  // worker's stack budget. Update.write batches into the flash sector
+  // size internally so larger reads here mostly buy us fewer
+  // HTTPClient::available polls and fewer SHA/CRC update calls inside
+  // arduino-esp32's Update layer.
+  uint8_t chunk[4096];
+  size_t written = 0;
+  uint32_t lastReport = 0;
+  while (true) {
+    int got = s.read(chunk, sizeof(chunk));
+    if (got < 0) {
+      Update.abort();
+      setError("stream read failed");
+      return InstallResult::kHttpError;
+    }
+    if (got == 0) {
+      // EOF or stream stopped — accept if we got everything.
+      if (total > 0 && written < total) {
+        Update.abort();
+        char buf[80];
+        std::snprintf(buf, sizeof(buf),
+                      "stream short: %u/%u",
+                      (unsigned)written, (unsigned)total);
+        setError(buf);
+        return InstallResult::kHttpError;
+      }
+      break;
+    }
+    size_t w = Update.write(chunk, got);
+    if (w != static_cast<size_t>(got)) {
+      Update.abort();
+      char buf[80];
+      std::snprintf(buf, sizeof(buf),
+                    "Update.write %u/%d", (unsigned)w, got);
+      setError(buf);
+      return InstallResult::kWriteFailed;
+    }
+    written += w;
+    if (cb && (millis() - lastReport > 250 ||
+               (total > 0 && written >= total))) {
+      lastReport = millis();
+      InstallProgress prog{written, total, false, InstallResult::kOk};
+      cb(prog, user);
+    }
+    if (total > 0 && written >= total) break;
+  }
+
+  if (!Update.end(true)) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf),
+                  "Update.end failed: %s",
+                  Update.errorString());
+    setError(buf);
+    return InstallResult::kEndFailed;
+  }
+
+  if (cb) {
+    InstallProgress done{written, total, true, InstallResult::kOk};
+    cb(done, user);
+  }
+
+  DBG("[ota] install complete (%u bytes); rebooting\n",
+                (unsigned)written);
+  return InstallResult::kOk;
 }
 
 }  // namespace
@@ -253,101 +368,7 @@ const char* lastErrorMessage() { return sLastError; }
 InstallResult installCached(InstallProgressCb cb, void* user) {
   setError("");
   if (sAssetUrl[0] == '\0') return InstallResult::kNoAssetCached;
-  if (!batteryAllowsInstall()) {
-    setError("battery too low — plug in to update");
-    return InstallResult::kBatteryTooLow;
-  }
-  if (!wifiService.connect()) {
-    setError("wifi unavailable");
-    return InstallResult::kWifiUnavailable;
-  }
-
-  // Hold WiFi awake + CPU at 240 MHz across the multi-MB firmware
-  // pull. Same rationale as the AssetRegistry installer — modem sleep
-  // and CPU scaling between chunks cap throughput at single-digit
-  // percentages of the link rate.
-  ThroughputBoost boost;
-  Stream s;
-  if (!s.open(sAssetUrl, 30000)) {
-    setError(s.lastError());
-    return InstallResult::kHttpError;
-  }
-  size_t total = s.contentLength();
-  if (total == 0 && sAssetSize > 0) total = sAssetSize;
-
-  if (!Update.begin(total > 0 ? total : UPDATE_SIZE_UNKNOWN, U_FLASH)) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf),
-                  "Update.begin failed: %s",
-                  Update.errorString());
-    setError(buf);
-    return InstallResult::kUpdateBeginFailed;
-  }
-
-  // 4 KB chunks — bigger than the historic 2 KB without bloating the
-  // worker's stack budget. Update.write batches into the flash sector
-  // size internally so larger reads here mostly buy us fewer
-  // HTTPClient::available polls and fewer SHA/CRC update calls inside
-  // arduino-esp32's Update layer.
-  uint8_t chunk[4096];
-  size_t written = 0;
-  uint32_t lastReport = 0;
-  while (true) {
-    int got = s.read(chunk, sizeof(chunk));
-    if (got < 0) {
-      Update.abort();
-      setError("stream read failed");
-      return InstallResult::kHttpError;
-    }
-    if (got == 0) {
-      // EOF or stream stopped — accept if we got everything.
-      if (total > 0 && written < total) {
-        Update.abort();
-        char buf[80];
-        std::snprintf(buf, sizeof(buf),
-                      "stream short: %u/%u",
-                      (unsigned)written, (unsigned)total);
-        setError(buf);
-        return InstallResult::kHttpError;
-      }
-      break;
-    }
-    size_t w = Update.write(chunk, got);
-    if (w != static_cast<size_t>(got)) {
-      Update.abort();
-      char buf[80];
-      std::snprintf(buf, sizeof(buf),
-                    "Update.write %u/%d", (unsigned)w, got);
-      setError(buf);
-      return InstallResult::kWriteFailed;
-    }
-    written += w;
-    if (cb && (millis() - lastReport > 250 ||
-               (total > 0 && written >= total))) {
-      lastReport = millis();
-      InstallProgress prog{written, total, false, InstallResult::kOk};
-      cb(prog, user);
-    }
-    if (total > 0 && written >= total) break;
-  }
-
-  if (!Update.end(true)) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf),
-                  "Update.end failed: %s",
-                  Update.errorString());
-    setError(buf);
-    return InstallResult::kEndFailed;
-  }
-
-  if (cb) {
-    InstallProgress done{written, total, true, InstallResult::kOk};
-    cb(done, user);
-  }
-
-  DBG("[ota] install complete (%u bytes); rebooting\n",
-                (unsigned)written);
-  return InstallResult::kOk;
+  return installFromUrl(sAssetUrl, sAssetSize, cb, user);
 }
 
 void markCurrentAppValidIfPending() {
