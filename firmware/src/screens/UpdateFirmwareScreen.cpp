@@ -160,16 +160,25 @@ void drawModalPanel(oled& d, const char* title, const char* line1,
 }  // namespace
 
 void UpdateFirmwareScreen::onEnter(GUIManager& /*gui*/) {
-  phase_ = Phase::kIdle;
   installDone_ = false;
   installBytes_ = 0;
   installTotal_ = 0;
-  // The OTA cooldown is gone: every screen entry triggers a fresh
-  // check so the user always sees the very latest release tag the
-  // moment they open the screen. Skipped if WiFi is down — the idle
-  // render surfaces the "WiFi off" warning in that case.
-  if (wifiService.isConnected()) {
-    runCheck(true);
+  // A partition-layout change since last boot (user just ran
+  // erase_and_flash_expanded.sh, or rolled back) is rare but worth
+  // explaining. Show the welcome panel on first FW UPDATE entry after
+  // such a change so they know what they got.
+  if (ota::layoutJustChanged()) {
+    phase_ = Phase::kLayoutWelcome;
+    ota::acknowledgeLayoutChange();
+  } else {
+    phase_ = Phase::kIdle;
+    // The OTA cooldown is gone: every screen entry triggers a fresh
+    // check so the user always sees the very latest release tag the
+    // moment they open the screen. Skipped if WiFi is down — the
+    // idle render surfaces the "WiFi off" warning in that case.
+    if (wifiService.isConnected()) {
+      runCheck(true);
+    }
   }
   firstEnter_ = false;
 }
@@ -195,6 +204,14 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
   }
   if (phase_ == Phase::kReinstallConfirm) {
     renderReinstallConfirm(d);
+    return;
+  }
+  if (phase_ == Phase::kLayoutMigrateInfo) {
+    renderLayoutMigrateInfo(d);
+    return;
+  }
+  if (phase_ == Phase::kLayoutWelcome) {
+    renderLayoutWelcome(d);
     return;
   }
 
@@ -287,12 +304,21 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
     char szLine[48];
     const float curMb = volBytes / (1024.0f * 1024.0f);
     if (ota::ffatExpansionAvailable()) {
+      // Free space exists inside the current partition — show the
+      // delta so the gain is concrete ("+0.5 MB" beats "expand").
       const float partMb =
           ota::ffatPartitionBytes() / (1024.0f * 1024.0f);
       std::snprintf(szLine, sizeof(szLine),
-                    "FS: %.1f MB  X expand %.1f", curMb, partMb);
+                    "FS: %.1f MB  X +%.1f MB", curMb, partMb - curMb);
+    } else if (ota::canOfferLayoutMigration()) {
+      // Already filling the current partition; bigger layout means a
+      // full chip erase + reflash. We pitch the absolute target size
+      // (6.875 MB) rather than the delta so the user knows what they
+      // get for the trouble.
+      std::snprintf(szLine, sizeof(szLine),
+                    "FS: %.1f MB  X 6.9 MB FS", curMb);
     } else {
-      std::snprintf(szLine, sizeof(szLine), "FS: %.1f MB", curMb);
+      std::snprintf(szLine, sizeof(szLine), "FS: %.1f MB (max)", curMb);
     }
     ButtonGlyphs::drawInlineHint(d, 4, 50, szLine);
   }
@@ -340,6 +366,41 @@ void UpdateFirmwareScreen::renderExpandConfirm(oled& d, bool secondConfirm) {
                  "Badge reboots after format.",
                  nullptr, true);
   OLEDLayout::drawActionFooter(d, "WIPE & EXPAND", "Wipe");
+}
+
+void UpdateFirmwareScreen::renderLayoutMigrateInfo(oled& d) {
+  OLEDLayout::drawStatusHeader(d, "BIGGER STORAGE");
+
+  // Pitch the gain first, then the cost. The script handles the
+  // destructive bits; explaining "one-time" reassures users it's not
+  // something they have to do again later.
+  drawModalPanel(d, "Want 6.9 MB FS?",
+                 "Run erase_and_flash_",
+                 "expanded.sh over USB",
+                 "once. Wipes all data.");
+  OLEDLayout::drawNavFooter(d, "Any:Back");
+}
+
+void UpdateFirmwareScreen::renderLayoutWelcome(oled& d) {
+  // First FW UPDATE entry after a layout swap. The interesting fact
+  // is the new FS size — show it concretely so the user sees the
+  // benefit of what they just did (or notices the regression if
+  // they accidentally went the other way).
+  const float partMb = ota::ffatPartitionBytes() / (1024.0f * 1024.0f);
+  const bool expanded = ota::ffatUsesExpandedPartitionLayout();
+  OLEDLayout::drawStatusHeader(d,
+      expanded ? "EXPANDED LAYOUT" : "DEFAULT LAYOUT");
+
+  char szLine[48];
+  std::snprintf(szLine, sizeof(szLine), "FS partition: %.1f MB", partMb);
+  drawModalPanel(d,
+                 expanded ? "Layout changed" : "Layout changed",
+                 szLine,
+                 expanded ? "OTA updates work as"
+                          : "Back on the default",
+                 expanded ? "normal — same firmware."
+                          : "layout. OTA works.");
+  OLEDLayout::drawNavFooter(d, "Any:Continue");
 }
 
 void UpdateFirmwareScreen::renderReinstallConfirm(oled& d) {
@@ -402,6 +463,24 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     return;
   }
 
+  if (phase_ == Phase::kLayoutMigrateInfo) {
+    if (e.cancelPressed || e.confirmPressed || e.xPressed || e.yPressed) {
+      phase_ = Phase::kIdle;
+    }
+    return;
+  }
+
+  if (phase_ == Phase::kLayoutWelcome) {
+    if (e.cancelPressed || e.confirmPressed || e.xPressed || e.yPressed) {
+      phase_ = Phase::kIdle;
+      // Kick the deferred check now that the welcome has been read.
+      if (wifiService.isConnected()) {
+        runCheck(true);
+      }
+    }
+    return;
+  }
+
   if (phase_ == Phase::kReinstallConfirm) {
     if (e.cancelPressed) { phase_ = Phase::kIdle; return; }
     if (e.confirmPressed) {
@@ -419,12 +498,19 @@ void UpdateFirmwareScreen::handleInput(const Inputs& inputs, int16_t /*cx*/,
     return;
   }
 
-  // X button (yPressed in the codebase's swap-aware naming) opens
-  // the expand-storage flow when the partition has unclaimed space.
-  if (e.xPressed && ota::ffatExpansionAvailable()) {
-    Haptics::shortPulse();
-    phase_ = Phase::kExpandConfirm;
-    return;
+  // X (swap-aware yPressed): expand FAT volume within the current
+  // partition, or explain the one-time USB path to the bigger map.
+  if (e.xPressed) {
+    if (ota::ffatExpansionAvailable()) {
+      Haptics::shortPulse();
+      phase_ = Phase::kExpandConfirm;
+      return;
+    }
+    if (ota::canOfferLayoutMigration()) {
+      Haptics::shortPulse();
+      phase_ = Phase::kLayoutMigrateInfo;
+      return;
+    }
   }
 
   // D-pad split: Up = Check, Right = Install. Confirm/Y are unused

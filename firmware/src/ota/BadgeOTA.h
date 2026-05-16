@@ -10,9 +10,13 @@
 //                      OTA slot via `Update.write` and reboot.
 //
 // The asset name the badge looks for is supplied at compile time via
-// `OTA_ASSET_NAME` (default `firmware.bin`) so different
-// environments / forks pick the right `.bin` from a multi-asset
-// release. The repo to query is `OTA_GITHUB_REPO`
+// `OTA_ASSET_NAME` (default `firmware.bin`). The same release `.bin`
+// boots on both the default `_doom` partition table and the opt-in
+// `_ver2` layout because the app is mapped into its slot at runtime
+// via the bootloader's MMU setup and uses `esp_partition_find_*` for
+// every data partition — there are no hardcoded flash offsets. Keep
+// the build under the smaller (`_doom`, 3.84 MB) slot or the
+// compatibility breaks. The repo to query is `OTA_GITHUB_REPO`
 // (default `Architeuthis-Flux/Temporal-Replay-26-Badge`).
 //
 // First-boot rollback: `markCurrentAppValidIfPending()` should be
@@ -40,7 +44,7 @@ enum class CheckResult : uint8_t {
   kOkUpToDate,        // tag == FIRMWARE_VERSION
   kOkNewerAvailable,  // tag > FIRMWARE_VERSION; cached
   kOkOlder,           // tag < FIRMWARE_VERSION (pre-release / downgrade)
-  kNoMatchingAsset,   // release exists but no `firmware-<env>.bin`
+  kNoMatchingAsset,   // release exists but no OTA_ASSET_NAME asset
   kNetworkError,      // wifi / http failure
   kParseError,        // JSON malformed
 };
@@ -139,6 +143,21 @@ size_t ffatVolumeBytes();
 // True iff partition >> volume by a meaningful margin (> 256 KB).
 // Used to decide whether to surface the "Expand storage" affordance.
 bool ffatExpansionAvailable();
+
+// True when the flash uses the opt-in `_ver2` partition map (ffat @
+// 0x910000). Used for UI nudges only — OTA itself is layout-agnostic.
+bool ffatUsesExpandedPartitionLayout();
+
+// True on the default `_doom` map — the FW UPDATE screen can offer a
+// one-time USB migration path to the bigger layout (see OTA-MAINTAINER).
+bool canOfferLayoutMigration();
+
+// True once after a boot whose partition layout differs from the last
+// boot recorded in NVS. Lets the FW UPDATE screen show a one-shot
+// "welcome to the expanded layout" panel. Cleared by
+// `acknowledgeLayoutChange()`.
+bool layoutJustChanged();
+void acknowledgeLayoutChange();
 
 // Reformats `ffat` and reboots. Synchronous; does NOT return on
 // success. Wipes ALL user data on `/`. Caller must have already

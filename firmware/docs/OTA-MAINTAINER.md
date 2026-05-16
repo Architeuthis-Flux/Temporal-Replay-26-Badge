@@ -422,42 +422,45 @@ re-fetch from the Asset Library tile.
 
 ### What about OTA after opting in?
 
-**For now, opting in means leaving the OTA path.** The release Action
-publishes one asset (`firmware.bin`) built for the `_doom` layout. An
-expanded badge that pulls that asset would mis-align ffat and possibly
-overflow into the wrong region — definitely a bricking risk.
+**OTA works on both layouts from the same `firmware.bin`.** The
+release Action publishes one asset built for the smaller `_doom`
+app slot (3.84 MB). The binary has no hardcoded flash offsets — the
+bootloader maps whichever app slot is active to the standard exec
+virtual address via the MMU, and the firmware finds every data
+partition (ffat, otadata, nvs, coredump) at runtime via
+`esp_partition_find_first`. So a badge on `_ver2` (4.5 MB slots,
+6.875 MB ffat) installs the same release `.bin` as a badge on
+`_doom` (3.84 MB slots, 6.0 MB ffat) and gets the larger ffat for
+free.
 
-**Detection:** the badge's `BADGE_PARTITIONS_EXPANDED` build symbol
-identifies expanded firmware at compile time, and at runtime
-`ffatPartitionBytes()` returns the actual partition size. The OTA
-module currently doesn't consume this — `installCached()` just
-streams whatever URL is cached. Future work, in priority order:
+**Hard ceiling:** `firmware.bin` must fit the smaller `_doom` slot.
+The release Action checks `stat(firmware.bin) <= 0x3E0000` and fails
+the upload on overflow — dropping `_doom` support would also drop
+OTA for every deployed badge.
 
-1. **Fail-safe gate (cheapest)**: in `BadgeOTA::installCached()`,
-   compare the running build's partition size against a constant
-   baked into the asset (or a value embedded in a sidecar
-   `manifest.json`) and refuse to install when they disagree. Today
-   an expanded badge would silently flash a `_doom`-built asset.
-2. **Dual-asset OTA (full fix)**: the release Action builds both
-   `pio run -e echo` and `pio run -e echo-expanded`, uploads
-   `firmware.bin` and `firmware-expanded.bin`. The badge picks based
-   on `#ifdef BADGE_PARTITIONS_EXPANDED` (which would override
-   `OTA_ASSET_NAME`). Cost: ~2× the Action time and a manifest
-   update.
-
-Until either of those ships, a badge that runs the expanded build
-should stay on the build it was flashed with — communicate this to
-opt-in users.
+**Layout-change UX:** `BadgeOTA` records the running partition map
+in NVS (`badge_ota/last_layout`). When it changes from one boot to
+the next (e.g. user just ran `erase_and_flash_expanded.sh`), the
+next visit to the FW UPDATE screen shows a one-shot welcome panel
+with the new ffat size before falling through to the normal OTA flow.
 
 ### "Expand storage" affordance
 
-The FW UPDATE screen has a latent "Expand storage" prompt (press X)
-that triggers when the FATFS volume is meaningfully smaller than the
-partition. With the current setup it doesn't fire on either layout
-(both ffat volumes match their partitions on a fresh flash). It's
-kept for future scenarios where a partition bump *is* OTA-deliverable
-(see "Dual-asset OTA" above) or where a different partition table
-ships with a wider ffat than the existing FAT volume header.
+The FW UPDATE screen has two adjacent X-button affordances:
+
+1. **Expand the FAT volume within the current partition** — only
+   fires when the formatted FAT capacity is meaningfully smaller
+   than the partition (>256 KB slack). Reformats `ffat` in place.
+2. **Bigger storage (layout migration)** — only shown on the
+   default `_doom` layout. Explains the one-time
+   `erase_and_flash_expanded.sh` USB path that swaps in the `_ver2`
+   partition table for a 6.875 MB ffat. After the reflash, the
+   next FW UPDATE entry shows the layout-change welcome described
+   above.
+
+The `BADGE_PARTITIONS_EXPANDED` define is now only a debugging
+breadcrumb — runtime code detects the layout from the mounted ffat
+address and doesn't consume the macro.
 
 ### Initial-filesystem footnote
 

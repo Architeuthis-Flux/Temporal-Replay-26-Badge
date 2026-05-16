@@ -1,12 +1,20 @@
 name: release-firmware
 
 # Builds the production firmware.bin and attaches it to a GitHub
-# release as `firmware.bin` (matching the OTA_ASSET_NAME compiled
-# into the badge and the path JumperIDE points at). Also stages and
+# release. The same .bin boots on both the default `_doom` partition
+# table and the opt-in `_ver2` layout (the app uses runtime partition
+# lookups and the bootloader maps slots via MMU). We build against
+# `_doom` so the binary fits the smaller 3.84 MB app slot — that is
+# the compatibility ceiling and CI fails the upload if we ever
+# overflow it. Also stages and
 # uploads any release-bundled assets declared in
 # `release-assets/manifest.json` (the DOOM WAD, etc.) so the badge's
 # Asset Library can fetch them from
 # `https://github.com/<owner>/<repo>/releases/latest/download/<name>`.
+#
+# Before building, sync_firmware_release.sh ensures firmware/VERSION
+# matches the release tag (semver, optional leading v) and force-moves
+# the tag to the current main HEAD so re-runs pick up newer commits.
 #
 # See firmware/docs/OTA-MAINTAINER.md § 2 for the full workflow.
 #
@@ -20,11 +28,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach the asset to (must already exist)"
+        description: "Release tag (e.g. v0.2.9); must already exist; retagged to main HEAD on each run"
         required: true
 
 permissions:
-  contents: write   # needed to attach the .bin to the release
+  contents: write   # VERSION commit, tag move, release asset upload
 
 jobs:
   build:
@@ -33,6 +41,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync VERSION with tag and move tag to main HEAD
+        id: sync
+        run: bash scripts/sync_firmware_release.sh "${{ steps.tag.outputs.tag }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,6 +78,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install platformio
 
+      - name: Verify firmware version matches release tag
+        run: |
+          SEMVER="${{ steps.sync.outputs.semver }}"
+          BUILT="$(tr -d '[:space:]' < firmware/VERSION)"
+          if [ "$BUILT" != "$SEMVER" ]; then
+            echo "error: firmware/VERSION is $BUILT but release tag is $SEMVER" >&2
+            exit 1
+          fi
+          echo "firmware/VERSION OK: $BUILT"
+
       - name: Build firmware (echo env)
         env:
           # No WiFi credentials baked into the public release. Users
@@ -67,6 +100,29 @@ jobs:
           # have something to read.
           [ -f settings.txt ] || cp settings.txt.example settings.txt
           pio run -e echo
+
+      - name: Verify version string embedded in firmware.bin
+        run: |
+          python3 firmware/scripts/verify_firmware_version.py \
+            firmware/.pio/build/echo/firmware.bin \
+            "${{ steps.sync.outputs.semver }}"
+
+      - name: Verify firmware.bin fits the smaller _doom app slot
+        # Compatibility contract: the same .bin must boot on _doom
+        # (3.84 MB slots) AND _ver2 (4.5 MB slots). If the build
+        # outgrows the smaller slot, _doom badges silently break OTA
+        # — fail the upload here instead.
+        run: |
+          BIN=firmware/.pio/build/echo/firmware.bin
+          MAX_SLOT=4063232   # 0x3E0000 — see partitions_replay_16MB_doom.csv
+          SIZE=$(stat -c%s "$BIN")
+          echo "firmware.bin size: $SIZE / $MAX_SLOT bytes"
+          if [ "$SIZE" -gt "$MAX_SLOT" ]; then
+            echo "error: firmware.bin ($SIZE B) exceeds _doom app slot ($MAX_SLOT B)." >&2
+            echo "       Dropping _doom support would also drop OTA for every" >&2
+            echo "       deployed badge — shrink the build instead." >&2
+            exit 1
+          fi
 
       - name: Stage release-bundled assets
         # Reads release-assets/manifest.json. For each entry: copies
@@ -84,19 +140,10 @@ jobs:
       - name: List release artifacts
         run: ls -lh artifacts/release/
 
-      - name: Determine release tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ steps.sync.outputs.tag }}
           # Glob — picks up firmware.bin plus every file the
           # release-asset staging step produced (doom1.wad, etc.).
           files: artifacts/release/*

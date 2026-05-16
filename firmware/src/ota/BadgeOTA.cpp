@@ -83,9 +83,15 @@ constexpr const char* kNvsLastEpoch = "last_epoch";
 constexpr const char* kNvsLatestTag = "latest_tag";
 constexpr const char* kNvsAssetUrl  = "asset_url";
 constexpr const char* kNvsAssetSize = "asset_size";
+constexpr const char* kNvsLastLayout = "last_layout";  // "doom" | "ver2"
 
 constexpr size_t kTagMax = 32;
 constexpr size_t kUrlMax = 1536;
+
+// Partition table bases for the 16 MB layouts (see OTA-MAINTAINER.md).
+// `_doom`: ffat @ 0x7D0000  (6.0 MB)
+// `_ver2`: ffat @ 0x910000  (6.875 MB, opt-in)
+constexpr uint32_t kFfatExpandedPartitionBase = 0x910000u;
 
 char sLatestTag[kTagMax] = "";
 char sAssetUrl[kUrlMax] = "";
@@ -96,6 +102,8 @@ char sLastError[80] = "";
 bool sBegun = false;
 bool sPendingVerify = false;
 bool sValidated = false;
+bool sLayoutChanged = false;
+bool sLayoutAcknowledged = false;
 
 void setError(const char* msg) {
   if (!msg) msg = "";
@@ -157,6 +165,34 @@ int compareSemver(const char* a, const char* b) {
   if (ab != bb) return (ab < bb) ? -1 : 1;
   if (ac != bc) return (ac < bc) ? -1 : 1;
   return 0;
+}
+
+bool isExpandedPartitionLayout() {
+  const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, nullptr);
+  if (!part) return false;
+  return part->address >= kFfatExpandedPartitionBase;
+}
+
+const char* layoutTag() {
+  return isExpandedPartitionLayout() ? "ver2" : "doom";
+}
+
+void recordCurrentLayout() {
+  // Diff the running layout against the last boot's. A change means
+  // the user just USB-flashed `erase_and_flash_expanded.sh` (or its
+  // inverse). Latch the result so the UI can surface a one-shot panel.
+  Preferences p;
+  if (!p.begin(kNvsNamespace, false)) return;
+  char prev[8] = "";
+  p.getString(kNvsLastLayout, prev, sizeof(prev));
+  const char* now = layoutTag();
+  if (prev[0] && std::strcmp(prev, now) != 0) {
+    sLayoutChanged = true;
+    DBG("[ota] partition layout changed: %s -> %s\n", prev, now);
+  }
+  p.putString(kNvsLastLayout, now);
+  p.end();
 }
 
 bool batteryAllowsInstall() {
@@ -315,6 +351,7 @@ void begin() {
   if (sBegun) return;
   sBegun = true;
   loadCache();
+  recordCurrentLayout();
 
   // Detect "we just OTA-installed and haven't been validated yet".
   const esp_partition_t* running = esp_ota_get_running_partition();
@@ -363,7 +400,8 @@ CheckResult checkNow(bool ignoreCooldown) {
   logOtaCheckHeap("post-github-http-ok");
 
   // GitHub release JSON. We only care about `tag_name` + the asset
-  // whose `name` matches OTA_ASSET_NAME.
+  // whose `name` matches OTA_ASSET_NAME. The same .bin works on both
+  // partition layouts (see BadgeOTA.h comment).
   BadgeMemory::PsramJsonDocument doc(8192);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
@@ -424,8 +462,9 @@ CheckResult checkNow(bool ignoreCooldown) {
   logOtaCheckHeap("check-complete");
 
   const int cmp = compareSemver(sLatestTag, FIRMWARE_VERSION);
-  DBG("[ota] latest=%s current=%s cmp=%d size=%u\n",
-                sLatestTag, FIRMWARE_VERSION, cmp, (unsigned)sAssetSize);
+  DBG("[ota] latest=%s current=%s cmp=%d size=%u layout=%s\n",
+                sLatestTag, FIRMWARE_VERSION, cmp,
+                (unsigned)sAssetSize, layoutTag());
 
   if (cmp > 0) return CheckResult::kOkNewerAvailable;
   if (cmp == 0) return CheckResult::kOkUpToDate;
@@ -493,6 +532,22 @@ size_t ffatVolumeBytes() {
                    static_cast<uint64_t>(fs->csize) *
                    static_cast<uint64_t>(sectorBytes);
   return static_cast<size_t>(bytes);
+}
+
+bool ffatUsesExpandedPartitionLayout() {
+  return isExpandedPartitionLayout();
+}
+
+bool canOfferLayoutMigration() {
+  return !isExpandedPartitionLayout();
+}
+
+bool layoutJustChanged() {
+  return sLayoutChanged && !sLayoutAcknowledged;
+}
+
+void acknowledgeLayoutChange() {
+  sLayoutAcknowledged = true;
 }
 
 bool ffatExpansionAvailable() {

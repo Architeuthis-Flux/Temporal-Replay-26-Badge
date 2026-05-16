@@ -155,6 +155,15 @@ DEFAULT_RAW_BASE = (
     "Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem"
 )
 
+# The manifest catalog must not include itself: hashing the on-disk file
+# and embedding that digest in the same JSON changes the bytes on every
+# run (no stable fixed point). Host-side sync (badge_sync, JumperIDE)
+# diffs on fnv1a32 + size, so a churning self-entry would force a
+# manifest re-push every build even when nothing else changed.
+# The file still ships on FATFS; it is simply not a sync target.
+MANIFEST_PATH = "/manifest.json"
+MANIFEST_BASENAME = "manifest.json"
+
 
 # ── FNV-1a (must match the C++ implementation) ──────────────────────────────
 
@@ -230,6 +239,10 @@ def needs_regeneration(data_dir: Path, output_file: Path,
     if script_file is not None and script_file.exists() and script_file.stat().st_mtime > out_mtime:
         return True
     for p in data_dir.rglob('*'):
+        if p.name == MANIFEST_BASENAME and p.parent == data_dir:
+            # manifest.json is generator output; its mtime must not
+            # re-trigger a full regen on every PlatformIO pre-build.
+            continue
         if any(part in SKIP_DIR_NAMES for part in p.relative_to(data_dir).parts):
             continue
         if p.suffix.lower() in SKIP_EXTENSIONS:
@@ -279,6 +292,8 @@ def scan_files(data_dir: Path,
         if path.is_dir():
             continue
         rel_path = '/' + path.relative_to(data_dir).as_posix()
+        if rel_path == MANIFEST_PATH:
+            continue
         content = path.read_bytes()
         rel_str = path.relative_to(data_dir).as_posix()
         bake = (rel_parts and rel_parts[0] in BAKE_DIRS) or \
@@ -404,9 +419,10 @@ def generate_header(bake_files: list[dict], history: dict) -> tuple[str, dict]:
 # ── Manifest generation (FULL set) ──────────────────────────────────────────
 
 def generate_full_manifest(files: list[dict], raw_base: str) -> str:
-    """Emit firmware/data/manifest.json — every file in firmware/data/.
+    """Emit firmware/initial_filesystem/manifest.json.
 
-    Used by badge_sync (the diff engine) and by JumperIDE."""
+  Lists every shipped file except MANIFEST_PATH (see above). Used by
+  badge_sync (fnv1a32 + size diff) and JumperIDE."""
     entries = []
     for f in files:
         entries.append({
@@ -417,12 +433,13 @@ def generate_full_manifest(files: list[dict], raw_base: str) -> str:
             "url": f"{raw_base}{f['rel_path']}",
             "baked": f['bake'],
         })
+    entries.sort(key=lambda e: e["path"])
     return json.dumps({
         "schema_version": 2,
         "generator": "generate_startup_files.py",
         "raw_base": raw_base,
         "files": entries,
-    }, indent=2) + "\n"
+    }, indent=2, sort_keys=True) + "\n"
 
 
 def generate_community_apps(files: list[dict], data_dir: Path,

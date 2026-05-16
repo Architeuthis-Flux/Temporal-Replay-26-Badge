@@ -40,6 +40,8 @@ class UpdateFirmwareScreen : public Screen {
     kError,
     kExpandConfirm,    // first prompt: "really wipe and expand?"
     kExpandConfirm2,   // second prompt: "are you really sure?"
+    kLayoutMigrateInfo, // pitches the one-time USB path to bigger map
+    kLayoutWelcome,     // one-shot panel after partition layout changed
     kReinstallConfirm, // "you're already on (or ahead of) latest — reinstall?"
   };
 
@@ -56,6 +58,8 @@ class UpdateFirmwareScreen : public Screen {
   void runCheck(bool ignoreCooldown);
   void runInstall();
   void renderExpandConfirm(oled& d, bool secondConfirm);
+  void renderLayoutMigrateInfo(oled& d);
+  void renderLayoutWelcome(oled& d);
   void renderReinstallConfirm(oled& d);
   static void installProgressCb(const ota::InstallProgress& prog,
                                 void* user);
