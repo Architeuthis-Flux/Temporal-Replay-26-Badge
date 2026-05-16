@@ -83,7 +83,11 @@ void OTAService::service() {
       }
       if (ESP.getFreeHeap() < kMinHeapForTls) return;
       DBG("[ota-svc] registry refresh (after OTA)\n");
-      registry::beginRefreshAsync(true);
+      // Run the boot-edge registry refresh on the scheduler stack instead
+      // of spawning the async worker. The extra 12 KB worker stack was enough
+      // to fragment internal RAM and make the second back-to-back TLS
+      // handshake fail on memory-constrained badges.
+      registry::refresh(true);
       sPostConnectPhase = 3;
       sPostConnectMarkMs = now;
       break;
