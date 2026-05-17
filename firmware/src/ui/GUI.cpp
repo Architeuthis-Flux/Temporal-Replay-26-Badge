@@ -619,6 +619,12 @@ static int16_t resolveItemOrder(const char* label, int16_t fallback) {
 extern "C" void rebuildMainMenuFromRegistry(void) {
   ensureMenuPools();
   if (!sMenuItems) return;
+
+  char menuAnchorLabel[48] = {};
+  ScreenId menuAnchorTarget = kScreenNone;
+  sMainMenu.captureRebuildAnchor(menuAnchorLabel, sizeof(menuAnchorLabel),
+                                 &menuAnchorTarget);
+
   size_t cursor = 0;
   for (size_t i = 0; i < kCuratedMenuItemCount && cursor < kMaxMenuItems;
        i++) {
@@ -734,6 +740,7 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
       });
 
   sMainMenu.setItems(sMenuItems, sMenuItemCount);
+  sMainMenu.applyRebuildAnchor(menuAnchorLabel, menuAnchorTarget);
   Serial.printf(
       "[apps] main menu rebuilt: %u curated + %u dynamic = %u total\n",
       static_cast<unsigned>(kCuratedMenuItemCount),
