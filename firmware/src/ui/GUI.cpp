@@ -50,6 +50,7 @@
 #include "../ble/BleBeaconScanner.h"
 #endif
 #include "../infra/BadgeConfig.h"
+#include "../infra/Filesystem.h"
 #include "../ir/BadgeIR.h"
 #include "../ota/AssetRegistry.h"
 #include "../ota/BadgeOTA.h"
@@ -94,8 +95,56 @@ extern char badgeCompany[];
 extern uint8_t*       badgeBits;
 extern int            badgeByteCount;
 
+// Attempt to find a matching registry entry for a missing app path and
+// redirect to the Asset Detail/Library download screen. Returns true if
+// the redirect was handled (caller should return early); false if not.
+static bool redirectToRegistryForMissingApp(GUIManager& gui, const char* path) {
+  // Extract the slug from a path like "/apps/<slug>/main.py"
+  if (strncmp(path, "/apps/", 6) != 0) return false;
+  const char* slugStart = path + 6;
+  const char* slugEnd = strchr(slugStart, '/');
+  if (!slugEnd) return false;
+
+  char slug[32] = {};
+  size_t slugLen = slugEnd - slugStart;
+  if (slugLen >= sizeof(slug)) slugLen = sizeof(slug) - 1;
+  memcpy(slug, slugStart, slugLen);
+  slug[slugLen] = '\0';
+
+  // Try to find a registry entry matching this slug
+  const ota::AssetEntry* entry = ota::registry::findById(slug);
+  if (entry) {
+    AssetDetailScreen::setActiveAsset(entry);
+    gui.pushScreen(kScreenAssetDetail);
+    return true;
+  }
+
+  // No exact match — jump to the library so the user can browse/refresh
+  AssetLibraryScreen::selectAssetById(slug);
+  gui.pushScreen(kScreenAssetLibrary);
+  return true;
+}
+
 static void launchPythonApp(GUIManager& gui, const char* path,
                             const char* displayName) {
+  // If the script doesn't exist on the filesystem, redirect to the
+  // community apps registry download flow instead of failing silently.
+  if (!Filesystem::fileExists(path)) {
+    Serial.printf("[GUI] app not on filesystem: %s — redirecting to registry\n", path);
+    if (!redirectToRegistryForMissingApp(gui, path)) {
+      // Couldn't find a registry entry either. Show a brief message.
+      oled& d = gui.oledDisplay();
+      d.clearBuffer();
+      d.setDrawColor(1);
+      OLEDLayout::drawStatusHeader(d, displayName);
+      OLEDLayout::drawStatusBox(d, 12, 22, 104, 24, "Not installed", "Use COMMUNITY APPS", true);
+      d.sendBuffer();
+      delay(2000);
+      gui.requestRender();
+    }
+    return;
+  }
+
 #ifdef BADGE_ENABLE_BLE_PROXIMITY
   BadgeBeaconAdv::setPausedForForeground(true);
   BadgeBeaconAdv::setPausedForIr(false);
@@ -185,6 +234,19 @@ static void launchTardigotchi(GUIManager& gui) {
   launchPythonApp(gui, "/apps/tardigotchi/main.py", "Tardigotchi");
 }
 
+// `main.py` paths for Python apps that already have curated grid tiles
+// (`launchSynth`, `launchIRBlockBattle`, ...). Must match those strings —
+// AppRegistry discovers the same slugs under /apps/ and would add a second
+// icon without the dedupe in rebuildMainMenuFromRegistry().
+static const char* const kCuratedPythonDuplicateEntryPaths[] = {
+    "/apps/synth/main.py",
+    "/apps/flappy_asteroids/main.py",
+    "/apps/ir_block_battle/main.py",
+    "/apps/ir_remote/main.py",
+    "/apps/breaksnake/main.py",
+    "/apps/tardigotchi/main.py",
+};
+
 // CREDITS dispatcher. Two backends exist:
 //   * native AboutCreditsScreen (drawXBM out of AboutCredits.h)
 //   * MicroPython /apps/credits.py (set_pixel walk on the editable FS)
@@ -225,6 +287,21 @@ static bool assetLibraryVisible() {
   return true;
 }
 
+// ── Compile-time hide-missing-apps visibility gates ───────────────────────
+// When BADGE_HIDE_MISSING_APPS is defined, curated Python-app tiles whose
+// scripts aren't on the filesystem are hidden from the grid. The apps are
+// still launchable via `run:<slug>` and will redirect to the download flow
+// if launched when missing; this just declutters the menu for badges that
+// haven't installed certain apps yet.
+#ifdef BADGE_HIDE_MISSING_APPS
+static bool synthVisible()           { return Filesystem::fileExists("/apps/synth/main.py"); }
+static bool flappyVisible()          { return Filesystem::fileExists("/apps/flappy_asteroids/main.py"); }
+static bool irBlockBattleVisible()   { return Filesystem::fileExists("/apps/ir_block_battle/main.py"); }
+static bool irPlaygroundVisible()    { return Filesystem::fileExists("/apps/ir_remote/main.py"); }
+static bool breakSnakeVisible()      { return Filesystem::fileExists("/apps/breaksnake/main.py"); }
+static bool tardigotchiVisible()     { return Filesystem::fileExists("/apps/tardigotchi/main.py"); }
+#endif
+
 // ── Curated C++ menu items ────────────────────────────────────────────────
 // These are the always-on items the firmware ships with. Dynamic Python
 // apps discovered by AppRegistry are appended after this list when the
@@ -245,18 +322,54 @@ static const GridMenuItem kCuratedMenuItems[] = {
      DrawIcons::menuDraw, kScreenDrawPicker, nullptr, nullptr, nullptr},
 
     {"IR BLOCK", "Clear lines and send garbage over IR",
-     AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle, nullptr, nullptr},
+     AppIcons::irBlockBattle, kScreenNone, launchIRBlockBattle,
+#ifdef BADGE_HIDE_MISSING_APPS
+     irBlockBattleVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
     {"IR PLAY", "Universal remote, sniffer, TV-B-Gone, and IR mini-games",
-     AppIcons::irPlayground, kScreenNone, launchIRPlayground, nullptr, nullptr},
+     AppIcons::irPlayground, kScreenNone, launchIRPlayground,
+#ifdef BADGE_HIDE_MISSING_APPS
+     irPlaygroundVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
     {"BREAKSNAKE",  "Play Breakout and Snake together",
-     AppIcons::breaksnake, kScreenNone,       launchBreakSnake, nullptr, nullptr},
+     AppIcons::breaksnake, kScreenNone, launchBreakSnake,
+#ifdef BADGE_HIDE_MISSING_APPS
+     breakSnakeVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
     {"FLAPPY", "Play Asteroids and Flappy Bird together",
-     AppIcons::flappyAsteroids, kScreenNone,  launchFlappyAsteroids, nullptr, nullptr},
+     AppIcons::flappyAsteroids, kScreenNone, launchFlappyAsteroids,
+#ifdef BADGE_HIDE_MISSING_APPS
+     flappyVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
 
     {"SYNTH", "Play joystick tones, loops, and loadable sounds",
-     AppIcons::synth,     kScreenNone,       launchSynth, nullptr, nullptr},
+     AppIcons::synth, kScreenNone, launchSynth,
+#ifdef BADGE_HIDE_MISSING_APPS
+     synthVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
     {"TARDIGOTCHI", "Hatch and care for a tiny tardigrade",
-     AppIcons::tardigotchi, kScreenNone, launchTardigotchi, nullptr, nullptr},
+     AppIcons::tardigotchi, kScreenNone, launchTardigotchi,
+#ifdef BADGE_HIDE_MISSING_APPS
+     tardigotchiVisible,
+#else
+     nullptr,
+#endif
+     nullptr},
 
     {"DOOM",        "Play DOOM on the badge",
      AppIcons::doom,      kScreenDoom,        nullptr, nullptr, nullptr},
@@ -540,23 +653,24 @@ extern "C" void rebuildMainMenuFromRegistry(void) {
     if (app->slug && strcmp(app->slug, "crash_log") == 0) continue;
 
     // Dedupe against curated tiles. If a curated entry already
-    // launches the exact same /apps/<slug>/main.py path (SYNTH,
-    // BREAKSNAKE, FLAPPY, IR BLOCK, etc.), skip the auto-discovered
-    // dynamic tile so the user doesn't see two icons that do the same
-    // thing — a hand-drawn one and a generic one.
+    // launches the same /apps/<slug>/main.py (SYNTH, IR BLOCK, …),
+    // skip the AppRegistry duplicate so users don't see two icons.
     bool isCuratedDuplicate = false;
-    for (size_t c = 0; c < kCuratedMenuItemCount; c++) {
-      // Curated launchers stash the script path inside their action's
-      // closure (we can't introspect that), so match heuristically on
-      // label: "SYNTH" → "Synth" slug, etc. Both forms share the
-      // case-insensitive prefix of the label up to the first space.
-      const char* curLabel = kCuratedMenuItems[c].label;
-      if (!curLabel) continue;
-      if (strcasecmp(curLabel, app->title) == 0 ||
-          (strncasecmp(curLabel, app->slug, strlen(app->slug)) == 0 &&
-           strlen(curLabel) == strlen(app->slug))) {
+    for (const char* path : kCuratedPythonDuplicateEntryPaths) {
+      if (path && strcasecmp(app->entryPath, path) == 0) {
         isCuratedDuplicate = true;
         break;
+      }
+    }
+    if (!isCuratedDuplicate) {
+      for (size_t c = 0; c < kCuratedMenuItemCount; c++) {
+        const char* curLabel = kCuratedMenuItems[c].label;
+        if (!curLabel) continue;
+        // Title from __title__ sometimes matches grid label verbatim.
+        if (strcasecmp(curLabel, app->title) == 0) {
+          isCuratedDuplicate = true;
+          break;
+        }
       }
     }
     if (isCuratedDuplicate) continue;

@@ -14,6 +14,8 @@
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
 
+extern "C" void rebuildMainMenuFromRegistry(void);
+
 namespace {
 
 const ota::AssetEntry* sActiveAsset = nullptr;
@@ -64,6 +66,8 @@ void AssetLibraryScreen::refreshStatusCache() {
 void AssetLibraryScreen::doRefresh(bool ignoreCooldown) {
   if (!wifiService.isConnected()) return;
 
+  if (ota::registry::isInstalling()) return;
+
   if (ota::isCheckingAsync()) return;
 
   // Coalesce: rapid back-to-back kicks (per-frame onUpdate handlers
@@ -106,10 +110,19 @@ void AssetLibraryScreen::onUpdate(GUIManager& /*gui*/) {
   }
 }
 
-void AssetLibraryScreen::onEnter(GUIManager& gui) {
-  ListMenuScreen::onEnter(gui);
+void AssetLibraryScreen::reloadFromRegistry(GUIManager& gui) {
   cachedCount_ = static_cast<uint8_t>(ota::registry::count());
   refreshStatusCache();
+  gui.requestRender();
+}
+
+void AssetLibraryScreen::onResume(GUIManager& gui) {
+  reloadFromRegistry(gui);
+}
+
+void AssetLibraryScreen::onEnter(GUIManager& gui) {
+  ListMenuScreen::onEnter(gui);
+  reloadFromRegistry(gui);
 
   // If the registry is empty whenever we land here, force-fetch (ignore
   // cooldown). Without ignoreCooldown a stale `last_epoch` from a prior
@@ -304,6 +317,22 @@ void AssetLibraryScreen::onItemSelect(uint8_t index, GUIManager& gui) {
       doRefresh(/*ignoreCooldown=*/true);
       return;
     }
+    // Pull a fresh registry before batch install so Download all sees
+    // the full asset list (not a truncated boot-time parse) and every
+    // app bundle has its complete file table.
+    if (wifiService.isConnected()) {
+      while (ota::registry::isRefreshing()) {
+        delay(20);
+        yield();
+      }
+      (void)ota::registry::refresh(true);
+      reloadFromRegistry(gui);
+    }
+    if (pendingCount_ == 0) {
+      gui.requestRender();
+      return;
+    }
+
     BatchUiCtx ctx{};
     ctx.d = &gui.oledDisplay();
     ctx.gui = &gui;
@@ -312,7 +341,8 @@ void AssetLibraryScreen::onItemSelect(uint8_t index, GUIManager& gui) {
     ctx.totalInBatch = pendingCount_;
     renderBatchProgress(ctx);
     ota::registry::installAll(&batchHeadlineCb, &batchProgressCb, &ctx);
-    refreshStatusCache();
+    rebuildMainMenuFromRegistry();
+    reloadFromRegistry(gui);
     return;
   }
   --index;  // shift past synthetic row
@@ -520,14 +550,20 @@ void AssetDetailScreen::runInstall(GUIManager& gui) {
       ota::registry::install(*sActiveAsset, &AssetDetailScreen::progressCb,
                              this);
   if (ok) {
-    phase_ = Phase::kDone;
+    rebuildMainMenuFromRegistry();
+    // Return to the library list with a fresh [*] row; main-menu icons
+    // were rebuilt above via AppRegistry::rescan().
+    gui.popScreen();
   } else {
     phase_ = Phase::kError;
+    gui.requestRender();
   }
 }
 
-void AssetDetailScreen::runRemove(GUIManager& /*gui*/) {
+void AssetDetailScreen::runRemove(GUIManager& gui) {
   if (!sActiveAsset) return;
   ota::registry::remove(*sActiveAsset);
   phase_ = Phase::kIdle;
+  rebuildMainMenuFromRegistry();
+  gui.popScreen();
 }

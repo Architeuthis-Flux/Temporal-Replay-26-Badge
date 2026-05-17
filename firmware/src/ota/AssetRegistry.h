@@ -113,6 +113,7 @@ enum class RegistryRefresh : uint8_t {
   kNetworkError,
   kParseError,
   kNotConfigured,    // asset_registry_url is empty
+  kInstallInProgress,
 };
 
 enum class AssetInstallResult : uint8_t {
@@ -123,6 +124,7 @@ enum class AssetInstallResult : uint8_t {
   kFsWriteError,
   kSha256Mismatch,
   kAborted,
+  kRegistryBusy,   // registry refresh overlapped the install
 };
 
 struct AssetProgress {
@@ -153,6 +155,9 @@ bool beginRefreshAsync(bool ignoreCooldown);
 
 // True while the background refresh task is running.
 bool isRefreshing();
+
+// True while install() / installAll() holds the registry pool.
+bool isInstalling();
 
 // Result of the most recent refresh (sync or async). Defaults to kOk
 // before the first call.

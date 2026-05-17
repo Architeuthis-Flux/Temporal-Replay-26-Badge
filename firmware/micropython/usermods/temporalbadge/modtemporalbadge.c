@@ -719,10 +719,10 @@ static void _render_led_geom(int pad, _ss_geom_t g, int ansi) {
     // All persistent draws (matrix-app / led_set_frame / set_pixel / …) go
     // through setPixel / drawMask, which keep framebuffer_ in sync.
     // drawMaskHardware (intGp flash overlay only) does not — rare edge case.
-    uint8_t snap[8][8];
-    int snap_ok = (temporalbadge_hal_led_snapshot(&snap[0][0]) > 0);
+    uint8_t snap[64];
+    int snap_ok = (temporalbadge_hal_led_snapshot(snap) > 0);
     #define _SS_LED(xx, yy) (snap_ok \
-        ? snap[(yy)][(xx)] \
+        ? snap[(yy) * 8 + (xx)] \
         : temporalbadge_hal_led_get_pixel((xx), (yy)))
 
     // ── top border ──────────────────────────────────────────────────────────

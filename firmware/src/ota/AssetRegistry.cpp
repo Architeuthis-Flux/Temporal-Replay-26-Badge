@@ -41,7 +41,7 @@ constexpr uint32_t kRefreshCooldownSec = 24 * 60 * 60;
 // elements). Giving the doc more headroom up front means it never has
 // to resize during a healthy parse — bytes are cheap, missing apps are
 // not.
-constexpr size_t kRegistryJsonMax = 96 * 1024;
+constexpr size_t kRegistryJsonMax = 128 * 1024;
 
 AssetEntry sAssets[kMaxRegistryAssets];
 uint8_t sAssetCount = 0;
@@ -62,6 +62,9 @@ bool sBegun = false;
 // stash before the task starts because beginRefreshAsync() guards
 // against re-entry via the flag.
 std::atomic<bool> sRefreshing{false};
+// Held for the whole install() / installAll() window so refresh()
+// cannot repopulate sFiles[] while a download loop is reading URLs.
+std::atomic<bool> sInstalling{false};
 bool sRefreshIgnoreCooldown = false;
 RegistryRefresh sLastRefreshResult = RegistryRefresh::kOk;
 
@@ -79,6 +82,21 @@ void copyField(char* dst, size_t cap, const char* src) {
   if (!src) src = "";
   std::strncpy(dst, src, cap - 1);
   dst[cap - 1] = '\0';
+}
+
+// Reject URLs that picked up PSRAM garbage during a truncated JSON
+// parse (non-printable bytes) or never parsed as strings at all.
+bool isPlausibleUrl(const char* url) {
+  if (!url || url[0] == '\0') return false;
+  if (std::strncmp(url, "http://", 7) != 0 &&
+      std::strncmp(url, "https://", 8) != 0) {
+    return false;
+  }
+  for (const char* p = url; *p; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return true;
 }
 
 bool nvsKey(char* out, size_t cap, const char* prefix, const char* id) {
@@ -276,6 +294,56 @@ bool destFullyPresent(const AssetEntry& entry) {
   return true;
 }
 
+// Block until the background registry refresh task finishes so
+// install() never reads sFiles[] / sAssets[] while refresh() is
+// repopulating them (use-after-free → mangled download URLs).
+// Mirrors BadgeOTA::prepareFirmwareInstallHeap().
+bool waitForRefreshIdle() {
+  constexpr uint32_t kRegistryWaitMs = 120000;
+  const uint32_t t0 = millis();
+  while (sRefreshing.load(std::memory_order_acquire)) {
+    if ((uint32_t)(millis() - t0) >= kRegistryWaitMs) {
+      setError("registry refresh in progress");
+      return false;
+    }
+    delay(20);
+    yield();
+  }
+  return true;
+}
+
+bool waitForInstallIdle() {
+  constexpr uint32_t kInstallWaitMs = 120000;
+  const uint32_t t0 = millis();
+  while (sInstalling.load(std::memory_order_acquire)) {
+    if ((uint32_t)(millis() - t0) >= kInstallWaitMs) {
+      setError("install in progress");
+      return false;
+    }
+    delay(20);
+    yield();
+  }
+  return true;
+}
+
+// RAII: wait for refresh, then pin sInstalling for the scope.
+class InstallHold {
+ public:
+  explicit InstallHold(bool acquire) : held_(false) {
+    if (!acquire) return;
+    if (!waitForRefreshIdle()) return;
+    sInstalling.store(true, std::memory_order_release);
+    held_ = true;
+  }
+  ~InstallHold() {
+    if (held_) sInstalling.store(false, std::memory_order_release);
+  }
+  explicit operator bool() const { return held_; }
+
+ private:
+  bool held_;
+};
+
 bool reserveFilePool(uint16_t want) {
   if (want <= sFileCap) return true;
   // Round up to the nearest 16 to keep realloc churn down across
@@ -322,6 +390,11 @@ void tick() {
 RegistryRefresh refresh(bool ignoreCooldown) {
   if (!sBegun) begin();
   setError("");
+
+  if (!waitForInstallIdle()) {
+    sLastRefreshResult = RegistryRefresh::kInstallInProgress;
+    return RegistryRefresh::kInstallInProgress;
+  }
 
   const char* url = badgeConfig.communityAppsUrl();
   if (!url || !url[0]) {
@@ -414,6 +487,8 @@ RegistryRefresh refresh(bool ignoreCooldown) {
       // Reserve room in the file pool and copy each entry across.
       const uint16_t startIdx = sFileCount;
       uint16_t added = 0;
+      const uint16_t expectedFiles =
+          static_cast<uint16_t>(files.size());
       for (JsonObject f : files) {
         if (!reserveFilePool(sFileCount + 1)) {
           DBG("[registry] file pool alloc failed\n");
@@ -425,18 +500,28 @@ RegistryRefresh refresh(bool ignoreCooldown) {
         copyField(fe.url, sizeof(fe.url), f["url"] | "");
         copyField(fe.sha256, sizeof(fe.sha256), f["sha256"] | "");
         fe.size = f["size"] | 0u;
-        if (fe.path[0] == '\0' || fe.url[0] == '\0') continue;
+        if (fe.path[0] == '\0' || !isPlausibleUrl(fe.url)) continue;
         ++sFileCount;
         ++added;
       }
       if (added == 0) continue;  // app with zero usable files — drop
+      // A short file list means ArduinoJson ran out of PSRAM mid-parse.
+      // Installing the stub would mark the bundle "done" and skip the
+      // rest forever — drop the whole app and try again next refresh.
+      if (expectedFiles > 0 && added != expectedFiles) {
+        DBG("[registry] drop %s: partial file list %u/%u\n",
+            e.id, static_cast<unsigned>(added),
+            static_cast<unsigned>(expectedFiles));
+        sFileCount = startIdx;
+        continue;
+      }
       e.firstFileIdx = startIdx;
       e.fileCount = added;
     } else {
       copyField(e.url, sizeof(e.url), a["url"] | "");
       copyField(e.sha256, sizeof(e.sha256), a["sha256"] | "");
       copyField(e.dest_path, sizeof(e.dest_path), a["dest_path"] | "");
-      if (e.url[0] == '\0' || e.dest_path[0] == '\0') continue;
+      if (e.dest_path[0] == '\0' || !isPlausibleUrl(e.url)) continue;
     }
 
     sAssetCount++;
@@ -508,7 +593,8 @@ bool beginRefreshAsync(bool ignoreCooldown) {
   return true;
 }
 
-bool isRefreshing() { return sRefreshing.load(); }
+bool isRefreshing() { return sRefreshing.load(std::memory_order_acquire); }
+bool isInstalling() { return sInstalling.load(std::memory_order_acquire); }
 RegistryRefresh lastRefreshResult() { return sLastRefreshResult; }
 
 size_t count() { return sAssetCount; }
@@ -542,6 +628,13 @@ AssetStatus statusOf(const AssetEntry& entry) {
     return AssetStatus::kNotInstalled;
   }
   if (std::strcmp(installed, entry.version) != 0) {
+    return AssetStatus::kUpdateAvailable;
+  }
+  // NVS says installed at this version — still verify every bundled
+  // file (or single-file size) is present. A truncated registry
+  // parse can leave a one-file stub that would otherwise read as
+  // kInstalled and never be retried by Download all.
+  if (!destFullyPresent(entry)) {
     return AssetStatus::kUpdateAvailable;
   }
   return AssetStatus::kInstalled;
@@ -611,6 +704,11 @@ AssetInstallResult installFileToPath(const char* url,
   if (!fs) {
     setError("filesystem not mounted");
     return AssetInstallResult::kFsWriteError;
+  }
+
+  if (!isPlausibleUrl(url)) {
+    setError("bad asset url");
+    return AssetInstallResult::kHttpError;
   }
 
   DBG("[registry] install GET %s -> %s\n", url, destPath);
@@ -828,6 +926,41 @@ AssetInstallResult installFileToPath(const char* url,
   return AssetInstallResult::kOk;
 }
 
+// Snapshot of a kind=app bundle copied out of sFiles[] at install
+// start so a later registry refresh cannot mutate URLs mid-download.
+class AppBundleSnapshot {
+ public:
+  AppBundleSnapshot() = default;
+  ~AppBundleSnapshot() {
+    if (files_) std::free(files_);
+  }
+
+  AppBundleSnapshot(const AppBundleSnapshot&) = delete;
+  AppBundleSnapshot& operator=(const AppBundleSnapshot&) = delete;
+
+  bool load(const AssetEntry& entry) {
+    if (entry.fileCount == 0 || sFiles == nullptr) return false;
+    const size_t bytes =
+        static_cast<size_t>(entry.fileCount) * sizeof(AssetFileEntry);
+    void* p = BadgeMemory::allocPreferPsram(bytes);
+    if (!p) return false;
+    files_ = static_cast<AssetFileEntry*>(p);
+    count_ = entry.fileCount;
+    std::memcpy(files_, &sFiles[entry.firstFileIdx], bytes);
+    for (uint16_t i = 0; i < count_; ++i) {
+      if (!isPlausibleUrl(files_[i].url)) return false;
+    }
+    return true;
+  }
+
+  const AssetFileEntry& operator[](uint16_t i) const { return files_[i]; }
+  uint16_t count() const { return count_; }
+
+ private:
+  AssetFileEntry* files_ = nullptr;
+  uint16_t count_ = 0;
+};
+
 }  // namespace
 
 bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
@@ -836,6 +969,18 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     setError("dest_path must be absolute");
     if (cb) {
       AssetProgress p{0, 0, true, AssetInstallResult::kDestPathInvalid};
+      cb(p, user);
+    }
+    return false;
+  }
+
+  // Nested call from installAll() — the outer InstallHold already owns
+  // sInstalling. Standalone installs acquire the hold here.
+  const bool nested = sInstalling.load(std::memory_order_acquire);
+  InstallHold hold(!nested);
+  if (!nested && !hold) {
+    if (cb) {
+      AssetProgress p{0, 0, true, AssetInstallResult::kRegistryBusy};
       cb(p, user);
     }
     return false;
@@ -883,9 +1028,19 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
                 (unsigned)needed, (unsigned long long)freeBytes);
 
   if (entry.kind == AssetKind::kFile) {
+    char fileUrl[kAssetUrlMax];
+    copyField(fileUrl, sizeof(fileUrl), entry.url);
+    if (!isPlausibleUrl(fileUrl)) {
+      setError("bad asset url");
+      if (cb) {
+        AssetProgress p{0, 0, true, AssetInstallResult::kHttpError};
+        cb(p, user);
+      }
+      return false;
+    }
     size_t written = 0;
     AssetInstallResult code = installFileToPath(
-        entry.url, entry.sha256, entry.size, entry.dest_path,
+        fileUrl, entry.sha256, entry.size, entry.dest_path,
         cb, user, &written);
     if (code != AssetInstallResult::kOk) {
       if (cb) {
@@ -920,17 +1075,18 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     }
     return false;
   }
-  if (entry.fileCount == 0 || sFiles == nullptr) {
-    setError("app entry has no files");
-    DBG("[registry] install fail: %s has no files (count=%u files=%p)\n",
-                  entry.id, static_cast<unsigned>(entry.fileCount),
-                  static_cast<const void*>(sFiles));
+  AppBundleSnapshot bundle;
+  if (!bundle.load(entry)) {
+    setError("app bundle snapshot failed");
+    DBG("[registry] install fail: %s bundle snapshot (count=%u)\n",
+                  entry.id, static_cast<unsigned>(entry.fileCount));
     if (cb) {
       AssetProgress p{0, 0, true, AssetInstallResult::kHttpError};
       cb(p, user);
     }
     return false;
   }
+  const uint16_t bundleFileCount = bundle.count();
   // We hold a single outer IOLock for the whole bundle install — the
   // recursive mutex lets installFileToPath's own IOLock just bump the
   // counter, and we avoid any window where MicroPython could rename
@@ -946,15 +1102,14 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
 
   size_t totalBundleBytes = entry.size;
   if (totalBundleBytes == 0) {
-    for (uint16_t i = 0; i < entry.fileCount; ++i) {
-      const AssetFileEntry& fe = sFiles[entry.firstFileIdx + i];
-      totalBundleBytes += fe.size;
+    for (uint16_t i = 0; i < bundleFileCount; ++i) {
+      totalBundleBytes += bundle[i].size;
     }
   }
   size_t doneBundleBytes = 0;
 
-  for (uint16_t i = 0; i < entry.fileCount; ++i) {
-    const AssetFileEntry& fe = sFiles[entry.firstFileIdx + i];
+  for (uint16_t i = 0; i < bundleFileCount; ++i) {
+    const AssetFileEntry& fe = bundle[i];
     char destFull[kAssetPathMax * 2];
     // Allow file paths that already start with '/'; otherwise insert one.
     int n;
@@ -1015,7 +1170,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
     if (code != AssetInstallResult::kOk) {
       DBG("[registry] install fail: %s file %u/%u (%s) code=%d %s\n",
                     entry.id, static_cast<unsigned>(i + 1),
-                    static_cast<unsigned>(entry.fileCount),
+                    static_cast<unsigned>(bundleFileCount),
                     fe.path, static_cast<int>(code), sLastError);
       if (cb) {
         AssetProgress p{doneBundleBytes, totalBundleBytes, true, code};
@@ -1028,7 +1183,7 @@ bool install(const AssetEntry& entry, AssetProgressCb cb, void* user) {
   persistInstalledVersion(entry.id, entry.version);
   DBG("[registry] installed app %s -> %s (%u files, %u bytes)\n",
                 entry.id, entry.dest_path,
-                (unsigned)entry.fileCount, (unsigned)doneBundleBytes);
+                (unsigned)bundleFileCount, (unsigned)doneBundleBytes);
   if (cb) {
     AssetProgress p{doneBundleBytes, totalBundleBytes, true,
                     AssetInstallResult::kOk};
@@ -1041,27 +1196,36 @@ InstallAllResult installAll(AssetBatchHeadlineCb headlineCb,
                             AssetProgressCb progressCb,
                             void* user) {
   InstallAllResult out{0, 0, 0};
-  // First pass — count assets that actually need install/update.
-  for (uint8_t i = 0; i < sAssetCount; ++i) {
+
+  InstallHold batch(true);
+  if (!batch) return out;
+
+  // Snapshot pending ids while the install lock is held so a refresh
+  // cannot shrink or reorder sAssets[] between counting and download.
+  char pendingIds[kMaxRegistryAssets][kAssetIdMax];
+  uint8_t pendingCount = 0;
+  for (uint8_t i = 0; i < sAssetCount && pendingCount < kMaxRegistryAssets;
+       ++i) {
     AssetStatus s = statusOf(sAssets[i]);
     if (s == AssetStatus::kInstalled) continue;
-    out.total++;
+    copyField(pendingIds[pendingCount], kAssetIdMax, sAssets[i].id);
+    ++pendingCount;
   }
-  if (out.total == 0) return out;
+  out.total = pendingCount;
+  if (pendingCount == 0) return out;
 
-  // Second pass — install each pending asset.
-  size_t batchIdx = 0;
-  for (uint8_t i = 0; i < sAssetCount; ++i) {
-    AssetEntry& e = sAssets[i];
-    AssetStatus s = statusOf(e);
-    if (s == AssetStatus::kInstalled) continue;
-    if (headlineCb) headlineCb(e, batchIdx, out.total, user);
-    if (install(e, progressCb, user)) {
+  for (uint8_t pi = 0; pi < pendingCount; ++pi) {
+    const AssetEntry* e = findById(pendingIds[pi]);
+    if (!e) {
+      ++out.failed;
+      continue;
+    }
+    if (headlineCb) headlineCb(*e, pi, pendingCount, user);
+    if (install(*e, progressCb, user)) {
       out.succeeded++;
     } else {
       out.failed++;
     }
-    batchIdx++;
   }
   return out;
 }

@@ -21,6 +21,7 @@ class AssetLibraryScreen : public ListMenuScreen {
   bool navigableItems() const override { return true; }
   void onItemSelect(uint8_t index, GUIManager& gui) override;
   void onEnter(GUIManager& gui) override;
+  void onResume(GUIManager& gui) override;
   void onUpdate(GUIManager& gui) override;
   void handleInput(const Inputs& inputs, int16_t cursorX, int16_t cursorY,
                    GUIManager& gui) override;
@@ -56,6 +57,9 @@ class AssetLibraryScreen : public ListMenuScreen {
   static constexpr uint32_t kRefreshKickMinIntervalMs = 5000;
   void doRefresh(bool ignoreCooldown);
   void refreshStatusCache();
+  // Re-read registry count + per-row install status, then redraw.
+  // Called after install/remove and when returning from AssetDetail.
+  void reloadFromRegistry(GUIManager& gui);
 };
 
 class AssetDetailScreen : public Screen {

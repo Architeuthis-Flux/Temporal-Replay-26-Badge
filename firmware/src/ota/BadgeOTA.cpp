@@ -90,6 +90,12 @@ namespace ota {
 
 void prepareFirmwareInstallHeap();
 
+// Forward decls so the boot-time auto-restore hook (inside the
+// anonymous namespace below) can call into the public migration API
+// defined further down in this TU.
+MigrationResult migrateToExpandedLayout();
+bool migrationAssetPresent();
+
 namespace {
 
 constexpr const char* kNvsNamespace = "badge_ota";
@@ -98,6 +104,16 @@ constexpr const char* kNvsLatestTag = "latest_tag";
 constexpr const char* kNvsAssetUrl  = "asset_url";
 constexpr const char* kNvsAssetSize = "asset_size";
 constexpr const char* kNvsLastLayout = "last_layout";  // "doom" | "ver2"
+// Sticky preference: the layout the badge has been intentionally
+// migrated to. Distinct from kNvsLastLayout (which simply mirrors
+// *this* boot's partition table for change detection). NVS lives in
+// its own partition that survives `pio upload`, so this preference
+// outlasts a USB reflash that overwrote 0x8000 with the wrong env's
+// partition table. If `pref_layout == "ver2"` but the running table
+// is `_doom`, `begin()` auto-replays `migrateToExpandedLayout()` to
+// restore the user's chosen layout. Empty string ⇒ no preference
+// (fresh badge / never manually migrated) ⇒ no auto-restore.
+constexpr const char* kNvsPreferredLayout = "pref_layout";
 
 constexpr size_t kTagMax = 32;
 constexpr size_t kUrlMax = 1536;
@@ -234,6 +250,72 @@ bool isExpandedPartitionLayout() {
 
 const char* layoutTag() {
   return isExpandedPartitionLayout() ? "ver2" : "doom";
+}
+
+// Read the sticky layout preference written by a prior successful
+// migration. Returns empty string when no preference is recorded.
+void readPreferredLayout(char* out, size_t outLen) {
+  if (!out || outLen == 0) return;
+  out[0] = '\0';
+  Preferences p;
+  if (!p.begin(kNvsNamespace, true)) return;
+  p.getString(kNvsPreferredLayout, out, outLen);
+  p.end();
+}
+
+void writePreferredLayout(const char* tag) {
+  Preferences p;
+  if (!p.begin(kNvsNamespace, false)) return;
+  p.putString(kNvsPreferredLayout, tag ? tag : "");
+  p.end();
+}
+
+// Forward decl — defined later in this same anonymous namespace
+// but needed by the boot-time auto-restore hook above it.
+bool runningFromApp0();
+
+// Called from begin() *before* recordCurrentLayout() so the existing
+// "layout changed" toast still fires correctly on the recovery boot
+// (prev = "ver2", now = "doom" → migrate → next boot prev/now both
+// "ver2", no toast — matches the user's expectation that the bad
+// flash was transparent).
+//
+// Failure modes are all silent fall-through. The sticky preference
+// stays set so a later boot with better conditions (battery, etc.)
+// can retry. recordCurrentLayout() will then write "doom" to
+// last_layout, but pref_layout is the source of truth for intent.
+void maybeAutoRestorePreferredLayout() {
+  char pref[8] = "";
+  readPreferredLayout(pref, sizeof(pref));
+  if (pref[0] == '\0') return;  // no preference recorded
+  const char* nowTag = layoutTag();
+  if (std::strcmp(pref, nowTag) == 0) return;  // already matching
+
+  // Only the ver2 direction is supported — the _doom blob is not
+  // embedded, and shrinking a partition table is destructive in ways
+  // a fresh USB flash can't unwind. If a user wants to go back to
+  // doom they re-run erase_and_flash.sh and we'll just stop nagging
+  // because recordCurrentLayout() doesn't touch pref_layout.
+  if (std::strcmp(pref, "ver2") != 0) return;
+
+  if (!migrationAssetPresent()) {
+    DBG("[ota] auto-restore: pref=ver2 but partitions_ver2.bin not "
+        "embedded in this build — skipping\n");
+    return;
+  }
+  if (!runningFromApp0()) {
+    DBG("[ota] auto-restore: pref=ver2 but running from app1 — "
+        "skipping (would brick boot)\n");
+    return;
+  }
+
+  DBG("[ota] auto-restore: NVS pref=ver2 but partition table=%s — "
+      "replaying in-place migration\n", nowTag);
+  // On success this never returns (ESP.restart()). On failure we
+  // fall through and continue boot normally.
+  MigrationResult rc = migrateToExpandedLayout();
+  DBG("[ota] auto-restore: migration returned %d — continuing on %s\n",
+      (int)rc, layoutTag());
 }
 
 void recordCurrentLayout() {
@@ -455,6 +537,12 @@ void begin() {
   }
 
   loadCache();
+  // If the running partition table doesn't match the sticky preference
+  // (typically: user previously chose ver2, then USB-flashed an env
+  // that ships the _doom table), re-run the in-place migration before
+  // we record the current layout. On success this ESP.restart()s and
+  // begin() runs again on the recovery boot.
+  maybeAutoRestorePreferredLayout();
   recordCurrentLayout();
 
   // Detect "we just OTA-installed and haven't been validated yet".
@@ -1004,6 +1092,16 @@ MigrationResult migrateToExpandedLayout() {
   // not immediately reboot after the swap.
   esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
   heap_caps_free(oldTable);
+
+  // Persist the sticky preference *after* we've successfully verified
+  // the new partition table. Writing this earlier would risk pinning
+  // the badge to a layout we couldn't actually finish installing; by
+  // the time we reach this line the new table is on flash and the
+  // only thing left is the reboot. NVS lives in its own partition so
+  // this value survives a later `pio upload` with a different env's
+  // partition table — auto-restore in begin() will replay this
+  // migration on the next boot if so.
+  writePreferredLayout("ver2");
 
   // Arm the post-migration announce signal *before* ESP.restart().
   // RTC noinit memory survives the soft reset, so begin() on the
