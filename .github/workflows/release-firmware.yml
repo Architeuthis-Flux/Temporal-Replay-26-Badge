@@ -40,6 +40,11 @@ on:
 permissions:
   contents: write   # VERSION commit, tag move, release asset upload
 
+# Serialize bot pushes to main with community-apps (registry regen, etc.).
+concurrency:
+  group: main-bot-git-writes
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build firmware + stage release assets

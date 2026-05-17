@@ -30,6 +30,11 @@ on:
 permissions:
   contents: write   # only used on main; PR job runs read-only
 
+# Serialize bot pushes to main with release-firmware (version bumps, etc.).
+concurrency:
+  group: main-bot-git-writes
+  cancel-in-progress: false
+
 jobs:
   validate:
     if: github.event_name == 'pull_request'
@@ -59,21 +64,36 @@ jobs:
         with:
           # Need write access to push the regenerated registry back.
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install jsonschema
         run: python -m pip install jsonschema
       - name: Regenerate registry/community_apps.json
-        run: python3 scripts/regenerate_community_apps.py
+        run: |
+          git pull --rebase origin main
+          python3 scripts/regenerate_community_apps.py
       - name: Commit regenerated registry if changed
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ -n "$(git status --porcelain registry/community_apps.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add registry/community_apps.json
             git commit -m "chore(registry): regenerate community_apps.json [skip ci]"
-            git push
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin main
+              if git push origin HEAD:main; then
+                echo "pushed registry update on attempt ${attempt}"
+                break
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                echo "error: push failed after 5 attempts" >&2
+                exit 1
+              fi
+              echo "push rejected (attempt ${attempt}), retrying..."
+              sleep 3
+            done
           else
             echo "registry/community_apps.json already up to date"
           fi
