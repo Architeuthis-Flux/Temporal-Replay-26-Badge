@@ -1,6 +1,7 @@
 #include "TlsGate.h"
 
 #include <Arduino.h>
+#include "../infra/HeapDiag.h"
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -71,13 +72,23 @@ bool waitForTlsReady(uint32_t timeoutMs) {
 TlsSession::TlsSession(const char* owner, uint32_t timeoutMs)
     : owner_(owner) {
   if (!sMutex) {
-    // Mutex creation failed at static-init. Treat as "always
-    // acquirable" — the gate is effectively absent and the firmware
-    // falls back to pre-fix concurrency. Better to surface real TLS
-    // failures than to deadlock every TLS path forever.
     acquired_ = true;
     return;
   }
+#if BADGE_HEAP_DIAG_VERBOSE
+  // Log a pre-acquisition snapshot when internal heap is already below
+  // the TLS threshold — see HeapDiag snapshots when debugging OTA failures.
+  if (!tlsHeapHeadroomOk()) {
+    const size_t intFree = heap_caps_get_free_size(
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t largest = heap_caps_get_largest_free_block(
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    Serial.printf("[tls] WARNING %s: internal heap too low for TLS "
+                  "(free=%u largest=%u, need ≥40K/26K)\n",
+                  owner ? owner : "?",
+                  (unsigned)intFree, (unsigned)largest);
+  }
+#endif
   const TickType_t ticks =
       (timeoutMs == 0) ? 0 : pdMS_TO_TICKS(timeoutMs);
   if (xSemaphoreTakeRecursive(sMutex, ticks) == pdTRUE) {

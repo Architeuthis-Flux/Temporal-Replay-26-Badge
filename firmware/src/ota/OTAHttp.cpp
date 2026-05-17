@@ -17,6 +17,7 @@
 
 #include "../api/TlsGate.h"
 #include "../api/WiFiService.h"
+#include "../infra/HeapDiag.h"
 #include "../infra/PsramBodySink.h"
 
 namespace ota {
@@ -123,6 +124,9 @@ HttpResult getJson(const char* url, char** outBuf, size_t* outLen,
     if (https && attempt > 1) {
       badge::kickIdleTaskWatchdog();
       vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (https && attempt == 1) {
+      HeapDiag::printSummary("getJson pre-TLS");
     }
     HTTPClient http;
     WiFiClient plain;
@@ -319,6 +323,7 @@ bool resolveRedirect(const char* url, char* outUrl, size_t outUrlLen,
   bool began = false;
   String urlStr(url);
   if (https) {
+    HeapDiag::printSummary("resolveRedirect pre-TLS");
     secure.setInsecure();
     secure.setHandshakeTimeout(4);
     began = http.begin(secure, urlStr);
@@ -411,6 +416,9 @@ bool Stream::open(const char* url, uint32_t timeoutMs, size_t rangeStart) {
     if (https && attempt > 1) {
       badge::kickIdleTaskWatchdog();
       vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (https && attempt == 1) {
+      HeapDiag::printSummary("Stream::open pre-TLS");
     }
     http_ = new HTTPClient();
     bool began = false;

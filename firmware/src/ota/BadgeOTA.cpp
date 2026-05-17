@@ -144,8 +144,19 @@ constexpr uint32_t kApp0FlashOffset = 0x10000u;
 constexpr float kMigrationMinBatteryPct = 50.0f;
 
 char sLatestTag[kTagMax] = "";
-char sAssetUrl[kUrlMax] = "";
-char sResolvedAssetUrl[kUrlMax] = "";
+char* sAssetUrl = nullptr;
+char* sResolvedAssetUrl = nullptr;
+
+void ensureUrlBuffers() {
+  if (!sAssetUrl) {
+    sAssetUrl = static_cast<char*>(BadgeMemory::allocPreferPsram(kUrlMax));
+    if (sAssetUrl) sAssetUrl[0] = '\0';
+  }
+  if (!sResolvedAssetUrl) {
+    sResolvedAssetUrl = static_cast<char*>(BadgeMemory::allocPreferPsram(kUrlMax));
+    if (sResolvedAssetUrl) sResolvedAssetUrl[0] = '\0';
+  }
+}
 
 // ── Migration-reboot announce signal ──────────────────────────────────────
 //
@@ -199,7 +210,7 @@ void loadCache() {
   Preferences p;
   if (!p.begin(kNvsNamespace, true)) return;
   p.getString(kNvsLatestTag, sLatestTag, sizeof(sLatestTag));
-  p.getString(kNvsAssetUrl, sAssetUrl, sizeof(sAssetUrl));
+  if (sAssetUrl) p.getString(kNvsAssetUrl, sAssetUrl, kUrlMax);
   sAssetSize = p.getULong(kNvsAssetSize, 0);
   sLastCheckEpoch = static_cast<time_t>(p.getULong(kNvsLastEpoch, 0));
   p.end();
@@ -374,11 +385,14 @@ InstallResult installFromUrl(const char* url, size_t expectedSize,
   ThroughputBoost boost;
   const char* installUrl = url;
   if (urlIsHttps(url) && std::strstr(url, "github.com/") != nullptr) {
-    sResolvedAssetUrl[0] = '\0';
-    if (resolveRedirect(url, sResolvedAssetUrl, sizeof(sResolvedAssetUrl), 30000)) {
-      installUrl = sResolvedAssetUrl;
-    } else {
-      DBG("[ota] redirect resolve failed; streaming original URL\n");
+    ensureUrlBuffers();
+    if (sResolvedAssetUrl) {
+      sResolvedAssetUrl[0] = '\0';
+      if (resolveRedirect(url, sResolvedAssetUrl, kUrlMax, 30000)) {
+        installUrl = sResolvedAssetUrl;
+      } else {
+        DBG("[ota] redirect resolve failed; streaming original URL\n");
+      }
     }
   }
 
@@ -490,6 +504,7 @@ void prepareFirmwareInstallHeap() {
 void begin() {
   if (sBegun) return;
   sBegun = true;
+  ensureUrlBuffers();
 
   // Migration-reboot detection. RTC noinit memory is wiped on a real
   // power cycle (POR / brownout / external reset / RTC wake) but
@@ -723,8 +738,10 @@ CheckResult checkNow(bool ignoreCooldown) {
 
   std::strncpy(sLatestTag, tag, sizeof(sLatestTag) - 1);
   sLatestTag[sizeof(sLatestTag) - 1] = '\0';
-  std::strncpy(sAssetUrl, assetUrl, sizeof(sAssetUrl) - 1);
-  sAssetUrl[sizeof(sAssetUrl) - 1] = '\0';
+  if (sAssetUrl) {
+    std::strncpy(sAssetUrl, assetUrl, kUrlMax - 1);
+    sAssetUrl[kUrlMax - 1] = '\0';
+  }
   sAssetSize = assetSize;
   sLastCheckEpoch = wifiService.clockReady() ? time(nullptr) : 1;
   persistCache();
@@ -796,19 +813,19 @@ bool isCheckingAsync() { return sCheckRunning.load(); }
 bool updateAvailable() {
   if (!sBegun) return false;
   if (sLatestTag[0] == '\0') return false;
-  if (sAssetUrl[0] == '\0') return false;
+  if (!sAssetUrl || sAssetUrl[0] == '\0') return false;
   return compareSemver(sLatestTag, FIRMWARE_VERSION) > 0;
 }
 
 const char* latestKnownTag() { return sLatestTag; }
-const char* latestKnownAssetUrl() { return sAssetUrl; }
+const char* latestKnownAssetUrl() { return sAssetUrl ? sAssetUrl : ""; }
 size_t latestKnownAssetSize() { return sAssetSize; }
 time_t lastCheckEpoch() { return sLastCheckEpoch; }
 const char* lastErrorMessage() { return sLastError; }
 
 InstallResult installCached(InstallProgressCb cb, void* user) {
   setError("");
-  if (sAssetUrl[0] == '\0') return InstallResult::kNoAssetCached;
+  if (!sAssetUrl || sAssetUrl[0] == '\0') return InstallResult::kNoAssetCached;
   return installFromUrl(sAssetUrl, sAssetSize, cb, user);
 }
 

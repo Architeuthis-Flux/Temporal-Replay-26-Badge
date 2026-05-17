@@ -3,6 +3,7 @@
 #include "../identity/BadgeUID.h"
 #include "../infra/BadgeConfig.h"
 #include "../infra/DebugLog.h"
+#include "../infra/HeapDiag.h"
 #include "../hardware/Power.h"
 
 #include <WiFi.h>
@@ -279,6 +280,7 @@ bool WiFiService::connect() {
     noteConnectionOk();
     DBG("[WiFi] connected ip=%s\n",
                   WiFi.localIP().toString().c_str());
+    HeapDiag::printSnapshot("wifi-connected");
   } else {
     shutDownRadio();
     noteConnectionFailed();

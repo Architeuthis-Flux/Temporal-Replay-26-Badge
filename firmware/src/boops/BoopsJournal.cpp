@@ -393,15 +393,15 @@ void begin() {
             FF_DIR dir;
             FILINFO info;
             if (f_opendir(fs, &dir, "/") == FR_OK) {
-                DBG("[%s] ffat contents:\n", TAG);
+                // DBG("[%s] ffat contents:\n", TAG);
                 unsigned long total_used = 0;
                 while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
-                    DBG("[%s]   %-20s %10lu B\n", TAG,
-                        info.fname, (unsigned long)info.fsize);
+                    // DBG("[%s]   %-20s %10lu B\n", TAG,
+                        // info.fname, (unsigned long)info.fsize);
                     total_used += (unsigned long)info.fsize;
                 }
                 f_closedir(&dir);
-                DBG("[%s] ffat total used (files): %lu B\n", TAG, total_used);
+                // DBG("[%s] ffat total used (files): %lu B\n", TAG, total_used);
             }
 
             DWORD free_clusters = 0;
@@ -411,7 +411,7 @@ void begin() {
                 // form underreported free space by 8x.
                 const unsigned long free_bytes =
                     (unsigned long)free_clusters * fs->csize * fs->ssize;
-                DBG("[%s] ffat free: %lu B\n", TAG, free_bytes);
+                // DBG("[%s] ffat free: %lu B\n", TAG, free_bytes);
 
                 // If the partition is critically low, the journal can't
                 // be saved.  Delete /boops.json so the next save has
@@ -420,8 +420,8 @@ void begin() {
                 // the max serialized size we write today.
                 if (free_bytes < 8192) {
                     FRESULT ur = f_unlink(fs, kBoopsPath);
-                    Serial.printf("[%s] ffat low — unlinked /boops.json (fr=%d)\n",
-                                  TAG, (int)ur);
+                    // Serial.printf("[%s] ffat low — unlinked /boops.json (fr=%d)\n",
+                                  // TAG, (int)ur);
                 }
             }
         }
@@ -545,7 +545,7 @@ void begin() {
         }
     } else {
         (*s_doc)["pairings"] = s_doc->createNestedArray("pairings");
-        DBG("[%s] starting with empty boops.json\n", TAG);
+        // DBG("[%s] starting with empty boops.json\n", TAG);
     }
 }
 
@@ -556,7 +556,7 @@ void recordBoop(const char* peer_badge_uid,
     // Defense in depth — a self-loopback boop has no meaning and pollutes
     // the journal. Reject silently here so callers don't have to check.
     if (strcmp(uid_hex, peer_badge_uid) == 0) {
-        DBG("[%s] refusing self-boop (UID=%s)\n", TAG, peer_badge_uid);
+        // DBG("[%s] refusing self-boop (UID=%s)\n", TAG, peer_badge_uid);
         return;
     }
 

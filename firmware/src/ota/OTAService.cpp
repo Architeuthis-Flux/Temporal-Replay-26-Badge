@@ -5,6 +5,7 @@
 #include "../api/TlsGate.h"
 #include "../api/WiFiService.h"
 #include "../infra/DebugLog.h"
+#include "../infra/HeapDiag.h"
 #include "AssetRegistry.h"
 #include "BadgeOTA.h"
 #include "OTAHttp.h"
@@ -67,6 +68,7 @@ void OTAService::service() {
     sWifiWasConnected = true;
     sPostConnectPhase = 1;
     sPostConnectMarkMs = now;
+    HeapDiag::printSnapshot("wifi-first-up");
   }
   if (sPostConnectPhase >= 4) return;
 

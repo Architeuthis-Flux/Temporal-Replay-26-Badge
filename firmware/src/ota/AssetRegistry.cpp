@@ -43,7 +43,7 @@ constexpr uint32_t kRefreshCooldownSec = 24 * 60 * 60;
 // not.
 constexpr size_t kRegistryJsonMax = 128 * 1024;
 
-AssetEntry sAssets[kMaxRegistryAssets];
+AssetEntry* sAssets = nullptr;
 uint8_t sAssetCount = 0;
 // Pool of sub-files for kind=app entries. Allocated from PSRAM during
 // refresh() — at ~400 bytes per entry and ~50 files in a typical
@@ -367,6 +367,11 @@ bool reserveFilePool(uint16_t want) {
 void begin() {
   if (sBegun) return;
   sBegun = true;
+  sAssets = static_cast<AssetEntry*>(
+      BadgeMemory::allocPreferPsram(kMaxRegistryAssets * sizeof(AssetEntry)));
+  if (sAssets) {
+    std::memset(sAssets, 0, kMaxRegistryAssets * sizeof(AssetEntry));
+  }
   loadRefreshEpoch();
   DBG("[registry] cache loaded: last_epoch=%lu\n",
                 (unsigned long)sLastRefreshEpoch);
@@ -389,6 +394,11 @@ void tick() {
 
 RegistryRefresh refresh(bool ignoreCooldown) {
   if (!sBegun) begin();
+  if (!sAssets) {
+    setError("sAssets alloc failed");
+    sLastRefreshResult = RegistryRefresh::kParseError;
+    return RegistryRefresh::kParseError;
+  }
   setError("");
 
   if (!waitForInstallIdle()) {
@@ -600,12 +610,12 @@ RegistryRefresh lastRefreshResult() { return sLastRefreshResult; }
 size_t count() { return sAssetCount; }
 
 const AssetEntry* at(size_t index) {
-  if (index >= sAssetCount) return nullptr;
+  if (!sAssets || index >= sAssetCount) return nullptr;
   return &sAssets[index];
 }
 
 const AssetEntry* findById(const char* id) {
-  if (!id) return nullptr;
+  if (!id || !sAssets) return nullptr;
   for (size_t i = 0; i < sAssetCount; ++i) {
     if (std::strcmp(sAssets[i].id, id) == 0) return &sAssets[i];
   }

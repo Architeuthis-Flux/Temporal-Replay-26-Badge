@@ -41,6 +41,7 @@
 
 #include "../BadgeGlobals.h"
 #include "../infra/DebugLog.h"
+#include "../infra/PsramAllocator.h"
 #include "../apps/AppRegistry.h"
 #include "../apps/MenuOrderStore.h"
 #include <algorithm>
@@ -418,17 +419,32 @@ static constexpr size_t kCuratedMenuItemCount =
 static constexpr size_t kMaxMenuItems =
     kCuratedMenuItemCount + AppRegistry::kMaxDynamicApps;
 
-static GridMenuItem sMenuItems[kMaxMenuItems];
+static GridMenuItem* sMenuItems = nullptr;
 static uint8_t sMenuItemCount = 0;
 
-static char sDynamicLabel[AppRegistry::kMaxDynamicApps]
-                         [AppRegistry::kTitleCap];
-static char sDynamicDescription[AppRegistry::kMaxDynamicApps]
-                               [AppRegistry::kDescriptionCap];
-static uint8_t sDynamicIcon[AppRegistry::kMaxDynamicApps]
-                           [AppRegistry::kIconBytes];
-static char sDynamicEntry[AppRegistry::kMaxDynamicApps]
-                         [AppRegistry::kEntryPathCap];
+static char (*sDynamicLabel)[AppRegistry::kTitleCap] = nullptr;
+static char (*sDynamicDescription)[AppRegistry::kDescriptionCap] = nullptr;
+static uint8_t (*sDynamicIcon)[AppRegistry::kIconBytes] = nullptr;
+static char (*sDynamicEntry)[AppRegistry::kEntryPathCap] = nullptr;
+
+static void ensureMenuPools() {
+  if (sMenuItems) return;
+  sMenuItems = static_cast<GridMenuItem*>(
+      BadgeMemory::allocPreferPsram(kMaxMenuItems * sizeof(GridMenuItem)));
+  sDynamicLabel = static_cast<char (*)[AppRegistry::kTitleCap]>(
+      BadgeMemory::allocPreferPsram(AppRegistry::kMaxDynamicApps * AppRegistry::kTitleCap));
+  sDynamicDescription = static_cast<char (*)[AppRegistry::kDescriptionCap]>(
+      BadgeMemory::allocPreferPsram(AppRegistry::kMaxDynamicApps * AppRegistry::kDescriptionCap));
+  sDynamicIcon = static_cast<uint8_t (*)[AppRegistry::kIconBytes]>(
+      BadgeMemory::allocPreferPsram(AppRegistry::kMaxDynamicApps * AppRegistry::kIconBytes));
+  sDynamicEntry = static_cast<char (*)[AppRegistry::kEntryPathCap]>(
+      BadgeMemory::allocPreferPsram(AppRegistry::kMaxDynamicApps * AppRegistry::kEntryPathCap));
+  if (sMenuItems) std::memset(sMenuItems, 0, kMaxMenuItems * sizeof(GridMenuItem));
+  if (sDynamicLabel) std::memset(sDynamicLabel, 0, AppRegistry::kMaxDynamicApps * AppRegistry::kTitleCap);
+  if (sDynamicDescription) std::memset(sDynamicDescription, 0, AppRegistry::kMaxDynamicApps * AppRegistry::kDescriptionCap);
+  if (sDynamicIcon) std::memset(sDynamicIcon, 0, AppRegistry::kMaxDynamicApps * AppRegistry::kIconBytes);
+  if (sDynamicEntry) std::memset(sDynamicEntry, 0, AppRegistry::kMaxDynamicApps * AppRegistry::kEntryPathCap);
+}
 
 // Dispatch a dynamic-app launch via AppRegistry index. Looked up at call
 // time — AppRegistry::count() may shrink between menu rebuild and click.
@@ -601,6 +617,8 @@ static int16_t resolveItemOrder(const char* label, int16_t fallback) {
 // boot and from badge.rescan_apps() at runtime. Re-points sMainMenu at
 // the freshly-populated buffer so the next render walks the new items.
 extern "C" void rebuildMainMenuFromRegistry(void) {
+  ensureMenuPools();
+  if (!sMenuItems) return;
   size_t cursor = 0;
   for (size_t i = 0; i < kCuratedMenuItemCount && cursor < kMaxMenuItems;
        i++) {
