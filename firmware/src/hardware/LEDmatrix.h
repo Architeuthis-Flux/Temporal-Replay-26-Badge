@@ -177,6 +177,17 @@ class LEDmatrix : public IService {
   bool setPixel(uint8_t x, uint8_t y, uint8_t brightness);
   uint8_t getPixel(uint8_t x, uint8_t y) const;
 
+  // Snapshot the 8×8 displayed state by reading the IS31FL3731's PWM
+  // registers directly over I2C.  This is the ground truth of what the
+  // chip is currently lighting up — independent of framebuffer_, so it
+  // stays accurate even when something writes via drawMaskHardware() (which
+  // intentionally bypasses framebuffer_).  ~2 ms total over I2C; only call
+  // for one-shot inspection (e.g. screenshot), never in a hot loop.
+  // out[y][x] is in user-space (matches setPixel/getPixel orientation,
+  // including current flipped_).  Returns false if the matrix is
+  // uninitialized or any I2C transaction fails.
+  bool snapshotHardwareDisplay(uint8_t out[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH]);
+
   bool showCheckerboard(uint8_t offBrightness = 0);
   bool showCheckerboard(uint8_t onBrightness, uint8_t offBrightness);
   bool showImage(DefaultImage image, uint8_t offBrightness = 0);
@@ -219,6 +230,7 @@ class LEDmatrix : public IService {
 
   Adafruit_IS31FL3731 driver_;
   uint8_t framebuffer_[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH];
+  uint8_t i2cAddress_ = ISSI_ADDR_DEFAULT;  // captured in init() for raw PWM readback
   bool initialized_;
   uint8_t brightness_;
   LEDmatrixAnimator animator_;
@@ -273,6 +285,7 @@ class LEDmatrix : public IService {
   bool fill(uint8_t) { return false; }
   bool setPixel(uint8_t, uint8_t, uint8_t) { return false; }
   uint8_t getPixel(uint8_t, uint8_t) const { return 0; }
+  bool snapshotHardwareDisplay(uint8_t[8][8]) { return false; }
   bool showImageById(const char*, ImageSource = ImageSource::Auto, uint8_t = 0) { return false; }
   bool showImageById(const char*, ImageSource, uint8_t, uint8_t) { return false; }
   bool startAnimation(DefaultAnimation, uint16_t = 120) { return false; }

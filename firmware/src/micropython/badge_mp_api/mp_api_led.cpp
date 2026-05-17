@@ -49,6 +49,16 @@ extern "C" int temporalbadge_runtime_led_get_pixel(int x, int y)
     return badgeMatrix.getPixel((uint8_t)x, (uint8_t)y);
 }
 
+extern "C" int temporalbadge_runtime_led_snapshot(uint8_t out[64])
+{
+    // out is a flat 64-byte row-major buffer (out[y*8+x]).  Cast to the
+    // 2D array shape that LEDmatrix uses internally — same memory layout.
+    if (!out)
+        return -1;
+    uint8_t (*as2d)[8] = reinterpret_cast<uint8_t (*)[8]>(out);
+    return badgeMatrix.snapshotHardwareDisplay(as2d) ? 1 : 0;
+}
+
 extern "C" int temporalbadge_runtime_led_show_image(const char *name)
 {
     if (!name)

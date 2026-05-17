@@ -267,5 +267,8 @@ void *replay_phase1_qstr_refs[] = {
     (void *)MP_QSTR_le_secure,
     (void *)MP_QSTR_io,
     (void *)MP_QSTR_mtu,
+    // temporalbadge: REPL screenshot hotkey symbol (single-letter qstrs are
+    // sometimes missed by the makeqstrdata.py scanner — declare explicitly).
+    (void *)MP_QSTR_o,
 };
 #endif
