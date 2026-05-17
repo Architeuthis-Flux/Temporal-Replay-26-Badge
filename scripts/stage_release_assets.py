@@ -29,6 +29,11 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Pull repo-derived URL constants from the central module so migrating
+# the repo requires editing only scripts/repo_urls.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from repo_urls import RELEASE_DOWNLOAD_BASE as _RELEASE_DOWNLOAD_BASE  # noqa: E402
 MANIFEST_PATH = REPO_ROOT / "release-assets" / "manifest.json"
 REGISTRY_PATH = REPO_ROOT / "registry" / "registry.json"
 STAGE_DIR = REPO_ROOT / "artifacts" / "release"
@@ -130,10 +135,7 @@ def verify_registry(entry: dict, sha256: str, size: int) -> None:
             f"  actual   size = {size}"
         )
 
-    expected_url = (
-        f"https://github.com/Architeuthis-Flux/Temporal-Replay-26-Badge/"
-        f"releases/latest/download/{entry['name']}"
-    )
+    expected_url = f"{_RELEASE_DOWNLOAD_BASE}/{entry['name']}"
     declared_url = target.get("url") or ""
     if declared_url and declared_url != expected_url:
         problems.append(

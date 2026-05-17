@@ -715,16 +715,10 @@ static void _render_led_geom(int pad, _ss_geom_t g, int ansi) {
     int cols = g.quarter ? 4 : (g.half ? 8 : 8 * g.h);
     char endl[5]; memcpy(endl, _BOX_V, 3); endl[3] = '\n'; endl[4] = '\0';
 
-    // Snapshot the live IS31FL3731 PWM state via I2C once, up-front.  The
-    // previous per-pixel get_pixel() path read framebuffer_, which goes
-    // stale whenever something draws via drawMaskHardware() (the matrix-app
-    // host on Core 1 does exactly that on every animation frame), so
-    // screenshots could miss the live animation entirely.  Direct register
-    // reads give us ground truth at the cost of ~2 ms of I2C traffic — fine
-    // for a one-shot screenshot.
-    //
-    // Fall back to get_pixel() if the snapshot fails (matrix not initialized
-    // or I2C error); on that path the cached framebuffer is the best we have.
+    // Copy the logical 8×8 image from LEDmatrix::framebuffer_ in one shot.
+    // All persistent draws (matrix-app / led_set_frame / set_pixel / …) go
+    // through setPixel / drawMask, which keep framebuffer_ in sync.
+    // drawMaskHardware (intGp flash overlay only) does not — rare edge case.
     uint8_t snap[8][8];
     int snap_ok = (temporalbadge_hal_led_snapshot(&snap[0][0]) > 0);
     #define _SS_LED(xx, yy) (snap_ok \

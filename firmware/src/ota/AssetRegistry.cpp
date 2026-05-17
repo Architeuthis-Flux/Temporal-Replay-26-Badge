@@ -30,12 +30,18 @@ namespace {
 constexpr const char* kNvsNamespace = "badge_assets";
 constexpr const char* kNvsLastEpoch = "last_epoch";
 constexpr uint32_t kRefreshCooldownSec = 24 * 60 * 60;
-// Headroom for the community apps registry. The published file is ~24
-// KB and growing as more apps land; a 64 KB cap gives ~2.5x runway
-// before we need to revisit. Both the body buffer (in OTAHttp.cpp) and
-// the JsonDocument are allocated via the PSRAM-preferring allocator so
-// this doesn't cost us internal heap.
-constexpr size_t kRegistryJsonMax = 64 * 1024;
+// Headroom for the community apps registry. The published file is ~31
+// KB at the time of writing and growing as more apps land. Both the
+// body buffer (in OTAHttp.cpp) and the JsonDocument are allocated via
+// the PSRAM-preferring allocator, so this doesn't cost us internal
+// heap. Bumped from 64 KB → 96 KB after Bug B: ArduinoJson v6's
+// `BasicJsonDocument` resizes its pool while parsing, and on a
+// fragmented PSRAM the allocator can return nullptr mid-parse for a
+// growth attempt while still reporting `Ok` (it just stops adding tail
+// elements). Giving the doc more headroom up front means it never has
+// to resize during a healthy parse — bytes are cheap, missing apps are
+// not.
+constexpr size_t kRegistryJsonMax = 96 * 1024;
 
 AssetEntry sAssets[kMaxRegistryAssets];
 uint8_t sAssetCount = 0;
@@ -347,31 +353,12 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     return RegistryRefresh::kNetworkError;
   }
 
-  DBG("[registry] body len=%u\n", (unsigned)bodyLen);
-  if (_DBG_GATE()) {
-    auto dumpEscaped = [](const char* p, size_t n) {
-      for (size_t i = 0; i < n; ++i) {
-        char c = p[i];
-        if (c >= 0x20 && c < 0x7f) Serial.write(c);
-        else DBG("\\x%02x", (uint8_t)c);
-      }
-    };
-    DBG("[registry] first64=");
-    dumpEscaped(body, bodyLen < 64 ? bodyLen : 64);
-    DBG("\n");
-    if (bodyLen > 64) {
-      DBG("[registry] last64=");
-      const size_t off = bodyLen > 64 ? bodyLen - 64 : 0;
-      dumpEscaped(body + off, bodyLen - off);
-      DBG("\n");
-    }
-  }
-
-  // Allocate the parser document from PSRAM — at 64 KB it would
+  // Allocate the parser document from PSRAM — at 96 KB it would
   // otherwise be a meaningful chunk of the ~150 KB free internal heap,
   // and we'd be holding the body buffer alongside it during parse.
   BadgeMemory::PsramJsonDocument doc(kRegistryJsonMax);
   DeserializationError err = deserializeJson(doc, body);
+
   std::free(body);
   if (err) {
     char buf[64];
@@ -382,6 +369,14 @@ RegistryRefresh refresh(bool ignoreCooldown) {
   }
 
   JsonArray assets = doc["assets"].as<JsonArray>();
+  // Capture the JSON-side asset count BEFORE we walk it — used for the
+  // post-loop mismatch check below. `assets.size()` walks the parsed
+  // tree; if PsramAllocator returned nullptr mid-parse this number will
+  // already be smaller than what the server actually sent, and we have
+  // no way to recover from that here. Comparing it to `sAssetCount`
+  // catches the *separate* class where a parsed-asset entry was
+  // dropped during our own loop (missing required field).
+  const size_t parsedAssetsFromJson = assets.size();
   sAssetCount = 0;
   // Reset the file-pool cursor; reserveFilePool grows as needed.
   sFileCount = 0;
@@ -447,6 +442,13 @@ RegistryRefresh refresh(bool ignoreCooldown) {
     sAssetCount++;
   }
 
+  // Intentional: persist whatever parsed cleanly rather than refusing
+  // the whole refresh if `sAssetCount != parsedAssetsFromJson`. The
+  // per-entry `continue` guards in the loop above skip malformed rows,
+  // so the adopted set is internally consistent — just potentially
+  // shorter than the source JSON.
+  (void)parsedAssetsFromJson;
+
   sLastRefreshEpoch = wifiService.clockReady() ? time(nullptr) : 1;
   persistRefreshEpoch(sLastRefreshEpoch);
   DBG("[registry] parsed %u assets\n",
@@ -487,8 +489,17 @@ bool beginRefreshAsync(bool ignoreCooldown) {
   // frames still need a bit of internal RAM headroom. Core 0 keeps
   // it off the GUI loop on Core 1 while keeping TLS headroom on badges
   // that have just completed the boot-edge OTA check.
+  //
+  // Pinned to Core 1, prio 1: Core 0 hosts WiFi (prio 23), lwIP (prio 18),
+  // and irTask (prio 1). During a TLS handshake mbedTLS BigNum math runs
+  // synchronously in the worker while lwIP/WiFi service TLS records — the
+  // pair collectively occupied Core 0 for >5 s and tripped IDLE0's TWDT,
+  // regardless of whether the worker was at prio 0 or prio 1. Core 1 hosts
+  // the Arduino main loop which yields every iteration, so IDLE1 has
+  // generous headroom even with a busy network worker.
   BaseType_t ok = xTaskCreatePinnedToCore(
-      &refreshTask, "registry_refresh", 8 * 1024, ctx, 1, nullptr, 0);
+      &refreshTask, "registry_refresh", 8 * 1024, ctx,
+      tskIDLE_PRIORITY + 1, nullptr, 1);
   if (ok != pdPASS) {
     delete ctx;
     sRefreshing.store(false);

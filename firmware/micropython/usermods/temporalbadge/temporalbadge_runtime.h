@@ -85,11 +85,9 @@ int temporalbadge_runtime_led_clear(void);
 int temporalbadge_runtime_led_fill(int brightness);
 int temporalbadge_runtime_led_set_pixel(int x, int y, int brightness);
 int temporalbadge_runtime_led_get_pixel(int x, int y);
-// Snapshot the full 8×8 displayed state in one shot by reading the
-// IS31FL3731's PWM registers directly over I2C.  out must point to 64
-// bytes; on success they're filled row-major (out[y*8+x]) in user-space
-// orientation.  Returns 1 on success, 0/-1 on failure (matrix offline or
-// I2C error).
+// Snapshot the full 8×8 logical LED image (after global brightness), copied
+// from the matrix framebuffer.  out must hold 64 bytes; filled row-major
+// (out[y*8+x]).  Returns 1 on success, 0 if the matrix is off-line.
 int temporalbadge_runtime_led_snapshot(uint8_t out[64]);
 int temporalbadge_runtime_led_show_image(const char *name);
 int temporalbadge_runtime_led_set_frame(const uint8_t *rows, int brightness);

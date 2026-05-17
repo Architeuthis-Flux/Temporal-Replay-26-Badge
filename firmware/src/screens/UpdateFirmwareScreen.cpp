@@ -16,10 +16,7 @@
 #include "../ui/QRCodePlate.h"
 #include "../api/WiFiService.h"
 #include "../ota/AssetRegistry.h"
-
-#ifndef OTA_GITHUB_REPO
-#define OTA_GITHUB_REPO "Architeuthis-Flux/Temporal-Replay-26-Badge"
-#endif
+#include "../infra/RepoUrls.h"
 
 extern BatteryGauge batteryGauge;
 
@@ -29,14 +26,12 @@ namespace {
 // a phone (HTTPS + GitHub) and deep-linked to the § 5d "Recovery"
 // section (HTML anchor `#recovery` in the maintainer doc) that
 // describes the one-line `esptool write_flash` path using the
-// per-release `temporal-badge-full-flash-16mb.bin` asset. Built off
-// OTA_GITHUB_REPO so forks point at their own recovery doc by default.
+// per-release `temporal-badge-full-flash-16mb.bin` asset. Derived from
+// REPO_RECOVERY_URL so forks point at their own recovery doc by default.
 // Length budget: 112 chars with the default repo slug → fits QR v6
 // (cap=134 with ECC_LOW). See `ensureRecoveryQr()` below for the
 // version-selection loop.
-constexpr const char* kRecoveryUrl =
-    "https://github.com/" OTA_GITHUB_REPO
-    "/blob/main/firmware/docs/OTA-MAINTAINER.md#recovery";
+constexpr const char* kRecoveryUrl = REPO_RECOVERY_URL;
 
 // Smallest QR version that fits the recovery URL with ECC_LOW. The
 // table mirrors the one in HelpScreen — indexed by version (1..7).
@@ -367,7 +362,7 @@ void UpdateFirmwareScreen::render(oled& d, GUIManager& /*gui*/) {
   // Idle. Keep the screen sparse: versions, status, actions.
   char line[48];
   d.setFontPreset(FONT_TINY);
-  std::snprintf(line, sizeof(line), "Current: %s", FIRMWARE_VERSION);
+  std::snprintf(line, sizeof(line), "Current: %s", FIRMWARE_VERSION_DISPLAY);
   d.drawStr(4, 20, line);
 
   const char* tag = ota::latestKnownTag();
@@ -736,7 +731,7 @@ void UpdateFirmwareScreen::renderReinstallConfirm(oled& d) {
 
   const char* tag = ota::latestKnownTag();
   char line[48];
-  std::snprintf(line, sizeof(line), "%s -> %s", FIRMWARE_VERSION,
+  std::snprintf(line, sizeof(line), "%s -> %s", FIRMWARE_VERSION_DISPLAY,
                 tag[0] ? tag : "(unknown)");
 
   // The user requested an install even though we're at-or-ahead of

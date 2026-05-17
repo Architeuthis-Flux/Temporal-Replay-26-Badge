@@ -177,16 +177,14 @@ class LEDmatrix : public IService {
   bool setPixel(uint8_t x, uint8_t y, uint8_t brightness);
   uint8_t getPixel(uint8_t x, uint8_t y) const;
 
-  // Snapshot the 8×8 displayed state by reading the IS31FL3731's PWM
-  // registers directly over I2C.  This is the ground truth of what the
-  // chip is currently lighting up — independent of framebuffer_, so it
-  // stays accurate even when something writes via drawMaskHardware() (which
-  // intentionally bypasses framebuffer_).  ~2 ms total over I2C; only call
-  // for one-shot inspection (e.g. screenshot), never in a hot loop.
-  // out[y][x] is in user-space (matches setPixel/getPixel orientation,
-  // including current flipped_).  Returns false if the matrix is
-  // uninitialized or any I2C transaction fails.
-  bool snapshotHardwareDisplay(uint8_t out[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH]);
+  // One-shot copy of the logical 8×8 image (after global brightness), same
+  // values as getPixel().  Used by screenshot().  Accurate whenever the
+  // visible frame was produced via setPixel / drawMask / clear / fill /
+  // showImage paths that maintain framebuffer_.  drawMaskHardware is for
+  // transient overlays only (e.g. intGp flash) and does not update
+  // framebuffer_ — avoid screenshot during that cue if pixel-perfect match
+  // to silicon matters.
+  bool snapshotFramebufferDisplay(uint8_t out[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH]);
 
   bool showCheckerboard(uint8_t offBrightness = 0);
   bool showCheckerboard(uint8_t onBrightness, uint8_t offBrightness);
@@ -216,6 +214,13 @@ class LEDmatrix : public IService {
   void drawMaskHardware(const uint8_t mask[LED_MATRIX_HEIGHT], uint8_t onBrightness,
                         uint8_t offBrightness = 0);
 
+  // Persistent full-frame update: each pixel goes through setPixel() so
+  // framebuffer_ tracks the visible pattern.  Use this for matrix apps,
+  // MicroPython led_set_frame, etc.  drawMaskHardware skips framebuffer_
+  // (intGp overlay / blank-to-silicon shortcuts).
+  bool drawMask(const uint8_t mask[LED_MATRIX_HEIGHT], uint8_t onBrightness,
+                uint8_t offBrightness = 0);
+
   void service() override;
   const char* name() const override;
 
@@ -223,14 +228,12 @@ class LEDmatrix : public IService {
   static const char *defaultImageId(DefaultImage image);
   bool loadImageMask(const char *imageId, ImageSource source, uint8_t outMask[LED_MATRIX_HEIGHT]) const;
   bool loadFilesystemImageMask(const char *imageId, uint8_t outMask[LED_MATRIX_HEIGHT]) const;
-  bool drawMask(const uint8_t mask[LED_MATRIX_HEIGHT], uint8_t onBrightness, uint8_t offBrightness);
   uint8_t normalizeBrightnessForStorage(uint8_t brightness) const;
   uint8_t applyGlobalBrightness(uint8_t normalizedBrightness) const;
   static bool inBounds(uint8_t x, uint8_t y);
 
   Adafruit_IS31FL3731 driver_;
   uint8_t framebuffer_[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH];
-  uint8_t i2cAddress_ = ISSI_ADDR_DEFAULT;  // captured in init() for raw PWM readback
   bool initialized_;
   uint8_t brightness_;
   LEDmatrixAnimator animator_;
@@ -285,7 +288,8 @@ class LEDmatrix : public IService {
   bool fill(uint8_t) { return false; }
   bool setPixel(uint8_t, uint8_t, uint8_t) { return false; }
   uint8_t getPixel(uint8_t, uint8_t) const { return 0; }
-  bool snapshotHardwareDisplay(uint8_t[8][8]) { return false; }
+  bool snapshotFramebufferDisplay(uint8_t[8][8]) { return false; }
+  bool drawMask(const uint8_t*, uint8_t, uint8_t = 0) { return false; }
   bool showImageById(const char*, ImageSource = ImageSource::Auto, uint8_t = 0) { return false; }
   bool showImageById(const char*, ImageSource, uint8_t, uint8_t) { return false; }
   bool startAnimation(DefaultAnimation, uint16_t = 120) { return false; }

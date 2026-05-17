@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "comment": "Asset registry for Temporal Replay 2026 Badge. The badge fetches this file once a day (when Settings -> asset_registry_url is set) and surfaces each entry in the Asset Library screen. Add new entries by PR — no firmware change required. Big-file assets (≳ 100 KB) ship as GitHub Release attachments via release-assets/manifest.json + .github/workflows/release-firmware.yml; their URL stays stable across firmware releases via the /releases/latest/download/<name> pattern.",
+  "comment": "Asset registry for Temporal Replay 2026 Badge. The badge fetches this file once a day (when Settings -> asset_registry_url is set) and surfaces each entry in the Asset Library screen. Add new entries by PR — no firmware change required. Big-file assets (≳ 100 KB) ship as GitHub Release attachments via release-assets/manifest.json + .github/workflows/release-firmware.yml; their URL stays stable across firmware releases via the /releases/latest/download/<name> pattern. Repo slug: see scripts/repo_urls.py (REPO_SLUG) and firmware/src/infra/RepoUrls.h (REPO_OWNER_SLUG).",
   "assets": [
     {
       "id": "doom1-shareware",

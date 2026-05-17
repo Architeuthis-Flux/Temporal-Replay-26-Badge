@@ -45,6 +45,15 @@ class AssetLibraryScreen : public ListMenuScreen {
   // Number of registry assets whose status is not kInstalled. Drives
   // the synthetic "Install all updates" row at index 0.
   uint8_t pendingCount_ = 0;
+  // Coalesce gate for doRefresh(). Rapid X-presses or an onEnter+X
+  // sequence used to fire H5 events ~300 ms apart, each one a no-op
+  // through the registry's atomic compare-exchange but still spending
+  // Serial cycles + a frame's worth of GUI work. Stamped on every
+  // accepted kick; subsequent kicks within `kRefreshKickMinIntervalMs`
+  // are dropped (and logged as `kick_coalesced` so the diagnostic
+  // probe still records the attempt).
+  uint32_t lastRefreshKickMs_ = 0;
+  static constexpr uint32_t kRefreshKickMinIntervalMs = 5000;
   void doRefresh(bool ignoreCooldown);
   void refreshStatusCache();
 };

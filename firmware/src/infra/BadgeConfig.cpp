@@ -652,9 +652,7 @@ int8_t fontFamilyFromName(const char* name) {
   // access; AssetRegistry only reads at refresh time so this is not
   // hot.
   const char* Config::communityAppsUrl() const {
-    static constexpr const char kV2Url[] =
-        "https://raw.githubusercontent.com/Architeuthis-Flux/"
-        "Temporal-Replay-26-Badge/main/registry/community_apps.json";
+    static constexpr const char kV2Url[] = REPO_COMMUNITY_APPS_URL;
     // Auto-upgrade jsDelivr URLs (any path) to GitHub raw — the repo
     // is over jsDelivr's 50 MB free-tier limit and the CDN replies
     // with a 403 "Package size exceeded" HTML page that AssetRegistry
@@ -678,8 +676,7 @@ int8_t fontFamilyFromName(const char* name) {
   // means every boot starts from a known-good state.
   void Config::setCommunityAppsUrl(const char* value) {
     static constexpr const char kDefaultCommunityAppsUrl[] =
-        "https://raw.githubusercontent.com/Architeuthis-Flux/"
-        "Temporal-Replay-26-Badge/main/registry/community_apps.json";
+        REPO_COMMUNITY_APPS_URL;
     (void)value;
     strncpy(communityAppsUrl_, kDefaultCommunityAppsUrl,
             sizeof(communityAppsUrl_) - 1);

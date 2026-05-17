@@ -46,6 +46,24 @@ import os
 import sys
 from pathlib import Path
 
+# ── Repo URL constants ────────────────────────────────────────────────────────
+# Pull the default raw-file base URL from the central constants module so the
+# manifest and community_apps.json stay in sync with the C++ firmware when the
+# repo moves.  repo_urls.py lives at <repo_root>/scripts/, two levels above
+# this file (firmware/scripts/ → firmware/ → repo root).
+#
+# NOTE: __file__ is not defined when PlatformIO executes this script via
+# SCons exec(); in that context we fall back to the hardcoded literal below,
+# which is identical to the repo_urls.py value and keeps the build working.
+_REPO_FIRMWARE_RAW_BASE = None
+try:
+    _repo_scripts = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_repo_scripts) not in sys.path:
+        sys.path.insert(0, str(_repo_scripts))
+    from repo_urls import FIRMWARE_RAW_BASE as _REPO_FIRMWARE_RAW_BASE
+except (NameError, ImportError):
+    pass  # SCons context or missing module — hardcoded fallback used below
+
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -147,12 +165,13 @@ SKIP_EXTENSIONS = {'.pyc', '.pyo', '.wad'}
 # tests/ is dev-only (uploadfs picks it up but we don't bake or distribute it).
 # registry/ is generator output; never recurse into it.
 
-# Default raw-file URL pattern. Override with TEMPORAL_BADGE_RAW_BASE env var
-# if you fork the repo. Points at firmware/initial_filesystem/ since that's
-# the canonical committed source — firmware/data/ is gitignored.
+# Default raw-file URL pattern. Sourced from scripts/repo_urls.py so that
+# migrating the repo requires changing only one file. Override at runtime
+# with the TEMPORAL_BADGE_RAW_BASE env var (takes highest precedence).
 DEFAULT_RAW_BASE = (
-    "https://raw.githubusercontent.com/"
-    "Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem"
+    _REPO_FIRMWARE_RAW_BASE
+    or "https://raw.githubusercontent.com/"
+       "Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem"
 )
 
 # The manifest catalog must not include itself: hashing the on-disk file

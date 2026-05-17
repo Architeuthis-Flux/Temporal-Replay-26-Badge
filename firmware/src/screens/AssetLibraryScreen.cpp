@@ -9,6 +9,8 @@
 #include "../hardware/Inputs.h"
 #include "../hardware/oled.h"
 #include "../ota/AssetRegistry.h"
+#include "../ota/BadgeOTA.h"
+#include "../ota/OTAHttp.h"
 #include "../ui/GUI.h"
 #include "../ui/OLEDLayout.h"
 
@@ -61,6 +63,22 @@ void AssetLibraryScreen::refreshStatusCache() {
 
 void AssetLibraryScreen::doRefresh(bool ignoreCooldown) {
   if (!wifiService.isConnected()) return;
+
+  if (ota::isCheckingAsync()) return;
+
+  // Coalesce: rapid back-to-back kicks (per-frame onUpdate handlers
+  // on a slow GUI tick, double-tap X, onEnter + immediate X) fire
+  // through the registry's compare-exchange as no-ops, but each one
+  // still costs a Serial probe + a render frame. 5 s is well above
+  // one full HTTPS handshake + parse on a healthy link (~3 s
+  // observed) so a manual X-press retry stays responsive.
+  const uint32_t now = millis();
+  if (lastRefreshKickMs_ != 0 &&
+      static_cast<uint32_t>(now - lastRefreshKickMs_) <
+          kRefreshKickMinIntervalMs) {
+    return;
+  }
+
   // Kick off the registry fetch on a Core 0 task so the GUI loop
   // keeps ticking. needsRender() returns true while isRefreshing()
   // so the placeholder row animates / re-renders on every frame; the
@@ -71,6 +89,7 @@ void AssetLibraryScreen::doRefresh(bool ignoreCooldown) {
     return;
   }
   refreshing_ = true;
+  lastRefreshKickMs_ = now;
 }
 
 void AssetLibraryScreen::onUpdate(GUIManager& /*gui*/) {

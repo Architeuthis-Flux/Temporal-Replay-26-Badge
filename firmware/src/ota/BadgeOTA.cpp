@@ -7,6 +7,9 @@
 #include <esp_flash.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,31 +75,6 @@ int replay_bdev_reformat_and_reboot(void);
 extern BatteryGauge batteryGauge;
 
 namespace {
-
-void logOtaCheckHeap(const char* phase) {
-  // Match Arduino ESP.getFreeHeap() / getMinFreeHeap() / getMaxAllocHeap()
-  // (internal DRAM only). Do not use esp_get_minimum_free_heap_size() here —
-  // it uses MALLOC_CAP_DEFAULT and can include SPIRAM, so it misleadingly
-  // stays ~MB while internal free is ~100 KiB.
-  const uint32_t intFree = static_cast<uint32_t>(ESP.getFreeHeap());
-  const uint32_t intMinEver = static_cast<uint32_t>(ESP.getMinFreeHeap());
-  const uint32_t intLargest = static_cast<uint32_t>(ESP.getMaxAllocHeap());
-  const size_t psramTotal =
-      heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  uint32_t psramFree = 0;
-  uint32_t psramLargest = 0;
-  if (psramTotal > 0) {
-    psramFree = static_cast<uint32_t>(
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    psramLargest = static_cast<uint32_t>(
-        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
-  Serial.printf(
-      "[ota-check] %s: int_free=%u int_min_ever=%u int_largest=%u "
-      "psram_total=%u psram_free=%u psram_largest=%u\n",
-      phase ? phase : "?", intFree, intMinEver, intLargest,
-      static_cast<unsigned>(psramTotal), psramFree, psramLargest);
-}
 
 uint8_t* otaInstallChunkScratch() {
   static uint8_t* p = nullptr;
@@ -501,79 +479,158 @@ void tick() {
   // for any external callers that haven't been updated.
 }
 
-CheckResult checkNow(bool ignoreCooldown) {
-  (void)ignoreCooldown;
-  if (!sBegun) begin();
-  setError("");
+namespace {
 
-  char url[160];
-  std::snprintf(url, sizeof(url),
-                "https://api.github.com/repos/%s/releases/latest",
-                OTA_GITHUB_REPO);
-
-  logOtaCheckHeap("pre-github-http");
+// Strategy A — GitHub REST API. Returns true on success (populates `tag`,
+// `assetUrl`, `assetSize`); false on rate-limit / network / parse error.
+// The PSRAM body and JsonDocument are scoped to this function so all
+// internal allocations are freed before the caller falls back to the
+// redirect path — only one big TLS allocation lives at a time.
+bool tryCheckViaApi(char* tag, size_t tagLen,
+                    char* assetUrl, size_t assetUrlLen,
+                    size_t* assetSize, const char** errOut) {
+  constexpr const char* url = REPO_RELEASES_API_URL;
 
   char* body = nullptr;
   size_t bodyLen = 0;
   HttpResult httpRes = getJson(url, &body, &bodyLen, kJsonMaxBytes, 20000);
   if (!httpRes.ok) {
-    logOtaCheckHeap("post-github-http-fail");
-    setError(httpRes.error);
+    // Most common failure on shared NAT: HTTP 403 "API rate limit
+    // exceeded" — surfaces here as httpRes.ok == false with
+    // httpCode == 403. Free `body` (we may have drained the error page)
+    // and let the caller try the redirect path.
     if (body) std::free(body);
-    return CheckResult::kNetworkError;
+    if (errOut) *errOut = httpRes.error;
+    return false;
   }
 
-  logOtaCheckHeap("post-github-http-ok");
-
-  // GitHub release JSON. We only care about `tag_name` + the asset
-  // whose `name` matches OTA_ASSET_NAME. The same .bin works on both
-  // partition layouts (see BadgeOTA.h comment).
-  BadgeMemory::PsramJsonDocument doc(8192);
-  DeserializationError err = deserializeJson(doc, body);
-  if (err) {
-    logOtaCheckHeap("post-json-parse-fail");
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "json parse: %s", err.c_str());
-    setError(buf);
-    std::free(body);
-    return CheckResult::kParseError;
-  }
-
-  const char* tag = doc["tag_name"] | "";
-  if (!tag[0]) {
-    setError("release missing tag_name");
-    std::free(body);
-    return CheckResult::kParseError;
-  }
-
-  // Find matching asset.
-  const char* assetUrl = nullptr;
-  size_t assetSize = 0;
-  JsonArray assets = doc["assets"].as<JsonArray>();
-  for (JsonObject a : assets) {
-    const char* name = a["name"] | "";
-    if (std::strcmp(name, OTA_ASSET_NAME) == 0) {
-      assetUrl = a["browser_download_url"] | "";
-      assetSize = a["size"] | 0u;
-      break;
+  // Parser document scoped tight: destruct before we return so the
+  // 8 KB PSRAM JsonDocument is gone before the fallback path may need
+  // its own allocations.
+  bool ok = false;
+  {
+    BadgeMemory::PsramJsonDocument doc(8192);
+    DeserializationError err = deserializeJson(doc, body);
+    if (err) {
+      if (errOut) *errOut = "api json parse failed";
+    } else {
+      const char* t = doc["tag_name"] | "";
+      if (!t[0]) {
+        if (errOut) *errOut = "api release missing tag_name";
+      } else {
+        std::strncpy(tag, t, tagLen - 1);
+        tag[tagLen - 1] = '\0';
+        const char* foundUrl = nullptr;
+        size_t foundSize = 0;
+        JsonArray assets = doc["assets"].as<JsonArray>();
+        for (JsonObject a : assets) {
+          const char* name = a["name"] | "";
+          if (std::strcmp(name, OTA_ASSET_NAME) == 0) {
+            foundUrl = a["browser_download_url"] | "";
+            foundSize = a["size"] | 0u;
+            break;
+          }
+        }
+        if (foundUrl && foundUrl[0]) {
+          std::strncpy(assetUrl, foundUrl, assetUrlLen - 1);
+          assetUrl[assetUrlLen - 1] = '\0';
+          if (assetSize) *assetSize = foundSize;
+          ok = true;
+        } else {
+          // Asset missing is a real signal, not a "try the other
+          // strategy" failure — return false but with a meaningful
+          // error. Caller will still fall back to the redirect path,
+          // which will produce the same asset URL anyway.
+          if (errOut) *errOut = "api: no matching asset";
+        }
+      }
     }
+  }  // doc destructs here, releases PSRAM
+
+  std::free(body);
+  return ok;
+}
+
+// Strategy B — github.com redirect. Rate-limit-immune; only learns the
+// tag (asset size discovered on install). All scratch is stack-resident
+// (no body, no JsonDocument), so this path is the lightest on heap.
+bool tryCheckViaRedirect(char* tag, size_t tagLen,
+                         char* assetUrl, size_t assetUrlLen,
+                         const char** errOut) {
+  constexpr const char* url = REPO_RELEASES_LATEST_URL;
+
+  char location[256] = {0};
+  if (!resolveRedirect(url, location, sizeof(location), 20000)) {
+    if (errOut) *errOut = "redirect: releases/latest failed";
+    return false;
   }
 
-  if (!assetUrl || !assetUrl[0]) {
-    // Cache the tag (so we can show "v0.1.4 has no asset") but mark
-    // result as no-asset.
-    std::strncpy(sLatestTag, tag, sizeof(sLatestTag) - 1);
-    sLatestTag[sizeof(sLatestTag) - 1] = '\0';
-    sAssetUrl[0] = '\0';
-    sAssetSize = 0;
-    sLastCheckEpoch = wifiService.clockReady() ? time(nullptr) : sLastCheckEpoch;
-    persistCache();
-    char buf[80];
-    std::snprintf(buf, sizeof(buf),
-                  "release %s has no '%s' asset", tag, OTA_ASSET_NAME);
-    setError(buf);
-    std::free(body);
-    return CheckResult::kNoMatchingAsset;
+  // Expected: "https://github.com/<owner>/<repo>/releases/tag/<tag>"
+  const char* needle = "/releases/tag/";
+  const char* tagStart = std::strstr(location, needle);
+  if (!tagStart) {
+    if (errOut) *errOut = "redirect: unexpected Location";
+    return false;
+  }
+  tagStart += std::strlen(needle);
+  size_t ti = 0;
+  for (; ti + 1 < tagLen && tagStart[ti] &&
+         tagStart[ti] != '/' && tagStart[ti] != '?' && tagStart[ti] != '#';
+       ++ti) {
+    tag[ti] = tagStart[ti];
+  }
+  tag[ti] = '\0';
+  if (tag[0] == '\0') {
+    if (errOut) *errOut = "redirect: empty tag";
+    return false;
+  }
+
+  std::snprintf(assetUrl, assetUrlLen,
+                REPO_RELEASE_DOWNLOAD_FMT, tag, OTA_ASSET_NAME);
+  return true;
+}
+
+}  // namespace
+
+CheckResult checkNow(bool ignoreCooldown) {
+  (void)ignoreCooldown;
+  if (!sBegun) begin();
+  setError("");
+
+  // Try both sources. The REST API gives us the asset's Content-Length
+  // up front (nicer UX on the Update screen) but is rate-limited to
+  // 60 req/hr per IP and a shared cellular NAT can blow that budget for
+  // everyone on the network. The `releases/latest` redirect on the
+  // plain web host is rate-limit-immune but only yields the tag.
+  //
+  // Try the API first for the richer payload. On any failure (403 rate
+  // limit, network, parse), fall back to the redirect. Each strategy is
+  // its own function so the API attempt's PSRAM body + 8 KB JsonDocument
+  // destruct before the redirect attempt allocates — at no point do we
+  // hold two TLS-class allocations.
+  char tag[40] = {0};
+  char assetUrl[256] = {0};
+  size_t assetSize = 0;
+  const char* err = "";
+  const char* source = "api";
+
+  bool got = tryCheckViaApi(tag, sizeof(tag),
+                            assetUrl, sizeof(assetUrl),
+                            &assetSize, &err);
+  if (!got) {
+    DBG("[ota] api path failed (%s) — falling back to redirect\n", err);
+    source = "redirect";
+    err = "";
+    got = tryCheckViaRedirect(tag, sizeof(tag),
+                              assetUrl, sizeof(assetUrl), &err);
+    // Redirect doesn't learn the size; it'll be filled in by
+    // Stream::open's Content-Length when install starts.
+    assetSize = 0;
+  }
+
+  if (!got) {
+    setError(err);
+    return CheckResult::kNetworkError;
   }
 
   std::strncpy(sLatestTag, tag, sizeof(sLatestTag) - 1);
@@ -581,21 +638,72 @@ CheckResult checkNow(bool ignoreCooldown) {
   std::strncpy(sAssetUrl, assetUrl, sizeof(sAssetUrl) - 1);
   sAssetUrl[sizeof(sAssetUrl) - 1] = '\0';
   sAssetSize = assetSize;
-  sLastCheckEpoch = wifiService.clockReady() ? time(nullptr) : 1;  // 1 = "checked once, no clock"
+  sLastCheckEpoch = wifiService.clockReady() ? time(nullptr) : 1;
   persistCache();
-  std::free(body);
-
-  logOtaCheckHeap("check-complete");
 
   const int cmp = compareSemver(sLatestTag, FIRMWARE_VERSION);
-  DBG("[ota] latest=%s current=%s cmp=%d size=%u layout=%s\n",
-                sLatestTag, FIRMWARE_VERSION, cmp,
-                (unsigned)sAssetSize, layoutTag());
+  DBG("[ota] %s: latest=%s current=%s cmp=%d size=%u layout=%s\n",
+      source, sLatestTag, FIRMWARE_VERSION_DISPLAY, cmp,
+      (unsigned)sAssetSize, layoutTag());
 
   if (cmp > 0) return CheckResult::kOkNewerAvailable;
   if (cmp == 0) return CheckResult::kOkUpToDate;
   return CheckResult::kOkOlder;
 }
+
+// ── Async check worker ────────────────────────────────────────────────────
+//
+// Mirrors `registry::beginRefreshAsync` so the GitHub-Releases poll
+// runs on a Core-0 task instead of blocking the Arduino main loop on
+// the `badge::TlsSession` mutex. With the gate in place, a synchronous
+// `checkNow()` from `OTAService` on Core 1 could block the main loop
+// for the full handshake budget any time the registry worker had the
+// gate first; that froze GUI / input / IR pump and tripped the IDLE0
+// watchdog in observation. Two prio-1 Core-0 workers (one per
+// consumer) serialise cleanly through the gate without ever touching
+// the main loop.
+namespace {
+
+std::atomic<bool> sCheckRunning{false};
+
+struct AsyncCheckCtx {
+  bool ignoreCooldown;
+};
+
+void checkTask(void* arg) {
+  auto* ctx = static_cast<AsyncCheckCtx*>(arg);
+  const bool ig = ctx ? ctx->ignoreCooldown : false;
+  delete ctx;
+  (void)checkNow(ig);
+  sCheckRunning.store(false);
+  vTaskDelete(nullptr);
+}
+
+}  // namespace
+
+bool beginCheckAsync(bool ignoreCooldown) {
+  if (!sBegun) begin();
+  bool expected = false;
+  if (!sCheckRunning.compare_exchange_strong(expected, true)) {
+    return false;  // already running
+  }
+  auto* ctx = new AsyncCheckCtx{ignoreCooldown};
+  // Pinned to Core 1, prio 1. Same reasoning as registry_refresh: Core 0
+  // hosts WiFi/lwIP/IR and they collectively monopolise the core during a
+  // mbedTLS handshake, regardless of our worker's priority. Core 1 (Arduino
+  // loop core) has IDLE1 headroom because loop() yields every iteration.
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      &checkTask, "ota_check", 8 * 1024, ctx,
+      tskIDLE_PRIORITY + 1, nullptr, 1);
+  if (ok != pdPASS) {
+    delete ctx;
+    sCheckRunning.store(false);
+    return false;
+  }
+  return true;
+}
+
+bool isCheckingAsync() { return sCheckRunning.load(); }
 
 bool updateAvailable() {
   if (!sBegun) return false;

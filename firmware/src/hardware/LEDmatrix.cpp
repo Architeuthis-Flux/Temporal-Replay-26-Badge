@@ -853,9 +853,6 @@ int LEDmatrix::init(uint8_t address) {
     return -1;
   }
 
-  // Captured for raw PWM readback in snapshotHardwareDisplay().  The Adafruit
-  // driver stores the address privately, so we keep our own copy.
-  i2cAddress_ = address;
   initialized_ = true;
   brightness_ = kGlobalDefaultBrightness;
   animator_.reset();
@@ -966,74 +963,15 @@ uint8_t LEDmatrix::getPixel(uint8_t x, uint8_t y) const {
   return applyGlobalBrightness(framebuffer_[y][x]);
 }
 
-bool LEDmatrix::snapshotHardwareDisplay(uint8_t out[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH]) {
+bool LEDmatrix::snapshotFramebufferDisplay(uint8_t out[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH]) {
   if (!initialized_ || out == nullptr) {
     return false;
   }
-
-  // The Adafruit_IS31FL3731 driver targets frame 0 by default (see
-  // Adafruit_IS31FL3731::begin → displayFrame(0); drawPixel writes via
-  // setLEDPWM(.., _frame) with _frame defaulting to 0).  We mirror that:
-  // select bank 0, then read each PWM byte.
-  //
-  // Register map: PWM_n = 0x24 + n, where n = hwX + hwY*16 (IS31FL3731
-  // exposes a flat 16-wide × 9-tall LED grid; our 8×8 panel lives in the
-  // first 8 columns of the first 8 rows after the (hwX,hwY) transform
-  // performed by setPixel).
-  //
-  // selectBank(0) (Command Register 0xFD ← 0x00):
-  Wire.beginTransmission(i2cAddress_);
-  Wire.write((uint8_t)0xFD);
-  Wire.write((uint8_t)0x00);
-  if (Wire.endTransmission() != 0) {
-    return false;
-  }
-
-  // Read each hwY row as an 8-byte burst.  The full row spans 16 PWM
-  // registers but only the first 8 are wired up on this panel, so a
-  // single burst per row is enough.  8 transactions × ~250 µs each ≈ 2 ms
-  // total at 400 kHz.
-  uint8_t raw[LED_MATRIX_HEIGHT][LED_MATRIX_WIDTH];
-  for (uint8_t hwY = 0; hwY < LED_MATRIX_HEIGHT; ++hwY) {
-    const uint8_t base = (uint8_t)(0x24 + hwY * 16);
-
-    Wire.beginTransmission(i2cAddress_);
-    Wire.write(base);
-    // No STOP — repeated START on the read keeps the IS31FL3731's address
-    // pointer at `base` for the auto-incrementing burst that follows.
-    if (Wire.endTransmission(false) != 0) {
-      return false;
-    }
-
-    const size_t got = Wire.requestFrom((int)i2cAddress_,
-                                        (int)LED_MATRIX_WIDTH);
-    if (got != (size_t)LED_MATRIX_WIDTH) {
-      // Drain whatever did arrive so the bus isn't left mid-transaction.
-      while (Wire.available()) (void)Wire.read();
-      return false;
-    }
-    for (uint8_t hwX = 0; hwX < LED_MATRIX_WIDTH; ++hwX) {
-      raw[hwY][hwX] = (uint8_t)Wire.read();
-    }
-  }
-
-  // Invert setPixel's (x,y) → (hwX,hwY) transform by *re-applying* it on
-  // the user-space coordinates and indexing raw[hwY][hwX].  Cheaper and
-  // less error-prone than computing the inverse directly.
   for (uint8_t y = 0; y < LED_MATRIX_HEIGHT; ++y) {
     for (uint8_t x = 0; x < LED_MATRIX_WIDTH; ++x) {
-      const uint8_t fx = !flipped_
-                            ? (uint8_t)((LED_MATRIX_WIDTH  - 1) - x)
-                            : x;
-      const uint8_t fy = !flipped_
-                            ? (uint8_t)((LED_MATRIX_HEIGHT - 1) - y)
-                            : y;
-      const uint8_t hwX = fy;
-      const uint8_t hwY = (uint8_t)((LED_MATRIX_WIDTH - 1) - fx);
-      out[y][x] = raw[hwY][hwX];
+      out[y][x] = applyGlobalBrightness(framebuffer_[y][x]);
     }
   }
-
   return true;
 }
 

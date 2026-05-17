@@ -1,8 +1,7 @@
 // BadgeOTA.h — Firmware OTA driven by GitHub Releases.
 //
-// Polls `https://api.github.com/repos/<owner>/<repo>/releases/latest` on a
-// once-per-day cadence (state persisted in NVS namespace `badge_ota`),
-// caches the latest tag + matching asset URL, and exposes:
+// Polls REPO_RELEASES_API_URL once per day (state persisted in NVS namespace
+// `badge_ota`), caches the latest tag + matching asset URL, and exposes:
 //
 //   - `updateAvailable()` for the status-bar glyph and home-tile label.
 //   - `checkNow()` to refresh on demand from the Update screen.
@@ -16,8 +15,8 @@
 // via the bootloader's MMU setup and uses `esp_partition_find_*` for
 // every data partition — there are no hardcoded flash offsets. Keep
 // the build under the smaller (`_doom`, 3.84 MB) slot or the
-// compatibility breaks. The repo to query is `OTA_GITHUB_REPO`
-// (default `Architeuthis-Flux/Temporal-Replay-26-Badge`).
+// compatibility breaks. Repo identity comes from `RepoUrls.h`
+// (REPO_OWNER_SLUG, overridable via platformio.ini per-fork flag).
 //
 // First-boot rollback: `markCurrentAppValidIfPending()` should be
 // called once the GUI has ticked healthily for ~30 s after a fresh
@@ -30,9 +29,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#ifndef OTA_GITHUB_REPO
-#define OTA_GITHUB_REPO "Architeuthis-Flux/Temporal-Replay-26-Badge"
-#endif
+#include "infra/RepoUrls.h"
 
 #ifndef OTA_ASSET_NAME
 #define OTA_ASSET_NAME "firmware.bin"
@@ -124,7 +121,28 @@ void tick();
 
 // Synchronous check. Returns the parsed result; on success the
 // internal cache is updated.
+//
+// IMPORTANT: this call holds the global `badge::TlsSession` for the
+// whole GitHub-Releases HTTPS handshake + body read. Callers on the
+// Arduino main loop (Core 1) MUST use `beginCheckAsync()` instead —
+// otherwise a concurrent HTTPS owner (e.g. the registry refresh
+// worker on Core 0) will block the main loop on the gate, freezing
+// the GUI / input / IR pump. `checkNow` itself is appropriate for
+// task-context use (the async worker below, the Update screen's
+// modal blocking check, etc.).
 CheckResult checkNow(bool ignoreCooldown);
+
+// Spawn a Core-0 worker that runs `checkNow(ignoreCooldown)` off the
+// main loop. Returns false if a check is already running; true if
+// the task launched (or the spawn failed and we surfaced that as a
+// not-running state). Safe to call repeatedly — coalesces while in
+// flight. The worker pulls TLS through `badge::TlsSession`, so if
+// another HTTPS owner is mid-handshake the worker blocks on the
+// gate without holding up Core 1.
+bool beginCheckAsync(bool ignoreCooldown);
+
+// True while the background OTA check task is running.
+bool isCheckingAsync();
 
 // True iff the cached `latest_tag` is newer than `FIRMWARE_VERSION`
 // AND we have a matching asset URL on file.

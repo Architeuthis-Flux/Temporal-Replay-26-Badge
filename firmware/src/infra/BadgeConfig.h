@@ -8,6 +8,7 @@
 
 #include "hardware/HardwareConfig.h"
 #include "Scheduler.h"
+#include "RepoUrls.h"
 
 // Optional WiFi credentials. The badge keeps a small list of saved
 // networks; `wifiSsid()` / `wifiPass()` always reflect slot 0 (the
@@ -315,8 +316,7 @@ class Config {
      // with a 403 "Package size exceeded" page. GitHub raw has a
      // 60 req/hr unauthenticated rate limit but the badge only fetches
      // once a day so this is fine.
-     char communityAppsUrl_[160] =
-         "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/community_apps.json";
+     char communityAppsUrl_[160] = REPO_COMMUNITY_APPS_URL;
 
      uint32_t lastFileSize_ = 0;
      uint16_t lastFileDate_ = 0;

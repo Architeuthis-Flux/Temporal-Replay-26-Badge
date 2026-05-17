@@ -25,7 +25,7 @@ timezone = PST8PDT,M3.2.0,M11.1.0
 # Firmware OTA. The badge polls the GitHub Releases API once a day for
 # new firmware and exposes a "Check Updates" / "UPDATE" tile on the
 # home grid. Leave manifest_url empty to use the default endpoint baked
-# into the build (Architeuthis-Flux/Temporal-Replay-26-Badge releases).
+# into the build (see REPO_OWNER_SLUG in firmware/src/infra/RepoUrls.h).
 manifest_url =
 
 # Community Apps registry. A JSON file enumerating user-installable
@@ -34,7 +34,7 @@ manifest_url =
 # Community Apps screen. See firmware/docs/OTA-MAINTAINER.md for the
 # schema. The legacy `asset_registry_url` key is still accepted for
 # backwards compatibility.
-# Default: the registry shipped alongside the firmware repo.
+# Default: the registry shipped alongside the firmware repo (REPO_COMMUNITY_APPS_URL).
 community_apps_url = https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/registry/community_apps.json
 
 [wifi]

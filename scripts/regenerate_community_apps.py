@@ -40,6 +40,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Pull repo-derived URL constants from the central module so migrating
+# the repo requires editing only scripts/repo_urls.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from repo_urls import FIRMWARE_RAW_BASE as _FIRMWARE_RAW_BASE  # noqa: E402
+from repo_urls import COMMUNITY_RAW_BASE as _COMMUNITY_RAW_BASE  # noqa: E402
 DATA_DIR = REPO_ROOT / "firmware" / "initial_filesystem"
 COMMUNITY_DIR = REPO_ROOT / "community"
 EXTERNAL_JSON = COMMUNITY_DIR / "external.json"
@@ -47,14 +53,8 @@ SCHEMA_PATH = REPO_ROOT / "registry" / "community_apps.schema.json"
 OUTPUT_PATH = REPO_ROOT / "registry" / "community_apps.json"
 REGISTRY_LEGACY = REPO_ROOT / "registry" / "registry.json"
 
-DEFAULT_RAW_BASE = (
-    "https://raw.githubusercontent.com/"
-    "Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem"
-)
-COMMUNITY_RAW_BASE = (
-    "https://raw.githubusercontent.com/"
-    "Architeuthis-Flux/Temporal-Replay-26-Badge/main/community"
-)
+DEFAULT_RAW_BASE = _FIRMWARE_RAW_BASE
+COMMUNITY_RAW_BASE = _COMMUNITY_RAW_BASE
 
 # Per-app size budget for in-repo PR'd community apps. Apps larger than
 # this should be hosted externally and added through community/external.json

@@ -84,9 +84,9 @@ int temporalbadge_hal_led_clear(void);
 int temporalbadge_hal_led_fill(int brightness);
 int temporalbadge_hal_led_set_pixel(int x, int y, int brightness);
 int temporalbadge_hal_led_get_pixel(int x, int y);
-// Snapshot the full 8×8 displayed state by reading the IS31FL3731's PWM
-// registers directly.  out must hold 64 bytes; filled row-major
-// (out[y*8+x]).  Returns 1 on success, 0/-1 on failure.
+// Snapshot the full 8×8 logical LED state from the matrix framebuffer.
+// out must hold 64 bytes; filled row-major (out[y*8+x]).  Returns 1 on
+// success, 0 if the matrix is not initialized.
 int temporalbadge_hal_led_snapshot(uint8_t out[64]);
 int temporalbadge_hal_led_show_image(const char *name);
 int temporalbadge_hal_led_set_frame(const uint8_t *rows, int brightness);
