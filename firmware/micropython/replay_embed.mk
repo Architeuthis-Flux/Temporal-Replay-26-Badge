@@ -93,6 +93,7 @@ micropython-embed-package-replay: micropython-embed-package
 	    $(TOP)/extmod/modtime.c $(TOP)/extmod/modtime.h \
 	    $(TOP)/extmod/modmachine.c $(TOP)/extmod/modmachine.h \
 	    $(TOP)/extmod/modnetwork.c $(TOP)/extmod/modnetwork.h \
+	    $(TOP)/extmod/modtls_mbedtls.c \
 	    $(TOP)/extmod/machine_adc.c \
 	    $(TOP)/extmod/machine_adc_block.c \
 	    $(TOP)/extmod/machine_pwm.c \

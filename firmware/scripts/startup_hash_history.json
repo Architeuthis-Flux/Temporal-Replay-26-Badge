@@ -8,6 +8,12 @@
   "/lib/badge_ui.py": [
     "0x701E0EED"
   ],
+  "/lib/espnow.py": [
+    "0x811B3480"
+  ],
+  "/lib/ssl.py": [
+    "0x91B9F390"
+  ],
   "/matrixApps/LED.py": [
     "0x39B55BFB"
   ],

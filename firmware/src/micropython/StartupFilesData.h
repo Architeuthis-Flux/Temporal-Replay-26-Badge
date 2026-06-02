@@ -656,6 +656,107 @@ def spinner(cx, cy, phase):
 )";
 static const uint32_t STARTUP_LIB_BADGE_UI_PY_HASHES[1] = { 0x701E0EED };
 
+static const char STARTUP_LIB_ESPNOW_PY_DATA[] = R"(# espnow module for MicroPython on ESP32
+# MIT license; Copyright (c) 2022 Glenn Moloney @glenn20
+
+from _espnow import *
+
+
+class ESPNow(ESPNowBase):
+    # Static buffers for alloc free receipt of messages with ESPNow.irecv().
+    _data = [None, bytearray(MAX_DATA_LEN)]
+    _none_tuple = (None, None)
+
+    def __init__(self):
+        super().__init__()
+
+    def irecv(self, timeout_ms=None):
+        n = self.recvinto(self._data, timeout_ms)
+        return self._data if n else self._none_tuple
+
+    def recv(self, timeout_ms=None):
+        n = self.recvinto(self._data, timeout_ms)
+        return [bytes(x) for x in self._data] if n else self._none_tuple
+
+    def irq(self, callback):
+        super().irq(callback, self)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.irecv()  # Use alloc free irecv() method
+)";
+static const uint32_t STARTUP_LIB_ESPNOW_PY_HASHES[1] = { 0x811B3480 };
+
+static const char STARTUP_LIB_SSL_PY_DATA[] = R"(import tls
+from tls import *
+
+
+class SSLContext:
+    def __init__(self, *args):
+        self._context = tls.SSLContext(*args)
+        self._context.verify_mode = CERT_NONE
+
+    @property
+    def verify_mode(self):
+        return self._context.verify_mode
+
+    @verify_mode.setter
+    def verify_mode(self, val):
+        self._context.verify_mode = val
+
+    def load_cert_chain(self, certfile, keyfile):
+        if isinstance(certfile, str):
+            with open(certfile, "rb") as f:
+                certfile = f.read()
+        if isinstance(keyfile, str):
+            with open(keyfile, "rb") as f:
+                keyfile = f.read()
+        self._context.load_cert_chain(certfile, keyfile)
+
+    def load_verify_locations(self, cafile=None, cadata=None):
+        if cafile:
+            with open(cafile, "rb") as f:
+                cadata = f.read()
+        self._context.load_verify_locations(cadata)
+
+    def wrap_socket(
+        self, sock, server_side=False, do_handshake_on_connect=True, server_hostname=None
+    ):
+        return self._context.wrap_socket(
+            sock,
+            server_side=server_side,
+            do_handshake_on_connect=do_handshake_on_connect,
+            server_hostname=server_hostname,
+        )
+
+
+def wrap_socket(
+    sock,
+    server_side=False,
+    key=None,
+    cert=None,
+    cert_reqs=CERT_NONE,
+    cadata=None,
+    server_hostname=None,
+    do_handshake=True,
+):
+    con = SSLContext(PROTOCOL_TLS_SERVER if server_side else PROTOCOL_TLS_CLIENT)
+    if cert or key:
+        con.load_cert_chain(cert, key)
+    if cadata:
+        con.load_verify_locations(cadata=cadata)
+    con.verify_mode = cert_reqs
+    return con.wrap_socket(
+        sock,
+        server_side=server_side,
+        do_handshake_on_connect=do_handshake,
+        server_hostname=server_hostname,
+    )
+)";
+static const uint32_t STARTUP_LIB_SSL_PY_HASHES[1] = { 0x91B9F390 };
+
 static const char STARTUP_MATRIXAPPS_LED_PY_DATA[] = R"("""LED matrix carousel and editors."""
 
 import gc
@@ -1441,10 +1542,12 @@ static const StartupFileInfo kStartupFiles[] = {
     { "/lib/badge_app.py", STARTUP_LIB_BADGE_APP_PY_DATA, sizeof(STARTUP_LIB_BADGE_APP_PY_DATA) - 1, STARTUP_LIB_BADGE_APP_PY_HASHES, 1, 0 },
     { "/lib/badge_kv.py", STARTUP_LIB_BADGE_KV_PY_DATA, sizeof(STARTUP_LIB_BADGE_KV_PY_DATA) - 1, STARTUP_LIB_BADGE_KV_PY_HASHES, 1, 0 },
     { "/lib/badge_ui.py", STARTUP_LIB_BADGE_UI_PY_DATA, sizeof(STARTUP_LIB_BADGE_UI_PY_DATA) - 1, STARTUP_LIB_BADGE_UI_PY_HASHES, 1, 0 },
+    { "/lib/espnow.py", STARTUP_LIB_ESPNOW_PY_DATA, sizeof(STARTUP_LIB_ESPNOW_PY_DATA) - 1, STARTUP_LIB_ESPNOW_PY_HASHES, 1, 0 },
+    { "/lib/ssl.py", STARTUP_LIB_SSL_PY_DATA, sizeof(STARTUP_LIB_SSL_PY_DATA) - 1, STARTUP_LIB_SSL_PY_HASHES, 1, 0 },
     { "/matrixApps/LED.py", STARTUP_MATRIXAPPS_LED_PY_DATA, sizeof(STARTUP_MATRIXAPPS_LED_PY_DATA) - 1, STARTUP_MATRIXAPPS_LED_PY_HASHES, 1, 0 },
     { "/matrixApps/led_runtime.py", STARTUP_MATRIXAPPS_LED_RUNTIME_PY_DATA, sizeof(STARTUP_MATRIXAPPS_LED_RUNTIME_PY_DATA) - 1, STARTUP_MATRIXAPPS_LED_RUNTIME_PY_HASHES, 1, 0 },
 };
-static const int kStartupFileCount = 5;
+static const int kStartupFileCount = 7;
 
 // ─── Managed directories ─────────────────────────────────────────────
 

@@ -271,4 +271,19 @@ void *replay_phase1_qstr_refs[] = {
     // sometimes missed by the makeqstrdata.py scanner — declare explicitly).
     (void *)MP_QSTR_o,
 };
+
+// Module-table registrations for the network family. The real markers live in
+// ports/esp32/modsocket.c, extmod/modnetwork.c, ports/esp32/modespnow.c, and
+// extmod/modtls_mbedtls.c, but they sit inside `#if MICROPY_PY_NETWORK` /
+// `#if MICROPY_PY_ESPNOW` / `#if MICROPY_PY_SSL` and pull in lwip / esp_wifi /
+// mbedtls headers that host `gcc -E` can't resolve (so modtls_mbedtls.c is not
+// in SRC_QSTR and the network gates are forced off for this host pass). Re-emit
+// the markers here so makemoduledefs.py records them; the firmware build skips
+// this whole #else branch and links the real mp_module_* symbols, so `import
+// socket` / `network` / `_espnow` / `tls` resolve. `ssl`/`espnow` are pure-Python
+// facades on /lib that wrap `tls`/`_espnow`. Keep in sync with those sources.
+MP_REGISTER_EXTENSIBLE_MODULE(MP_QSTR_socket, mp_module_socket);
+MP_REGISTER_MODULE(MP_QSTR_network, mp_module_network);
+MP_REGISTER_MODULE(MP_QSTR__espnow, mp_module_espnow);
+MP_REGISTER_MODULE(MP_QSTR_tls, mp_module_tls);
 #endif

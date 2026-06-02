@@ -698,6 +698,22 @@
     },
     {
       "baked": true,
+      "fnv1a32": "0x811B3480",
+      "path": "/lib/espnow.py",
+      "sha256": "d8b8edc0b2cfe192d30fc841ab09d227f54a9f9b4e8d15ef9ec67167d3389c43",
+      "size": 853,
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/lib/espnow.py"
+    },
+    {
+      "baked": true,
+      "fnv1a32": "0x91B9F390",
+      "path": "/lib/ssl.py",
+      "sha256": "e2b12a4dac5504f567e316d7f48ec69a8f6e5fd8ad47c90a9ee69fd4a0f78f4a",
+      "size": 1816,
+      "url": "https://raw.githubusercontent.com/Architeuthis-Flux/Temporal-Replay-26-Badge/main/firmware/initial_filesystem/lib/ssl.py"
+    },
+    {
+      "baked": true,
       "fnv1a32": "0x39B55BFB",
       "path": "/matrixApps/LED.py",
       "sha256": "59aa6af52cc753b5dde31491d41ca4fca882624f3338a44b2251303ea2f0acfb",

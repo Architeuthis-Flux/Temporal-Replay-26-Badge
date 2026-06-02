@@ -44,6 +44,10 @@ extern const struct _mp_obj_module_t mp_module_select;
 #undef MODULE_DEF_SELECT
 #define MODULE_DEF_SELECT { MP_ROM_QSTR(MP_QSTR_select), MP_ROM_PTR(&mp_module_select) },
 
+extern const struct _mp_obj_module_t mp_module_socket;
+#undef MODULE_DEF_SOCKET
+#define MODULE_DEF_SOCKET { MP_ROM_QSTR(MP_QSTR_socket), MP_ROM_PTR(&mp_module_socket) },
+
 extern const struct _mp_obj_module_t mp_module_struct;
 #undef MODULE_DEF_STRUCT
 #define MODULE_DEF_STRUCT { MP_ROM_QSTR(MP_QSTR_struct), MP_ROM_PTR(&mp_module_struct) },
@@ -55,6 +59,10 @@ extern const struct _mp_obj_module_t mp_module_time;
 extern const struct _mp_obj_module_t mp_module___main__;
 #undef MODULE_DEF___MAIN__
 #define MODULE_DEF___MAIN__ { MP_ROM_QSTR(MP_QSTR___main__), MP_ROM_PTR(&mp_module___main__) },
+
+extern const struct _mp_obj_module_t mp_module_espnow;
+#undef MODULE_DEF__ESPNOW
+#define MODULE_DEF__ESPNOW { MP_ROM_QSTR(MP_QSTR__espnow), MP_ROM_PTR(&mp_module_espnow) },
 
 extern const struct _mp_obj_module_t temporalbadge_user_cmodule;
 #undef MODULE_DEF_BADGE
@@ -80,9 +88,17 @@ extern const struct _mp_obj_module_t mp_module_micropython;
 #undef MODULE_DEF_MICROPYTHON
 #define MODULE_DEF_MICROPYTHON { MP_ROM_QSTR(MP_QSTR_micropython), MP_ROM_PTR(&mp_module_micropython) },
 
+extern const struct _mp_obj_module_t mp_module_network;
+#undef MODULE_DEF_NETWORK
+#define MODULE_DEF_NETWORK { MP_ROM_QSTR(MP_QSTR_network), MP_ROM_PTR(&mp_module_network) },
+
 extern const struct _mp_obj_module_t mp_module_sys;
 #undef MODULE_DEF_SYS
 #define MODULE_DEF_SYS { MP_ROM_QSTR(MP_QSTR_sys), MP_ROM_PTR(&mp_module_sys) },
+
+extern const struct _mp_obj_module_t mp_module_tls;
+#undef MODULE_DEF_TLS
+#define MODULE_DEF_TLS { MP_ROM_QSTR(MP_QSTR_tls), MP_ROM_PTR(&mp_module_tls) },
 
 extern const struct _mp_obj_module_t mp_module_uctypes;
 #undef MODULE_DEF_UCTYPES
@@ -100,13 +116,16 @@ extern const struct _mp_obj_module_t mp_module_vfs;
     MODULE_DEF_GC \
     MODULE_DEF_MATH \
     MODULE_DEF_MICROPYTHON \
+    MODULE_DEF_NETWORK \
     MODULE_DEF_SYS \
+    MODULE_DEF_TLS \
     MODULE_DEF_UCTYPES \
     MODULE_DEF_VFS \
+    MODULE_DEF__ESPNOW \
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 
-#define MICROPY_HAVE_REGISTERED_EXTENSIBLE_MODULES  13
+#define MICROPY_HAVE_REGISTERED_EXTENSIBLE_MODULES  14
 
 #define MICROPY_REGISTERED_EXTENSIBLE_MODULES \
     MODULE_DEF_ARRAY \
@@ -120,6 +139,7 @@ extern const struct _mp_obj_module_t mp_module_vfs;
     MODULE_DEF_OS \
     MODULE_DEF_RANDOM \
     MODULE_DEF_SELECT \
+    MODULE_DEF_SOCKET \
     MODULE_DEF_STRUCT \
     MODULE_DEF_TIME \
 // MICROPY_REGISTERED_EXTENSIBLE_MODULES
