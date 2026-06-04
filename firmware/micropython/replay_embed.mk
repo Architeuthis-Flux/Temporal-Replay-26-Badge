@@ -159,6 +159,8 @@ micropython-embed-package-replay: micropython-embed-package
 	    $(TOP)/ports/esp32/machine_bitstream.c \
 	    $(TOP)/ports/esp32/modnetwork.h $(TOP)/ports/esp32/modnetwork_globals.h \
 	    $(TOP)/ports/esp32/network_common.c $(TOP)/ports/esp32/network_wlan.c \
+	    $(TOP)/ports/esp32/network_ppp.c \
+	    $(TOP)/ports/esp32/ppp_set_auth.c $(TOP)/ports/esp32/ppp_set_auth.h \
 	    $(TOP)/ports/esp32/modespnow.c $(TOP)/ports/esp32/modespnow.h \
 	    $(PACKAGE_DIR)/ports/esp32/
 

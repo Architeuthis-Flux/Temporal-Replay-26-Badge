@@ -216,6 +216,19 @@ uint32_t replay_random_seed_init(void);
 #define MICROPY_PY_NETWORK (REPLAY_ENABLE_FULL_NETWORK)
 #if REPLAY_ENABLE_FULL_NETWORK
 #define MICROPY_PY_NETWORK_HOSTNAME_DEFAULT "mpy-esp32s3"
+// ESP32 takes near-full control of the `network` module through these two
+// includefiles. modnetwork.h declares esp_network_wlan_type + the ifconfig/
+// ipconfig/phy_mode helpers; modnetwork_globals.h injects network.WLAN plus the
+// STA_IF/AP_IF/AUTH_*/MODE_*/STAT_* constants into the module globals dict.
+// Without them, extmod/modnetwork.c builds its generic globals table (country/
+// hostname only) and `network.WLAN` does not exist — which is exactly the
+// AttributeError seen from the REPL. The referenced sources
+// (ports/esp32/network_common.c + network_wlan.c) are compiled via library.json
+// srcFilter and packaged by replay_embed.mk; the WLAN QSTRs are re-emitted for
+// the host module/QSTR pass in port/replay_phase1_qstr.c (network_wlan.c pulls
+// esp_wifi.h, which host gcc -E can't resolve, so it's excluded from SRC_QSTR).
+#define MICROPY_PY_NETWORK_INCLUDEFILE      "ports/esp32/modnetwork.h"
+#define MICROPY_PY_NETWORK_MODULE_GLOBALS_INCLUDEFILE "ports/esp32/modnetwork_globals.h"
 #endif
 
 #if REPLAY_ENABLE_FULL_NETWORK
